@@ -6,6 +6,11 @@
 # path it can't handle, fix the engine — never paper over.
 
 [input]
+# Entrypoint: standard N64 boot address (where IPL3 hands off to the game).
+# Pokemon Stadium's text segment starts at vram 0x80000400, with entry
+# at 0x80080000 per pret's segment table for the 'text' segment.
+entrypoint = 0x80080000
+
 # The verified v1.0 ROM. CMake asserts MD5 ed1378bc...
 rom_file_path = "baserom.z64"
 
