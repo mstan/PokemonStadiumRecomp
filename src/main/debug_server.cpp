@@ -55,6 +55,12 @@ std::atomic<uint16_t> g_buttons_override{0};
 std::atomic<int>      g_stick_x_override{0};  // -128..127
 std::atomic<int>      g_stick_y_override{0};
 
+std::atomic<uint64_t> g_send_dl_count{0};
+std::atomic<uint64_t> g_update_screen_count{0};
+std::atomic<uint64_t> g_send_dl_audio_count{0};
+std::atomic<uint64_t> g_send_dl_gfx_count{0};
+std::atomic<uint64_t> g_send_dl_other_count{0};
+
 // ---- Internals -------------------------------------------------------------
 static std::thread        s_thread;
 static std::atomic<bool>  s_running{false};
@@ -130,16 +136,22 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"pong":true})";
     }
     if (cmd == "status") {
-        char buf[512];
+        char buf[1024];
         std::snprintf(buf, sizeof(buf),
-            "{\"ok\":true,\"frame\":%llu,\"vi\":%llu,\"fast_forward\":%s,\"input_override\":%s,\"buttons\":%u,\"sx\":%d,\"sy\":%d}",
+            "{\"ok\":true,\"frame\":%llu,\"vi\":%llu,\"fast_forward\":%s,\"input_override\":%s,\"buttons\":%u,\"sx\":%d,\"sy\":%d,"
+            "\"send_dl\":%llu,\"send_dl_gfx\":%llu,\"send_dl_audio\":%llu,\"send_dl_other\":%llu,\"update_screen\":%llu}",
             (unsigned long long)g_frame_count.load(),
             (unsigned long long)g_vi_ticks.load(),
             g_fast_forward.load() ? "true" : "false",
             g_input_override_active.load() ? "true" : "false",
             (unsigned)g_buttons_override.load(),
             g_stick_x_override.load(),
-            g_stick_y_override.load()
+            g_stick_y_override.load(),
+            (unsigned long long)g_send_dl_count.load(),
+            (unsigned long long)g_send_dl_gfx_count.load(),
+            (unsigned long long)g_send_dl_audio_count.load(),
+            (unsigned long long)g_send_dl_other_count.load(),
+            (unsigned long long)g_update_screen_count.load()
         );
         return buf;
     }

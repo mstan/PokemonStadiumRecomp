@@ -374,8 +374,8 @@ int main(int argc, char** argv) {
 
     // Start the TCP debug server before recomp::start so a debugger
     // script can connect immediately and observe the boot.
-    pkmnstadium::dbg::start(4370);
-    std::fprintf(stderr, "[PSR] debug server started on tcp:4370\n"); std::fflush(stderr);
+    pkmnstadium::dbg::start(4371);
+    std::fprintf(stderr, "[PSR] debug server started on tcp:4371\n"); std::fflush(stderr);
 
     recomp::Version project_version{0, 1, 0, ""};
     recomp::register_config_path(std::filesystem::current_path());

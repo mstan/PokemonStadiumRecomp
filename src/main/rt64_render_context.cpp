@@ -29,6 +29,7 @@
 #include "ultramodern/config.hpp"
 
 #include "pokestadium_render.h"
+#include "debug_server.h"
 
 static RT64::UserConfiguration::Antialiasing device_max_msaa = RT64::UserConfiguration::Antialiasing::None;
 static bool sample_positions_supported = false;
@@ -275,12 +276,19 @@ pokestadium::renderer::RT64Context::RT64Context(uint8_t* rdram,
 pokestadium::renderer::RT64Context::~RT64Context() = default;
 
 void pokestadium::renderer::RT64Context::send_dl(const OSTask* task) {
+    pkmnstadium::dbg::g_send_dl_count.fetch_add(1);
+    switch (task->t.type) {
+        case M_GFXTASK:    pkmnstadium::dbg::g_send_dl_gfx_count.fetch_add(1); break;
+        case M_AUDTASK:    pkmnstadium::dbg::g_send_dl_audio_count.fetch_add(1); break;
+        default:           pkmnstadium::dbg::g_send_dl_other_count.fetch_add(1); break;
+    }
     app->state->rsp->reset();
     app->interpreter->loadUCodeGBI(task->t.ucode & 0x3FFFFFF, task->t.ucode_data & 0x3FFFFFF, true);
     app->processDisplayLists(app->core.RDRAM, task->t.data_ptr & 0x3FFFFFF, 0, true);
 }
 
 void pokestadium::renderer::RT64Context::update_screen() {
+    pkmnstadium::dbg::g_update_screen_count.fetch_add(1);
     app->updateScreen();
 }
 

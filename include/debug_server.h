@@ -12,8 +12,9 @@
 namespace pkmnstadium {
 namespace dbg {
 
-// Lifecycle.
-void start(int port = 4370);
+// Lifecycle. Default port 4371 (4370 is psxrecomp; one-port-per-recomp
+// project keeps multiple debuggers attachable simultaneously).
+void start(int port = 4371);
 void shutdown();
 
 // Live state shared with the runner. Updated by the server in
@@ -29,6 +30,15 @@ extern std::atomic<bool>     g_input_override_active;
 extern std::atomic<uint16_t> g_buttons_override;
 extern std::atomic<int>      g_stick_x_override;
 extern std::atomic<int>      g_stick_y_override;
+
+// Render-pipeline counters bumped by RT64Context.
+// send_dl  = OSTask submissions (game asked RSP to process a display list).
+// update_screen = VI swap (game asked the renderer to present a frame).
+extern std::atomic<uint64_t> g_send_dl_count;
+extern std::atomic<uint64_t> g_update_screen_count;
+extern std::atomic<uint64_t> g_send_dl_audio_count;
+extern std::atomic<uint64_t> g_send_dl_gfx_count;
+extern std::atomic<uint64_t> g_send_dl_other_count;
 
 } // namespace dbg
 } // namespace pkmnstadium
