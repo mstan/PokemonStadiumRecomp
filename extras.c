@@ -22,12 +22,23 @@ struct recomp_context;
 typedef struct recomp_context recomp_context;
 
 static void unhandled_abort(const char *kind, uint32_t pc, const char *detail) {
+    /* Persistent-file copy: stderr in headless runs gets buffered and
+     * the abort() can wipe it before the parent process reads. The
+     * file is the source of truth for post-mortem inspection. */
+    FILE *f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    if (f) {
+        fprintf(f,
+            "\n=== N64Recomp UNHANDLED %s ===\n"
+            "  PC:     0x%08X\n"
+            "  Detail: %s\n",
+            kind, pc, detail);
+        fclose(f);
+    }
     fprintf(stderr,
         "\n=== N64Recomp UNHANDLED %s ===\n"
         "  PC:     0x%08X\n"
         "  Detail: %s\n"
-        "Engine could not translate this code path. Aborting.\n"
-        "(See N64Recomp src/recompilation.cpp for emit logic.)\n",
+        "Engine could not translate this code path. Aborting.\n",
         kind, pc, detail);
     fflush(stderr);
     abort();
@@ -97,6 +108,11 @@ void recomp_unhandled_instruction(uint8_t *rdram, recomp_context *ctx,
 
 #define UNIMPL_LIBULTRA(name)                                                  \
     void name##_recomp(uint8_t *rdram, recomp_context *ctx) {                  \
+        FILE *f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a"); \
+        if (f) {                                                               \
+            fprintf(f, "\n=== UNIMPLEMENTED LIBULTRA: %s ===\n", #name);       \
+            fclose(f);                                                         \
+        }                                                                      \
         fprintf(stderr,                                                        \
             "\n=== N64Recomp UNIMPLEMENTED LIBULTRA: %s ===\n"                 \
             "  librecomp does not provide a _recomp implementation.\n"         \

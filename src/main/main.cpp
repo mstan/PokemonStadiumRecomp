@@ -311,7 +311,17 @@ static ultramodern::input::connected_device_info_t get_connected_device_info(int
 // ---- Error handling -------------------------------------------------------
 
 static void error_message_box(const char* msg) {
-    fprintf(stderr, "[Pokemon Stadium ERROR] %s\n", msg);
+    // Always-on persistent error log — this fires before
+    // ultramodern::error_handling::quick_exit() terminates the process,
+    // and stderr buffering can swallow the message in headless runs.
+    // Write a known file path so post-mortem inspection is easy.
+    FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    if (f) {
+        fprintf(f, "[PSR ERROR] %s\n", msg);
+        fclose(f);
+    }
+    fprintf(stderr, "[PSR ERROR] %s\n", msg);
+    fflush(stderr);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "PokemonStadiumRecomp", msg, nullptr);
 }
 
@@ -383,7 +393,22 @@ int main(int argc, char** argv) {
         .create_window = create_window,
         .update_gfx    = update_gfx,
     };
-    ultramodern::events::callbacks_t events_callbacks{};
+    // VI heartbeat — fires each VI interrupt. Logs to file every 60 ticks
+    // (~1 second of game-time at 60Hz) so we can confirm the renderer is
+    // alive without spamming stderr.
+    static auto vi_heartbeat = []() {
+        static int tick = 0;
+        if ((tick++ % 60) == 0) {
+            FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/heartbeat.log", "a");
+            if (f) {
+                fprintf(f, "VI tick %d\n", tick);
+                fclose(f);
+            }
+        }
+    };
+    ultramodern::events::callbacks_t events_callbacks{
+        .vi_callback = vi_heartbeat,
+    };
     ultramodern::error_handling::callbacks_t error_handling_callbacks{
         .message_box = error_message_box,
     };
