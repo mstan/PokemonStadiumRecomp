@@ -1,5 +1,14 @@
 text_offset = 0x68020
-text_size = 0xC60
+# Stadium's aspMain fills the full 4KB IMEM. The earlier text_size
+# = 0xC60 was wrong (likely copied from a Mario-Party-style smaller
+# audio ucode). Verified via:
+#   1. ROM[0x68020..0x69020] is non-zero through the very last word
+#      (last nonzero word at 0x68020+0xFFC = 0x69FFC).
+#   2. Audio command list (dumped from RDRAM at runtime) uses
+#      MIXER opcode (0x0C) which dispatches to PC 0x1C84 — past
+#      the 0xC60 limit. With text_size=0xC60, dispatching MIXER
+#      would have caused an UnhandledJumpTarget in the recompiler.
+text_size = 0x1000
 text_address = 0x04001000
 rom_file_path = "baserom.z64"
 output_file_path = "rsp/aspMain.cpp"
@@ -20,17 +29,17 @@ output_function_name = "aspMain"
 # even though if dispatch ever lands there it indicates a bug
 # upstream — that PC sits inside the data segment, not text.
 extra_indirect_branch_targets = [
+    # Dispatch handler PCs from the table at DMEM[0..0x1F] (loaded
+    # from ucode_data ROM 0x7F670). Each is the entry point for one
+    # audio command opcode, reached via `lh DMEM[(cmd>>23)&0xFE]`
+    # then `jr`. Verified by dumping the live audio command list at
+    # data_ptr=0x800C8810 (153 cmds): opcodes 0x02/0x04/0x06/0x0A/
+    # 0x0B/0x0C/0x0D/0x0E all appear, dispatching to PCs below.
     0x10EC, 0x139C, 0x119C, 0x1A64, 0x11C8, 0x17EC, 0x1208, 0x127C,
-    0x1348, 0x1248, 0x12D4, 0x12B0, 0x1384,
-    # Plus the dead-code init function entry at 0x10A0. Stadium's boot
-    # path skips it but if a refactor calls it indirectly we want
-    # the recompiler to handle the branch correctly.
+    0x1348, 0x1248, 0x1C84, 0x12D4, 0x12B0, 0x1384,
+    # Plus the dead-code init function entry at 0x10A0. Stadium's
+    # boot path skips it but if a future refactor calls it
+    # indirectly we want the recompiler to handle the branch
+    # correctly.
     0x10A0,
-    # NOTE: dispatch[12] = 0x1C84 (= PC 0x1C84) was in the table but
-    # it's outside Stadium's text range (text ends at PC 0x1C60).
-    # That handler slot must be for a command Stadium doesn't issue
-    # in normal audio frames (or text_size is actually larger than
-    # 0xC60). Excluded for now; if it gets dispatched the recompiler
-    # will print "Unhandled jump target" and the watchdog will catch
-    # any resulting loop.
 ]

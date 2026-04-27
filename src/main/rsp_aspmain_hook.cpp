@@ -152,14 +152,30 @@ void aspmain_pre_task(uint8_t* rdram,
     // ucode_data back into DMEM[0xFA0]) keeps the operation
     // harmless. The byte at ucode_data[0] is the first byte of
     // the dispatch table = 0x10, written into DMEM scratch.
-    ctx->dma_mem_address  = kBootDmaSafeDmemOffset;
-    ctx->dma_dram_address = ucode_addr;  // = task->t.ucode (text addr) — wait
-    // Actually ucode_addr is the TEXT addr. We want ucode_data,
-    // which we don't have a clean handle to here. Use data_ptr
-    // (RDRAM source we DMA'd from) — reading 1 byte back from
-    // there is also harmless and aligned.
-    ctx->dma_dram_address = data_ptr;
-    ctx->r3 = 0;  // length 0+1 = 1 byte
+    // Seed DMA-engine residue to match what real rspboot leaves
+    // behind. rspboot's last DMA was the ucode_data load, so it
+    // leaves:
+    //   SP_MEM_ADDR  = 0           (DMEM dest of the data load)
+    //   SP_DRAM_ADDR = ucode_data  (DRAM source of the data load)
+    //   SP_RD_LEN    = ucode_data_size - 1 = 0xF7F
+    //
+    // Boot path (L_1120 → L_10EC) and any early handler that fires
+    // a DMA via L_10EC without going through PC 0x10E4/0x10E8 will
+    // reuse these registers. With this seed, such DMAs harmlessly
+    // re-load ucode_data into DMEM[0..0xF7F] — same content already
+    // there, no corruption.
+    //
+    // ucode_addr is the TEXT address; we need ucode_data, which the
+    // runtime loaded via dma_rdram_to_dmem. Read it from the OSTask
+    // at DMEM[0xFC0+0x18] (struct offset of ucode_data).
+    uint32_t ucode_data_addr = load_w(0xFC0 + 0x18);
+    ctx->dma_mem_address  = 0;
+    ctx->dma_dram_address = ucode_data_addr;
+    // r3 starts as the standard rspboot residue: length-1 of last
+    // DMA (= 0xF7F for the ucode_data load). The dispatched
+    // handler's `r3 -= 1; jal L_1174` then produces a DMA of length
+    // = old_r3, which on first call re-loads ucode_data harmlessly.
+    ctx->r3 = 0xF7F;
 
     // Inform diagnostic ring that the hook ran. Quiet; not an
     // error path. Helpful if a future regression makes us doubt
