@@ -79,6 +79,11 @@ static std::thread        s_thread;
 static std::atomic<bool>  s_running{false};
 static SOCKET             s_listen_sock = INVALID_SOCKET;
 
+// Surfaced from librecomp's mesgqueue.cpp — counts external-message
+// re-queues, which happen when a target OSMesgQueue is full when the
+// drain pass reaches it. Surfaced via debug_server's `status` cmd.
+extern "C" uint64_t ultramodern_external_requeues(void);
+
 // Map button name → N64 contStat bit.
 static uint16_t button_bit(const std::string& n) {
     if (n == "A")        return 0x8000;
@@ -163,12 +168,11 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"pong":true})";
     }
     if (cmd == "status") {
-        // Forward declare the librecomp accessor for the external-
-        // message requeue counter. A sustained nonzero value means
-        // some target OSMesgQueue's receiver is being starved relative
-        // to host-thread event posts; re-queues are not drops, but
-        // they indicate receiver pressure worth investigating.
-        extern "C" uint64_t ultramodern_external_requeues(void);
+        // The librecomp accessor for the external-message requeue
+        // counter — declared at file scope below for proper extern "C"
+        // linkage. A sustained nonzero value means some target
+        // OSMesgQueue's receiver is being starved relative to
+        // host-thread event posts.
         char buf[1024];
         std::snprintf(buf, sizeof(buf),
             "{\"ok\":true,\"frame\":%llu,\"vi\":%llu,\"fast_forward\":%s,\"input_override\":%s,\"buttons\":%u,\"sx\":%d,\"sy\":%d,"
