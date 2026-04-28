@@ -163,10 +163,17 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"pong":true})";
     }
     if (cmd == "status") {
+        // Forward declare the librecomp accessor for the external-
+        // message requeue counter. A sustained nonzero value means
+        // some target OSMesgQueue's receiver is being starved relative
+        // to host-thread event posts; re-queues are not drops, but
+        // they indicate receiver pressure worth investigating.
+        extern "C" uint64_t ultramodern_external_requeues(void);
         char buf[1024];
         std::snprintf(buf, sizeof(buf),
             "{\"ok\":true,\"frame\":%llu,\"vi\":%llu,\"fast_forward\":%s,\"input_override\":%s,\"buttons\":%u,\"sx\":%d,\"sy\":%d,"
-            "\"send_dl\":%llu,\"send_dl_gfx\":%llu,\"send_dl_audio\":%llu,\"send_dl_other\":%llu,\"update_screen\":%llu}",
+            "\"send_dl\":%llu,\"send_dl_gfx\":%llu,\"send_dl_audio\":%llu,\"send_dl_other\":%llu,\"update_screen\":%llu,"
+            "\"external_requeues\":%llu}",
             (unsigned long long)g_frame_count.load(),
             (unsigned long long)g_vi_ticks.load(),
             g_fast_forward.load() ? "true" : "false",
@@ -178,7 +185,8 @@ static std::string handle_command(const std::string& line) {
             (unsigned long long)g_send_dl_gfx_count.load(),
             (unsigned long long)g_send_dl_audio_count.load(),
             (unsigned long long)g_send_dl_other_count.load(),
-            (unsigned long long)g_update_screen_count.load()
+            (unsigned long long)g_update_screen_count.load(),
+            (unsigned long long)ultramodern_external_requeues()
         );
         return buf;
     }

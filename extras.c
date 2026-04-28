@@ -145,10 +145,60 @@ UNIMPL_LIBULTRA(rmonPrintf)
 static const char* trace_ring[TRACE_RING_CAP];
 static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
 
+/* Non-overwriting counter for a hard-coded set of "interesting" sched
+ * functions, since the 4096-entry trace ring is overrun by audio in
+ * <2 seconds and we lose history of one-off sched events.
+ *
+ * Each entry stores: function pointer (literal string) + atomic count.
+ * Lookup is identity comparison on the const char* — safe because the
+ * recompiler emits the same string literal for every call site of a
+ * given function, and string literals are deduplicated by the linker.
+ *
+ * Stderr-prints the FIRST entry per function, then keeps counting
+ * silently (avoids flooding stderr while still surfacing rare events).
+ */
+#define INTERESTING_FN_COUNT 12
+static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
+    "func_80005084",  /* SP DONE handler (case 0x64) */
+    "func_80005148",  /* RDP DONE handler (case 0x65) */
+    "func_80004B0C",  /* SP DONE inner (calls task->queue) */
+    "func_80004C68",  /* RDP DONE inner (sets unk_1E=2, posts task->queue) */
+    "func_80004E94",  /* case 0x67 task-launch trigger */
+    "func_80004F08",  /* case 0x68 PreNMI handler */
+    "func_80004F70",  /* case 0x66 VI handler */
+    "func_80004E60",  /* task launcher wrapper */
+    "func_800049D4",  /* osSpTaskLoad+StartGo */
+    "func_80005194",  /* sched main loop entry */
+    "func_8000183C",  /* gfx_sched main loop (thread 5) */
+    "func_8002B330",  /* Game_Thread main */
+};
+static volatile uint64_t k_interesting_counts[INTERESTING_FN_COUNT];
+
 void pkmnstadium_trace_entry(const char *func) {
     uint64_t idx = __atomic_fetch_add(&trace_ring_write_idx, 1, __ATOMIC_RELAXED);
     trace_ring[idx & (TRACE_RING_CAP - 1)] = func;
+
+    /* Identity-compare against the interesting list. Cheap: 12 pointer
+     * compares per recompiled function entry. The linker dedupes the
+     * string literals so this is correct and fast. */
+    for (int i = 0; i < INTERESTING_FN_COUNT; i++) {
+        if (func == k_interesting_fns[i]) {
+            __atomic_fetch_add(&k_interesting_counts[i], 1, __ATOMIC_RELAXED);
+            break;
+        }
+    }
 }
+
+/* Public accessor used by debug_server's "interesting_fns" command. */
+uint64_t pkmnstadium_interesting_fn_count(int idx) {
+    if (idx < 0 || idx >= INTERESTING_FN_COUNT) return 0;
+    return __atomic_load_n(&k_interesting_counts[idx], __ATOMIC_RELAXED);
+}
+const char* pkmnstadium_interesting_fn_name(int idx) {
+    if (idx < 0 || idx >= INTERESTING_FN_COUNT) return NULL;
+    return k_interesting_fns[idx];
+}
+int pkmnstadium_interesting_fn_total(void) { return INTERESTING_FN_COUNT; }
 
 void pkmnstadium_trace_return(const char *func) {
     /* For "where are we stuck?" the entry log is what matters; returns
