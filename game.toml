@@ -2845,6 +2845,17 @@ section = ".fragment77"
 vram = 0x8FC00000
 size = 0x8
 
+[[input.manual_funcs]]
+# fragment78 header trampoline. fragment78 is the 78th fragment in the
+# ROM at 0x1206400 — pret's split bundled it under pokemon_models bin
+# until we carved it out. id=0xEF, link-vram 0x8FF00000. The textbin
+# header (J 0x8FF00020 ; nop) needs an 8-byte function entry so
+# Stadium's J trampoline at fragment+0 dispatches into func_map.
+name = "fragment78_entry"
+section = ".fragment78"
+vram = 0x8FF00000
+size = 0x8
+
 # ── Runtime fragment registration hook ────────────────────────────────────
 #
 # Stadium has two fragment-load paths: (1) PI DMA → load_overlays(), which
