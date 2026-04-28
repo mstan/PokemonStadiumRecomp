@@ -12,11 +12,11 @@ build-*/
 # Generated recompiler output (regen via N64Recomp)
 generated/
 
-# Ghidra project state
-ghidra/*.lock
-ghidra/*.lock~
-ghidra/*.gpr.bak
-ghidra/projects/
+# Ghidra project state (live DBs are machine-specific, large)
+ghidra/**/*.lock
+ghidra/**/*.lock~
+ghidra/**/*.gpr.bak
+ghidra/**/projects/
 # Ghidra volatile DB / temp state — held open while Ghidra is running,
 # changes constantly, and breaks `git checkout` on Windows because the
 # OS won't unlink files Ghidra has open.

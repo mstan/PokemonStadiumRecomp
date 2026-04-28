@@ -10,30 +10,24 @@ RspExitReason aspMain_impl(uint8_t* rdram, RspContext* ctx) {
     RSP& rsp = ctx->rsp;
     r1 = 0xFC0;
     ctx->watchdog_count = 0;
-    // mfc0        $5, DPC_STATUS
-    r5 = 0;
-    // lw          $28, 0x30($1)
-    r28 = RSP_MEM_W_LOAD(0X30, r1);
-    // lw          $27, 0x34($1)
-    r27 = RSP_MEM_W_LOAD(0X34, r1);
-    // andi        $4, $5, 0x1
-    r4 = r5 & 0X1;
-    // beq         $4, $zero, L_102C
-    if (r4 == 0) {
-        // andi        $4, $5, 0x100
-        r4 = r5 & 0X100;
-        goto L_102C;
-    }
-    // andi        $4, $5, 0x100
-    r4 = r5 & 0X100;
-    // beq         $4, $zero, L_102C
-    if (r4 == 0) {
-        // mfc0        $4, DPC_STATUS
-        r4 = 0;
-        goto L_102C;
-    }
-    // mfc0        $4, DPC_STATUS
-    r4 = 0;
+    // j           L_1064
+    // addi        $1, $zero, 0xFC0
+    r1 = RSP_ADD32(0, 0XFC0);
+    goto L_1064;
+    // addi        $1, $zero, 0xFC0
+    r1 = RSP_ADD32(0, 0XFC0);
+    // lw          $2, 0x10($1)
+    r2 = RSP_MEM_W_LOAD(0X10, r1);
+    // addi        $3, $zero, 0xF7F
+    r3 = RSP_ADD32(0, 0XF7F);
+    // addi        $7, $zero, 0x1080
+    r7 = RSP_ADD32(0, 0X1080);
+    // mtc0        $7, SP_MEM_ADDR
+    SET_DMA_MEM(r7);
+    // mtc0        $2, SP_DRAM_ADDR
+    SET_DMA_DRAM(r2);
+    // mtc0        $3, SP_RD_LEN
+    DO_DMA_READ(r3);
 L_1020:
     ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1020;
     ctx->pc_trail_idx++;
@@ -47,21 +41,28 @@ L_1020:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // andi        $4, $4, 0x100
-    r4 = r4 & 0X100;
-    // bgtz        $4, L_1020
-    if (RSP_SIGNED(r4) > 0) {
-        // mfc0        $4, DPC_STATUS
-        r4 = 0;
+    // mfc0        $4, SP_DMA_BUSY
+    r4 = 0;
+    // bne         $4, $zero, L_1020
+    if (r4 != 0) {
+        // nop
+    
         goto L_1020;
     }
-    // mfc0        $4, DPC_STATUS
-    r4 = 0;
-L_102C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x102C;
+    // nop
+
+    // jal         0x103C
+    r31 = 0x1034;
+    // nop
+
+    goto L_103C;
+    // nop
+
+L_1034:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1034;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x102C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1034 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -70,30 +71,12 @@ L_102C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // addi        $24, $zero, 0xFA0
-    r24 = RSP_ADD32(0, 0XFA0);
-    // jal         0x1120
-    r31 = 0x1038;
-    // add         $2, $zero, $28
-    r2 = RSP_ADD32(0, r28);
-    goto L_1120;
-    // add         $2, $zero, $28
-    r2 = RSP_ADD32(0, r28);
-L_1038:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1038;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1038 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // mfc0        $2, SP_DMA_BUSY
-    r2 = 0;
+    // jr          $7
+    jump_target = r7;
+    debug_file = __FILE__; debug_line = __LINE__;
+    // mtc0        $zero, SP_SEMAPHORE
+    goto do_indirect_jump;
+    // mtc0        $zero, SP_SEMAPHORE
 L_103C:
     ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x103C;
     ctx->pc_trail_idx++;
@@ -107,20 +90,228 @@ L_103C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $2, $zero, L_103C
+    // mfc0        $8, SP_STATUS
+    r8 = 0;
+    // andi        $8, $8, 0x80
+    r8 = r8 & 0X80;
+L_1044:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1044;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1044 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // bne         $8, $zero, L_1050
+    if (r8 != 0) {
+        // nop
+    
+        goto L_1050;
+    }
+    // nop
+
+    // jr          $ra
+    jump_target = r31;
+    debug_file = __FILE__; debug_line = __LINE__;
+    // mtc0        $zero, SP_SEMAPHORE
+    goto do_indirect_jump;
+L_1050:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1050;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1050 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // mtc0        $zero, SP_SEMAPHORE
+    // ori         $8, $zero, 0x5200
+    r8 = 0 | 0X5200;
+    // mtc0        $8, SP_STATUS
+    // break       0
+    return RspExitReason::Broke;
+    // nop
+
+L_1064:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1064;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1064 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // lw          $2, 0x4($1)
+    r2 = RSP_MEM_W_LOAD(0X4, r1);
+    // andi        $2, $2, 0x2
+    r2 = r2 & 0X2;
+    // beq         $2, $zero, L_108C
+    if (r2 == 0) {
+        // nop
+    
+        goto L_108C;
+    }
+    // nop
+
+    // jal         0x103C
+    r31 = 0x107C;
+    // nop
+
+    goto L_103C;
+    // nop
+
+L_107C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x107C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x107C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // mfc0        $2, DPC_STATUS
+    r2 = 0;
+    // mfc0        $5, DPC_STATUS
+    r5 = 0;
+    // lw          $28, 0x30($1)
+    r28 = RSP_MEM_W_LOAD(0X30, r1);
+    // lw          $27, 0x34($1)
+    r27 = RSP_MEM_W_LOAD(0X34, r1);
+L_108C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x108C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x108C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // andi        $4, $5, 0x1
+    r4 = r5 & 0X1;
+    // beq         $4, $zero, L_10AC
+    if (r4 == 0) {
+        // andi        $4, $5, 0x100
+        r4 = r5 & 0X100;
+        goto L_10AC;
+    }
+    // andi        $4, $5, 0x100
+    r4 = r5 & 0X100;
+    // beq         $4, $zero, L_10AC
+    if (r4 == 0) {
+        // mfc0        $4, DPC_STATUS
+        r4 = 0;
+        goto L_10AC;
+    }
+    // mfc0        $4, DPC_STATUS
+    r4 = 0;
+L_10A0:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10A0;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x10A0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // andi        $4, $4, 0x100
+    r4 = r4 & 0X100;
+    // bgtz        $4, L_10A0
+    if (RSP_SIGNED(r4) > 0) {
+        // mfc0        $4, DPC_STATUS
+        r4 = 0;
+        goto L_10A0;
+    }
+    // mfc0        $4, DPC_STATUS
+    r4 = 0;
+L_10AC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10AC;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x10AC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // addi        $24, $zero, 0xFA0
+    r24 = RSP_ADD32(0, 0XFA0);
+    // jal         0x1120
+    r31 = 0x10B8;
+    // add         $2, $zero, $28
+    r2 = RSP_ADD32(0, r28);
+    goto L_1120;
+    // add         $2, $zero, $28
+    r2 = RSP_ADD32(0, r28);
+L_10B8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10B8;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x10B8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // mfc0        $2, SP_DMA_BUSY
+    r2 = 0;
+L_10BC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10BC;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x10BC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // bne         $2, $zero, L_10BC
     if (r2 != 0) {
         // mfc0        $2, SP_DMA_BUSY
         r2 = 0;
-        goto L_103C;
+        goto L_10BC;
     }
     // mfc0        $2, SP_DMA_BUSY
     r2 = 0;
     // mtc0        $zero, SP_SEMAPHORE
-L_1048:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1048;
+L_10C8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10C8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1048 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x10C8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -151,11 +342,11 @@ L_1048:
     r27 = RSP_ADD32(r27, -0X8);
     // break       0
     return RspExitReason::Broke;
-L_106C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x106C;
+L_10EC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10EC;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x106C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x10EC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -164,34 +355,34 @@ L_106C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bgtz        $30, L_1048
+    // bgtz        $30, L_10C8
     if (RSP_SIGNED(r30) > 0) {
         // addi        $29, $29, 0x8
         r29 = RSP_ADD32(r29, 0X8);
-        goto L_1048;
+        goto L_10C8;
     }
     // addi        $29, $29, 0x8
     r29 = RSP_ADD32(r29, 0X8);
-    // blez        $27, L_108C
+    // blez        $27, L_110C
     if (RSP_SIGNED(r27) <= 0) {
         // ori         $1, $zero, 0x4000
         r1 = 0 | 0X4000;
-        goto L_108C;
+        goto L_110C;
     }
     // ori         $1, $zero, 0x4000
     r1 = 0 | 0X4000;
     // jal         0x1120
-    r31 = 0x1084;
+    r31 = 0x1104;
     // add         $2, $zero, $28
     r2 = RSP_ADD32(0, r28);
     goto L_1120;
     // add         $2, $zero, $28
     r2 = RSP_ADD32(0, r28);
-L_1084:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1084;
+L_1104:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1104;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1084 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1104 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -206,11 +397,11 @@ L_1084:
     goto L_10BC;
     // mfc0        $2, SP_DMA_BUSY
     r2 = 0;
-L_108C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x108C;
+L_110C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x110C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x108C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x110C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -224,11 +415,11 @@ L_108C:
     return RspExitReason::Broke;
     // nop
 
-L_1098:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1098;
+L_1118:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1118;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1098 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1118 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -237,17 +428,17 @@ L_1098:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // b           L_1098
+    // b           L_1118
     // nop
 
-    goto L_1098;
+    goto L_1118;
     // nop
 
-L_10A0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10A0;
+L_1120:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1120;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10A0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1120 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -262,21 +453,47 @@ L_10A0:
     r3 = RSP_ADD32(r27, 0X0);
     // addi        $4, $3, -0x140
     r4 = RSP_ADD32(r3, -0X140);
-    // blez        $4, L_10B8
+    // blez        $4, L_1138
     if (RSP_SIGNED(r4) <= 0) {
         // addi        $1, $zero, 0x2B0
         r1 = RSP_ADD32(0, 0X2B0);
-        goto L_10B8;
+        goto L_1138;
+    }
+L_1130:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1130;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1130 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
     }
     // addi        $1, $zero, 0x2B0
     r1 = RSP_ADD32(0, 0X2B0);
-    // addi        $3, $zero, 0x140
-    r3 = RSP_ADD32(0, 0X140);
-L_10B8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10B8;
+L_1134:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1134;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10B8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1134 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // addi        $3, $zero, 0x140
+    r3 = RSP_ADD32(0, 0X140);
+L_1138:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1138;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1138 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -287,31 +504,18 @@ L_10B8:
     }
     // addi        $30, $3, 0x0
     r30 = RSP_ADD32(r3, 0X0);
-L_10BC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10BC;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10BC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // jal         0x114C
-    r31 = 0x10C4;
+    r31 = 0x1144;
     // addi        $3, $3, -0x1
     r3 = RSP_ADD32(r3, -0X1);
     goto L_114C;
     // addi        $3, $3, -0x1
     r3 = RSP_ADD32(r3, -0X1);
-L_10C4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10C4;
+L_1144:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1144;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10C4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1144 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -328,230 +532,6 @@ L_10C4:
     goto do_indirect_jump;
     // addi        $29, $zero, 0x2B0
     r29 = RSP_ADD32(0, 0X2B0);
-    // mfc0        $4, SP_SEMAPHORE
-    r4 = 0;
-L_10D0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10D0;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10D0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // bne         $4, $zero, L_10D0
-    if (r4 != 0) {
-        // mfc0        $4, SP_SEMAPHORE
-        r4 = 0;
-        goto L_10D0;
-    }
-    // mfc0        $4, SP_SEMAPHORE
-    r4 = 0;
-    // mfc0        $4, SP_DMA_FULL
-    r4 = 0;
-L_10DC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10DC;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10DC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // bne         $4, $zero, L_10DC
-    if (r4 != 0) {
-        // mfc0        $4, SP_DMA_FULL
-        r4 = 0;
-        goto L_10DC;
-    }
-    // mfc0        $4, SP_DMA_FULL
-    r4 = 0;
-    // mtc0        $1, SP_MEM_ADDR
-    SET_DMA_MEM(r1);
-    // mtc0        $2, SP_DRAM_ADDR
-    SET_DMA_DRAM(r2);
-L_10EC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10EC;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10EC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // jr          $ra
-    jump_target = r31;
-    debug_file = __FILE__; debug_line = __LINE__;
-    // mtc0        $3, SP_RD_LEN
-    DO_DMA_READ(r3);
-    goto do_indirect_jump;
-    // mtc0        $3, SP_RD_LEN
-    DO_DMA_READ(r3);
-    // mfc0        $4, SP_SEMAPHORE
-    r4 = 0;
-L_10F8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x10F8;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x10F8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // bne         $4, $zero, L_10F8
-    if (r4 != 0) {
-        // mfc0        $4, SP_SEMAPHORE
-        r4 = 0;
-        goto L_10F8;
-    }
-    // mfc0        $4, SP_SEMAPHORE
-    r4 = 0;
-    // mfc0        $4, SP_DMA_FULL
-    r4 = 0;
-L_1104:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1104;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1104 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // bne         $4, $zero, L_1104
-    if (r4 != 0) {
-        // mfc0        $4, SP_DMA_FULL
-        r4 = 0;
-        goto L_1104;
-    }
-    // mfc0        $4, SP_DMA_FULL
-    r4 = 0;
-    // mtc0        $1, SP_MEM_ADDR
-    SET_DMA_MEM(r1);
-    // mtc0        $2, SP_DRAM_ADDR
-    SET_DMA_DRAM(r2);
-    // jr          $ra
-    jump_target = r31;
-    debug_file = __FILE__; debug_line = __LINE__;
-    // mtc0        $3, SP_WR_LEN
-    DO_DMA_WRITE(r3);
-    goto do_indirect_jump;
-    // mtc0        $3, SP_WR_LEN
-    DO_DMA_WRITE(r3);
-    // andi        $2, $25, 0xFFFF
-    r2 = r25 & 0XFFFF;
-L_1120:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1120;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1120 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // vxor        $v1, $v1, $v1
-    rsp.VXOR<0>(rsp.vpu.r[1], rsp.vpu.r[1], rsp.vpu.r[1]);
-    // andi        $1, $26, 0xFFFF
-    r1 = r26 & 0XFFFF;
-    // addi        $1, $1, 0x4F0
-    r1 = RSP_ADD32(r1, 0X4F0);
-L_112C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x112C;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x112C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // sdv         $v1[0], 0x0($1)
-    rsp.SDV<0>(rsp.vpu.r[1], r1, 0X0);
-L_1130:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1130;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1130 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // sdv         $v1[0], 0x8($1)
-    rsp.SDV<0>(rsp.vpu.r[1], r1, 0X1);
-L_1134:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1134;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1134 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // addi        $2, $2, -0x10
-    r2 = RSP_ADD32(r2, -0X10);
-    // bgtz        $2, L_112C
-    if (RSP_SIGNED(r2) > 0) {
-        // addi        $1, $1, 0x10
-        r1 = RSP_ADD32(r1, 0X10);
-        goto L_112C;
-    }
-    // addi        $1, $1, 0x10
-    r1 = RSP_ADD32(r1, 0X10);
-    // j           L_10EC
-    // addi        $30, $30, -0x8
-    r30 = RSP_ADD32(r30, -0X8);
-    goto L_10EC;
-L_1144:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1144;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1144 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
-    // addi        $30, $30, -0x8
-    r30 = RSP_ADD32(r30, -0X8);
-    // sll         $3, $26, 8
-    r3 = S32(r26) << 8;
 L_114C:
     ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x114C;
     ctx->pc_trail_idx++;
@@ -565,13 +545,211 @@ L_114C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
+    // mfc0        $4, SP_SEMAPHORE
+    r4 = 0;
+L_1150:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1150;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1150 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // bne         $4, $zero, L_1150
+    if (r4 != 0) {
+        // mfc0        $4, SP_SEMAPHORE
+        r4 = 0;
+        goto L_1150;
+    }
+    // mfc0        $4, SP_SEMAPHORE
+    r4 = 0;
+    // mfc0        $4, SP_DMA_FULL
+    r4 = 0;
+L_115C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x115C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x115C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // bne         $4, $zero, L_115C
+    if (r4 != 0) {
+        // mfc0        $4, SP_DMA_FULL
+        r4 = 0;
+        goto L_115C;
+    }
+    // mfc0        $4, SP_DMA_FULL
+    r4 = 0;
+    // mtc0        $1, SP_MEM_ADDR
+    SET_DMA_MEM(r1);
+    // mtc0        $2, SP_DRAM_ADDR
+    SET_DMA_DRAM(r2);
+    // jr          $ra
+    jump_target = r31;
+    debug_file = __FILE__; debug_line = __LINE__;
+    // mtc0        $3, SP_RD_LEN
+    DO_DMA_READ(r3);
+    goto do_indirect_jump;
+    // mtc0        $3, SP_RD_LEN
+    DO_DMA_READ(r3);
+L_1174:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1174;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1174 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // mfc0        $4, SP_SEMAPHORE
+    r4 = 0;
+L_1178:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1178;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1178 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // bne         $4, $zero, L_1178
+    if (r4 != 0) {
+        // mfc0        $4, SP_SEMAPHORE
+        r4 = 0;
+        goto L_1178;
+    }
+    // mfc0        $4, SP_SEMAPHORE
+    r4 = 0;
+    // mfc0        $4, SP_DMA_FULL
+    r4 = 0;
+L_1184:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1184;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1184 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // bne         $4, $zero, L_1184
+    if (r4 != 0) {
+        // mfc0        $4, SP_DMA_FULL
+        r4 = 0;
+        goto L_1184;
+    }
+    // mfc0        $4, SP_DMA_FULL
+    r4 = 0;
+    // mtc0        $1, SP_MEM_ADDR
+    SET_DMA_MEM(r1);
+    // mtc0        $2, SP_DRAM_ADDR
+    SET_DMA_DRAM(r2);
+    // jr          $ra
+    jump_target = r31;
+    debug_file = __FILE__; debug_line = __LINE__;
+    // mtc0        $3, SP_WR_LEN
+    DO_DMA_WRITE(r3);
+    goto do_indirect_jump;
+    // mtc0        $3, SP_WR_LEN
+    DO_DMA_WRITE(r3);
+L_119C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x119C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x119C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // andi        $2, $25, 0xFFFF
+    r2 = r25 & 0XFFFF;
+    // vxor        $v1, $v1, $v1
+    rsp.VXOR<0>(rsp.vpu.r[1], rsp.vpu.r[1], rsp.vpu.r[1]);
+    // andi        $1, $26, 0xFFFF
+    r1 = r26 & 0XFFFF;
+    // addi        $1, $1, 0x4F0
+    r1 = RSP_ADD32(r1, 0X4F0);
+L_11AC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11AC;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x11AC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // sdv         $v1[0], 0x0($1)
+    rsp.SDV<0>(rsp.vpu.r[1], r1, 0X0);
+    // sdv         $v1[0], 0x8($1)
+    rsp.SDV<0>(rsp.vpu.r[1], r1, 0X1);
+    // addi        $2, $2, -0x10
+    r2 = RSP_ADD32(r2, -0X10);
+    // bgtz        $2, L_11AC
+    if (RSP_SIGNED(r2) > 0) {
+        // addi        $1, $1, 0x10
+        r1 = RSP_ADD32(r1, 0X10);
+        goto L_11AC;
+    }
+    // addi        $1, $1, 0x10
+    r1 = RSP_ADD32(r1, 0X10);
+    // j           L_10EC
+    // addi        $30, $30, -0x8
+    r30 = RSP_ADD32(r30, -0X8);
+    goto L_10EC;
+    // addi        $30, $30, -0x8
+    r30 = RSP_ADD32(r30, -0X8);
+L_11C8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11C8;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x11C8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // sll         $3, $26, 8
+    r3 = S32(r26) << 8;
     // srl         $3, $3, 20
     r3 = S32(U32(r3) >> 20);
-    // beq         $3, $zero, L_106C
+    // beq         $3, $zero, L_10EC
     if (r3 == 0) {
         // addi        $30, $30, -0x8
         r30 = RSP_ADD32(r30, -0X8);
-        goto L_106C;
+        goto L_10EC;
     }
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
@@ -586,17 +764,17 @@ L_114C:
     // addi        $3, $3, -0x1
     r3 = RSP_ADD32(r3, -0X1);
     // jal         0x114C
-    r31 = 0x1174;
+    r31 = 0x11F4;
     // addi        $2, $2, 0x0
     r2 = RSP_ADD32(r2, 0X0);
     goto L_114C;
     // addi        $2, $2, 0x0
     r2 = RSP_ADD32(r2, 0X0);
-L_1174:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1174;
+L_11F4:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11F4;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1174 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x11F4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -607,11 +785,11 @@ L_1174:
     }
     // mfc0        $1, SP_DMA_BUSY
     r1 = 0;
-L_1178:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1178;
+L_11F8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11F8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1178 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x11F8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -620,11 +798,11 @@ L_1178:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $1, $zero, L_1178
+    // bne         $1, $zero, L_11F8
     if (r1 != 0) {
         // mfc0        $1, SP_DMA_BUSY
         r1 = 0;
-        goto L_1178;
+        goto L_11F8;
     }
     // mfc0        $1, SP_DMA_BUSY
     r1 = 0;
@@ -632,25 +810,11 @@ L_1178:
     // mtc0        $zero, SP_SEMAPHORE
     goto L_10EC;
     // mtc0        $zero, SP_SEMAPHORE
-    // sll         $3, $26, 8
-    r3 = S32(r26) << 8;
-    // srl         $3, $3, 20
-    r3 = S32(U32(r3) >> 20);
-    // beq         $3, $zero, L_106C
-    if (r3 == 0) {
-        // addi        $30, $30, -0x8
-        r30 = RSP_ADD32(r30, -0X8);
-        goto L_106C;
-    }
-    // addi        $30, $30, -0x8
-    r30 = RSP_ADD32(r30, -0X8);
-    // andi        $1, $26, 0xFFF
-    r1 = r26 & 0XFFF;
-L_119C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x119C;
+L_1208:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1208;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x119C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1208 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -659,6 +823,20 @@ L_119C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
+    // sll         $3, $26, 8
+    r3 = S32(r26) << 8;
+    // srl         $3, $3, 20
+    r3 = S32(U32(r3) >> 20);
+    // beq         $3, $zero, L_10EC
+    if (r3 == 0) {
+        // addi        $30, $30, -0x8
+        r30 = RSP_ADD32(r30, -0X8);
+        goto L_10EC;
+    }
+    // addi        $30, $30, -0x8
+    r30 = RSP_ADD32(r30, -0X8);
+    // andi        $1, $26, 0xFFF
+    r1 = r26 & 0XFFF;
     // addi        $1, $1, 0x4F0
     r1 = RSP_ADD32(r1, 0X4F0);
     // sll         $2, $25, 8
@@ -668,17 +846,17 @@ L_119C:
     // addi        $3, $3, -0x1
     r3 = RSP_ADD32(r3, -0X1);
     // jal         0x1174
-    r31 = 0x11B4;
+    r31 = 0x1234;
     // addi        $2, $2, 0x0
     r2 = RSP_ADD32(r2, 0X0);
     goto L_1174;
     // addi        $2, $2, 0x0
     r2 = RSP_ADD32(r2, 0X0);
-L_11B4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11B4;
+L_1234:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1234;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x11B4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1234 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -689,11 +867,11 @@ L_11B4:
     }
     // mfc0        $1, SP_DMA_BUSY
     r1 = 0;
-L_11B8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11B8;
+L_1238:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1238;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x11B8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1238 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -702,11 +880,11 @@ L_11B8:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $1, $zero, L_11B8
+    // bne         $1, $zero, L_1238
     if (r1 != 0) {
         // mfc0        $1, SP_DMA_BUSY
         r1 = 0;
-        goto L_11B8;
+        goto L_1238;
     }
     // mfc0        $1, SP_DMA_BUSY
     r1 = 0;
@@ -714,11 +892,11 @@ L_11B8:
     // mtc0        $zero, SP_SEMAPHORE
     goto L_10EC;
     // mtc0        $zero, SP_SEMAPHORE
-L_11C8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11C8;
+L_1248:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1248;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x11C8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1248 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -738,17 +916,17 @@ L_11C8:
     // andi        $3, $26, 0xFFFF
     r3 = r26 & 0XFFFF;
     // jal         0x114C
-    r31 = 0x11E4;
+    r31 = 0x1264;
     // addi        $3, $3, -0x1
     r3 = RSP_ADD32(r3, -0X1);
     goto L_114C;
     // addi        $3, $3, -0x1
     r3 = RSP_ADD32(r3, -0X1);
-L_11E4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11E4;
+L_1264:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1264;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x11E4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1264 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -759,11 +937,11 @@ L_11E4:
     }
     // mfc0        $1, SP_DMA_BUSY
     r1 = 0;
-L_11E8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x11E8;
+L_1268:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1268;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x11E8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1268 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -772,11 +950,11 @@ L_11E8:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $1, $zero, L_11E8
+    // bne         $1, $zero, L_1268
     if (r1 != 0) {
         // mfc0        $1, SP_DMA_BUSY
         r1 = 0;
-        goto L_11E8;
+        goto L_1268;
     }
     // mfc0        $1, SP_DMA_BUSY
     r1 = 0;
@@ -787,21 +965,11 @@ L_11E8:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
-    // srl         $3, $26, 16
-    r3 = S32(U32(r26) >> 16);
-    // andi        $1, $3, 0x4
-    r1 = r3 & 0X4;
-    // beq         $1, $zero, L_123C
-    if (r1 == 0) {
-        // andi        $1, $3, 0x2
-        r1 = r3 & 0X2;
-        goto L_123C;
-    }
-L_1208:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1208;
+L_127C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x127C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1208 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x127C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -810,13 +978,23 @@ L_1208:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
+    // srl         $3, $26, 16
+    r3 = S32(U32(r26) >> 16);
+    // andi        $1, $3, 0x4
+    r1 = r3 & 0X4;
+    // beq         $1, $zero, L_12BC
+    if (r1 == 0) {
+        // andi        $1, $3, 0x2
+        r1 = r3 & 0X2;
+        goto L_12BC;
+    }
     // andi        $1, $3, 0x2
     r1 = r3 & 0X2;
-    // beq         $1, $zero, L_1228
+    // beq         $1, $zero, L_12A8
     if (r1 == 0) {
         // srl         $2, $25, 16
         r2 = S32(U32(r25) >> 16);
-        goto L_1228;
+        goto L_12A8;
     }
     // srl         $2, $25, 16
     r2 = S32(U32(r25) >> 16);
@@ -832,11 +1010,11 @@ L_1208:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
-L_1228:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1228;
+L_12A8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12A8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1228 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x12A8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -849,6 +1027,19 @@ L_1228:
     RSP_MEM_H_STORE(0X46, r24, r26);
     // sh          $2, 0x48($24)
     RSP_MEM_H_STORE(0X48, r24, r2);
+L_12B0:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12B0;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x12B0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // sh          $25, 0x4A($24)
     RSP_MEM_H_STORE(0X4A, r24, r25);
     // j           L_10EC
@@ -857,11 +1048,11 @@ L_1228:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
-L_123C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x123C;
+L_12BC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12BC;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x123C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x12BC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -876,19 +1067,6 @@ L_123C:
     RSP_MEM_H_STORE(0X40, r24, r26);
     // sh          $2, 0x42($24)
     RSP_MEM_H_STORE(0X42, r24, r2);
-L_1248:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1248;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1248 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // sh          $25, 0x44($24)
     RSP_MEM_H_STORE(0X44, r24, r25);
     // j           L_10EC
@@ -897,6 +1075,19 @@ L_1248:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
+L_12D4:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12D4;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x12D4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // addi        $1, $zero, 0x170
     r1 = RSP_ADD32(0, 0X170);
     // addi        $4, $zero, 0x4F0
@@ -905,11 +1096,11 @@ L_1248:
     r2 = RSP_ADD32(0, 0X9D0);
     // addi        $3, $zero, 0xB40
     r3 = RSP_ADD32(0, 0XB40);
-L_1264:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1264;
+L_12E4:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12E4;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1264 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x12E4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -930,19 +1121,6 @@ L_1264:
     r3 = RSP_ADD32(r3, 0X10);
     // ssv         $v1[0], 0x0($4)
     rsp.SSV<0>(rsp.vpu.r[1], r4, 0X0);
-L_127C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x127C;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x127C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // ssv         $v2[0], 0x2($4)
     rsp.SSV<0>(rsp.vpu.r[2], r4, 0X1);
     // ssv         $v1[2], 0x4($4)
@@ -969,28 +1147,15 @@ L_127C:
     rsp.SSV<12>(rsp.vpu.r[1], r4, 0XC);
     // ssv         $v2[12], 0x1A($4)
     rsp.SSV<12>(rsp.vpu.r[2], r4, 0XD);
-L_12B0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12B0;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x12B0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // ssv         $v1[14], 0x1C($4)
     rsp.SSV<14>(rsp.vpu.r[1], r4, 0XE);
     // ssv         $v2[14], 0x1E($4)
     rsp.SSV<14>(rsp.vpu.r[2], r4, 0XF);
-    // bgtz        $1, L_1264
+    // bgtz        $1, L_12E4
     if (RSP_SIGNED(r1) > 0) {
         // addi        $4, $4, 0x20
         r4 = RSP_ADD32(r4, 0X20);
-        goto L_1264;
+        goto L_12E4;
     }
     // addi        $4, $4, 0x20
     r4 = RSP_ADD32(r4, 0X20);
@@ -1000,17 +1165,11 @@ L_12B0:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
-    // andi        $1, $25, 0xFFFF
-    r1 = r25 & 0XFFFF;
-    // andi        $2, $26, 0xFFFF
-    r2 = r26 & 0XFFFF;
-    // addi        $2, $2, 0x4F0
-    r2 = RSP_ADD32(r2, 0X4F0);
-L_12D4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12D4;
+L_1348:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1348;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x12D4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1348 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1019,15 +1178,21 @@ L_12D4:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
+    // andi        $1, $25, 0xFFFF
+    r1 = r25 & 0XFFFF;
+    // andi        $2, $26, 0xFFFF
+    r2 = r26 & 0XFFFF;
+    // addi        $2, $2, 0x4F0
+    r2 = RSP_ADD32(r2, 0X4F0);
     // srl         $3, $25, 16
     r3 = S32(U32(r25) >> 16);
     // addi        $3, $3, 0x4F0
     r3 = RSP_ADD32(r3, 0X4F0);
-L_12DC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x12DC;
+L_135C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x135C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x12DC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x135C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1048,11 +1213,11 @@ L_12DC:
     rsp.SDV<0>(rsp.vpu.r[1], r3, 0X0);
     // sdv         $v2[0], 0x8($3)
     rsp.SDV<0>(rsp.vpu.r[2], r3, 0X1);
-    // bgtz        $1, L_12DC
+    // bgtz        $1, L_135C
     if (RSP_SIGNED(r1) > 0) {
         // addi        $3, $3, 0x10
         r3 = RSP_ADD32(r3, 0X10);
-        goto L_12DC;
+        goto L_135C;
     }
     // addi        $3, $3, 0x10
     r3 = RSP_ADD32(r3, 0X10);
@@ -1062,6 +1227,19 @@ L_12DC:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
+L_1384:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1384;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1384 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // sll         $1, $25, 8
     r1 = S32(r25) << 8;
     // srl         $1, $1, 8
@@ -1076,6 +1254,19 @@ L_12DC:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
+L_139C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x139C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x139C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // lqv         $v31[0], 0x50($zero)
     rsp.LQV<0>(rsp.vpu.r[31], 0, 0X5);
     // srl         $23, $25, 12
@@ -1098,19 +1289,6 @@ L_12DC:
     r1 = RSP_ADD32(r1, 0X4F0);
     // vxor        $v15, $v15, $v15
     rsp.VXOR<0>(rsp.vpu.r[15], rsp.vpu.r[15], rsp.vpu.r[15]);
-L_1348:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1348;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1348 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // srl         $21, $25, 16
     r21 = S32(U32(r25) >> 16);
     // vxor        $v16, $v16, $v16
@@ -1133,44 +1311,31 @@ L_1348:
     r13 = S32(U32(r25) >> 28);
     // andi        $2, $13, 0x1
     r2 = r13 & 0X1;
-    // bgtz        $2, L_13E0
+    // bgtz        $2, L_1460
     if (RSP_SIGNED(r2) > 0) {
         // addi        $22, $23, 0x1
         r22 = RSP_ADD32(r23, 0X1);
-        goto L_13E0;
+        goto L_1460;
     }
     // addi        $22, $23, 0x1
     r22 = RSP_ADD32(r23, 0X1);
     // andi        $2, $13, 0x2
     r2 = r13 & 0X2;
-    // beq         $2, $zero, L_138C
+    // beq         $2, $zero, L_140C
     if (r2 == 0) {
         // addi        $2, $20, 0x0
         r2 = RSP_ADD32(r20, 0X0);
-        goto L_138C;
-    }
-L_1384:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1384;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1384 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
+        goto L_140C;
     }
     // addi        $2, $20, 0x0
     r2 = RSP_ADD32(r20, 0X0);
     // lw          $2, 0xE($zero)
     r2 = RSP_MEM_W_LOAD(0XE, 0);
-L_138C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x138C;
+L_140C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x140C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x138C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x140C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1181,11 +1346,11 @@ L_138C:
     }
     // mfc0        $13, SP_SEMAPHORE
     r13 = 0;
-L_1390:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1390;
+L_1410:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1410;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1390 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1410 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1194,21 +1359,21 @@ L_1390:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $13, $zero, L_1390
+    // bne         $13, $zero, L_1410
     if (r13 != 0) {
         // mfc0        $13, SP_SEMAPHORE
         r13 = 0;
-        goto L_1390;
+        goto L_1410;
     }
     // mfc0        $13, SP_SEMAPHORE
     r13 = 0;
     // mfc0        $13, SP_DMA_FULL
     r13 = 0;
-L_139C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x139C;
+L_141C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x141C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x139C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x141C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1217,11 +1382,11 @@ L_139C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $13, $zero, L_139C
+    // bne         $13, $zero, L_141C
     if (r13 != 0) {
         // mfc0        $13, SP_DMA_FULL
         r13 = 0;
-        goto L_139C;
+        goto L_141C;
     }
     // mfc0        $13, SP_DMA_FULL
     r13 = 0;
@@ -1245,11 +1410,11 @@ L_139C:
     rsp.LDV<8>(rsp.vpu.r[23], r19, 0X1);
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_13CC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x13CC;
+L_144C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x144C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x13CC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x144C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1258,11 +1423,11 @@ L_13CC:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_13CC
+    // bne         $5, $zero, L_144C
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_13CC;
+        goto L_144C;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -1273,11 +1438,11 @@ L_13CC:
     goto L_1484;
     // lqv         $v27[0], 0x10($1)
     rsp.LQV<0>(rsp.vpu.r[27], r1, 0X1);
-L_13E0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x13E0;
+L_1460:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1460;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x13E0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1460 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1304,11 +1469,24 @@ L_13E0:
     rsp.SQV<0>(rsp.vpu.r[27], r1, 0X0);
     // sqv         $v27[0], 0x10($1)
     rsp.SQV<0>(rsp.vpu.r[27], r1, 0X1);
-    // beq         $21, $zero, L_15B4
+L_1484:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1484;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1484 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // beq         $21, $zero, L_1634
     if (r21 == 0) {
         // addi        $1, $1, 0x20
         r1 = RSP_ADD32(r1, 0X20);
-        goto L_15B4;
+        goto L_1634;
     }
     // addi        $1, $1, 0x20
     r1 = RSP_ADD32(r1, 0X20);
@@ -1372,30 +1550,17 @@ L_13E0:
     rsp.LRV<0>(rsp.vpu.r[15], r16, 0X2);
     // addi        $16, $16, -0x2
     r16 = RSP_ADD32(r16, -0X2);
-L_1484:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1484;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1484 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // lrv         $v14[0], 0x20($16)
     rsp.LRV<0>(rsp.vpu.r[14], r16, 0X2);
     // addi        $16, $16, -0x2
     r16 = RSP_ADD32(r16, -0X2);
     // lrv         $v13[0], 0x20($16)
     rsp.LRV<0>(rsp.vpu.r[13], r16, 0X2);
-L_1490:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1490;
+L_1510:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1510;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1490 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1510 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1422,11 +1587,11 @@ L_1490:
     rsp.VMADN<0>(rsp.vpu.r[29], rsp.vpu.r[7], rsp.vpu.r[23]);
     // addi        $13, $zero, 0xC
     r13 = RSP_ADD32(0, 0XC);
-    // blez        $17, L_14C4
+    // blez        $17, L_1544
     if (RSP_SIGNED(r17) <= 0) {
         // andi        $14, $10, 0xF
         r14 = r10 & 0XF;
-        goto L_14C4;
+        goto L_1544;
     }
     // andi        $14, $10, 0xF
     r14 = r10 & 0XF;
@@ -1434,11 +1599,11 @@ L_1490:
     rsp.VMUDM<8>(rsp.vpu.r[30], rsp.vpu.r[30], rsp.vpu.r[22]);
     // vmudm       $v29, $v29, $v22[0]
     rsp.VMUDM<8>(rsp.vpu.r[29], rsp.vpu.r[29], rsp.vpu.r[22]);
-L_14C4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x14C4;
+L_1544:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1544;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x14C4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1544 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1563,19 +1728,19 @@ L_14C4:
     rsp.SQV<0>(rsp.vpu.r[28], r1, 0X0);
     // addi        $1, $1, 0x20
     r1 = RSP_ADD32(r1, 0X20);
-    // bgtz        $21, L_1490
+    // bgtz        $21, L_1510
     if (RSP_SIGNED(r21) > 0) {
         // sqv         $v27[0], 0x7F0($1)
         rsp.SQV<0>(rsp.vpu.r[27], r1, -0X1);
-        goto L_1490;
+        goto L_1510;
     }
     // sqv         $v27[0], 0x7F0($1)
     rsp.SQV<0>(rsp.vpu.r[27], r1, -0X1);
-L_15B4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x15B4;
+L_1634:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1634;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x15B4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1634 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1587,17 +1752,17 @@ L_15B4:
     // addi        $1, $1, -0x20
     r1 = RSP_ADD32(r1, -0X20);
     // jal         0x1174
-    r31 = 0x15C0;
+    r31 = 0x1640;
     // addi        $2, $20, 0x0
     r2 = RSP_ADD32(r20, 0X0);
     goto L_1174;
     // addi        $2, $20, 0x0
     r2 = RSP_ADD32(r20, 0X0);
-L_15C0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x15C0;
+L_1640:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1640;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x15C0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1640 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1610,11 +1775,11 @@ L_15C0:
     r30 = RSP_ADD32(r30, -0X8);
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_15C8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x15C8;
+L_1648:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1648;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x15C8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1648 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1623,11 +1788,11 @@ L_15C8:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_15C8
+    // bne         $5, $zero, L_1648
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_15C8;
+        goto L_1648;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -1641,21 +1806,21 @@ L_15C8:
     r20 = RSP_ADD32(0, 0X3F0);
     // vxor        $v21, $v21, $v21
     rsp.VXOR<0>(rsp.vpu.r[21], rsp.vpu.r[21], rsp.vpu.r[21]);
-    // beq         $19, $zero, L_15F0
+    // beq         $19, $zero, L_1670
     if (r19 == 0) {
         // addi        $23, $zero, 0x4F0
         r23 = RSP_ADD32(0, 0X4F0);
-        goto L_15F0;
+        goto L_1670;
     }
     // addi        $23, $zero, 0x4F0
     r23 = RSP_ADD32(0, 0X4F0);
     // addi        $23, $zero, 0x660
     r23 = RSP_ADD32(0, 0X660);
-L_15F0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x15F0;
+L_1670:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1670;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x15F0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1670 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1704,11 +1869,11 @@ L_15F0:
     r19 = S32(U32(r26) >> 18);
     // andi        $19, $19, 0x1
     r19 = r19 & 0X1;
-    // bgtz        $19, L_16C0
+    // bgtz        $19, L_1740
     if (RSP_SIGNED(r19) > 0) {
         // sqv         $v20[0], 0x10($20)
         rsp.SQV<0>(rsp.vpu.r[20], r20, 0X1);
-        goto L_16C0;
+        goto L_1740;
     }
     // sqv         $v20[0], 0x10($20)
     rsp.SQV<0>(rsp.vpu.r[20], r20, 0X1);
@@ -1716,11 +1881,11 @@ L_15F0:
     r1 = RSP_ADD32(r24, 0X0);
     // mfc0        $19, SP_SEMAPHORE
     r19 = 0;
-L_1650:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1650;
+L_16D0:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x16D0;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1650 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x16D0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1729,21 +1894,21 @@ L_1650:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $19, $zero, L_1650
+    // bne         $19, $zero, L_16D0
     if (r19 != 0) {
         // mfc0        $19, SP_SEMAPHORE
         r19 = 0;
-        goto L_1650;
+        goto L_16D0;
     }
     // mfc0        $19, SP_SEMAPHORE
     r19 = 0;
     // mfc0        $19, SP_DMA_FULL
     r19 = 0;
-L_165C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x165C;
+L_16DC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x16DC;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x165C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x16DC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1752,11 +1917,11 @@ L_165C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $19, $zero, L_165C
+    // bne         $19, $zero, L_16DC
     if (r19 != 0) {
         // mfc0        $19, SP_DMA_FULL
         r19 = 0;
-        goto L_165C;
+        goto L_16DC;
     }
     // mfc0        $19, SP_DMA_FULL
     r19 = 0;
@@ -1796,11 +1961,11 @@ L_165C:
     rsp.LRV<0>(rsp.vpu.r[21], r20, 0X2);
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_16AC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x16AC;
+L_172C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x172C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x16AC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x172C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1809,11 +1974,11 @@ L_16AC:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_16AC
+    // bne         $5, $zero, L_172C
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_16AC;
+        goto L_172C;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -1824,11 +1989,11 @@ L_16AC:
     goto L_177C;
     // ldv         $v30[8], 0x0($1)
     rsp.LDV<8>(rsp.vpu.r[30], r1, 0X0);
-L_16C0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x16C0;
+L_1740:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1740;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x16C0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1740 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1867,13 +2032,26 @@ L_16C0:
     r20 = RSP_ADD32(r20, -0X2);
     // lrv         $v21[0], 0x20($20)
     rsp.LRV<0>(rsp.vpu.r[21], r20, 0X2);
-    // lqv         $v31[0], 0x0($23)
-    rsp.LQV<0>(rsp.vpu.r[31], r23, 0X0);
-L_1700:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1700;
+L_177C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x177C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1700 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x177C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // lqv         $v31[0], 0x0($23)
+    rsp.LQV<0>(rsp.vpu.r[31], r23, 0X0);
+L_1780:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1780;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1780 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1914,28 +2092,28 @@ L_1700:
     rsp.VMUDN<8>(rsp.vpu.r[20], rsp.vpu.r[29], rsp.vpu.r[18]);
     // vmadh       $v30, $v30, $v18[0]
     rsp.VMADH<8>(rsp.vpu.r[30], rsp.vpu.r[30], rsp.vpu.r[18]);
-    // bgtz        $22, L_1700
+    // bgtz        $22, L_1780
     if (RSP_SIGNED(r22) > 0) {
         // addi        $23, $23, 0x10
         r23 = RSP_ADD32(r23, 0X10);
-        goto L_1700;
+        goto L_1780;
     }
     // addi        $23, $23, 0x10
     r23 = RSP_ADD32(r23, 0X10);
     // addi        $1, $23, -0x8
     r1 = RSP_ADD32(r23, -0X8);
     // jal         0x1174
-    r31 = 0x1754;
+    r31 = 0x17D4;
     // sqv         $v30[0], 0x7F0($23)
     rsp.SQV<0>(rsp.vpu.r[30], r23, -0X1);
     goto L_1174;
     // sqv         $v30[0], 0x7F0($23)
     rsp.SQV<0>(rsp.vpu.r[30], r23, -0X1);
-L_1754:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1754;
+L_17D4:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x17D4;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1754 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x17D4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1948,11 +2126,11 @@ L_1754:
     r30 = RSP_ADD32(r30, -0X8);
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_175C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x175C;
+L_17DC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x17DC;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x175C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x17DC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -1961,11 +2139,11 @@ L_175C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_175C
+    // bne         $5, $zero, L_17DC
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_175C;
+        goto L_17DC;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -1973,6 +2151,19 @@ L_175C:
     // mtc0        $zero, SP_SEMAPHORE
     goto L_10EC;
     // mtc0        $zero, SP_SEMAPHORE
+L_17EC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x17EC;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x17EC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // sll         $2, $26, 8
     r2 = S32(r26) << 8;
     // vxor        $v23, $v23, $v23
@@ -1981,38 +2172,25 @@ L_175C:
     r2 = S32(U32(r2) >> 8);
     // addi        $2, $2, 0x0
     r2 = RSP_ADD32(r2, 0X0);
-L_177C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x177C;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x177C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // addi        $3, $zero, 0xF
     r3 = RSP_ADD32(0, 0XF);
     // srl         $21, $25, 30
     r21 = S32(U32(r25) >> 30);
-    // bgtz        $21, L_17E0
+    // bgtz        $21, L_1860
     if (RSP_SIGNED(r21) > 0) {
         // addi        $1, $24, 0x0
         r1 = RSP_ADD32(r24, 0X0);
-        goto L_17E0;
+        goto L_1860;
     }
     // addi        $1, $24, 0x0
     r1 = RSP_ADD32(r24, 0X0);
     // mfc0        $4, SP_SEMAPHORE
     r4 = 0;
-L_1790:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1790;
+L_1810:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1810;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1790 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1810 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2021,21 +2199,21 @@ L_1790:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $4, $zero, L_1790
+    // bne         $4, $zero, L_1810
     if (r4 != 0) {
         // mfc0        $4, SP_SEMAPHORE
         r4 = 0;
-        goto L_1790;
+        goto L_1810;
     }
     // mfc0        $4, SP_SEMAPHORE
     r4 = 0;
     // mfc0        $4, SP_DMA_FULL
     r4 = 0;
-L_179C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x179C;
+L_181C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x181C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x179C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x181C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2044,11 +2222,11 @@ L_179C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $4, $zero, L_179C
+    // bne         $4, $zero, L_181C
     if (r4 != 0) {
         // mfc0        $4, SP_DMA_FULL
         r4 = 0;
-        goto L_179C;
+        goto L_181C;
     }
     // mfc0        $4, SP_DMA_FULL
     r4 = 0;
@@ -2070,11 +2248,11 @@ L_179C:
     rsp.LQV<0>(rsp.vpu.r[25], 0, 0X3);
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_17C8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x17C8;
+L_1848:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1848;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x17C8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1848 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2083,11 +2261,11 @@ L_17C8:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_17C8
+    // bne         $5, $zero, L_1848
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_17C8;
+        goto L_1848;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -2100,11 +2278,11 @@ L_17C8:
     goto L_187C;
     // lsv         $v24[14], 0x8($24)
     rsp.LSV<14>(rsp.vpu.r[24], r24, 0X4);
-L_17E0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x17E0;
+L_1860:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1860;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x17E0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1860 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2119,19 +2297,6 @@ L_17E0:
     r20 = r20 & 0XFFF;
     // addi        $20, $20, 0x4E8
     r20 = RSP_ADD32(r20, 0X4E8);
-L_17EC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x17EC;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x17EC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // lqv         $v31[0], 0x40($zero)
     rsp.LQV<0>(rsp.vpu.r[31], 0, 0X4);
     // vxor        $v19, $v19, $v19
@@ -2140,6 +2305,19 @@ L_17EC:
     rsp.LQV<0>(rsp.vpu.r[25], 0, 0X3);
     // vxor        $v24, $v24, $v24
     rsp.VXOR<0>(rsp.vpu.r[24], rsp.vpu.r[24], rsp.vpu.r[24]);
+L_187C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x187C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x187C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // mtc2        $20, $v21[4]
     rsp.MTC2<4>(r20, rsp.vpu.r[21]);
     // addi        $4, $zero, 0xB0
@@ -2188,21 +2366,21 @@ L_17EC:
     r4 = r25 & 0X3;
     // vmudl       $v20, $v24, $v21[5]
     rsp.VMUDL<13>(rsp.vpu.r[20], rsp.vpu.r[24], rsp.vpu.r[21]);
-    // beq         $4, $zero, L_1868
+    // beq         $4, $zero, L_18E8
     if (r4 == 0) {
         // addi        $23, $zero, 0x4F0
         r23 = RSP_ADD32(0, 0X4F0);
-        goto L_1868;
+        goto L_18E8;
     }
     // addi        $23, $zero, 0x4F0
     r23 = RSP_ADD32(0, 0X4F0);
     // addi        $23, $zero, 0x660
     r23 = RSP_ADD32(0, 0X660);
-L_1868:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1868;
+L_18E8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x18E8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1868 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x18E8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2221,19 +2399,6 @@ L_1868:
     rsp.VMADN<11>(rsp.vpu.r[20], rsp.vpu.r[31], rsp.vpu.r[21]);
     // sqv         $v20[0], 0x7C0($zero)
     rsp.SQV<0>(rsp.vpu.r[20], 0, -0X4);
-L_187C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x187C;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x187C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // lh          $21, 0xFB0($zero)
     r21 = RSP_MEM_H_LOAD(0XFB0, 0);
     // lh          $13, 0xFC0($zero)
@@ -2266,6 +2431,19 @@ L_187C:
     r14 = RSP_MEM_H_LOAD(0XFBE, 0);
     // lh          $6, 0xFCE($zero)
     r6 = RSP_MEM_H_LOAD(0XFCE, 0);
+L_193C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x193C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x193C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // ldv         $v19[0], 0x0($21)
     rsp.LDV<0>(rsp.vpu.r[19], r21, 0X0);
     // vmudm       $v24, $v31, $v24[7]
@@ -2330,19 +2508,6 @@ L_187C:
     r21 = RSP_MEM_H_LOAD(0XFB0, 0);
     // lh          $13, 0xFC0($zero)
     r13 = RSP_MEM_H_LOAD(0XFC0, 0);
-L_193C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x193C;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x193C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // vmulf       $v8, $v13, $v12
     rsp.VMULF<0>(rsp.vpu.r[8], rsp.vpu.r[13], rsp.vpu.r[12]);
     // lh          $17, 0xFB8($zero)
@@ -2399,11 +2564,11 @@ L_193C:
     r6 = RSP_MEM_H_LOAD(0XFCE, 0);
     // addi        $22, $22, -0x10
     r22 = RSP_ADD32(r22, -0X10);
-    // blez        $22, L_19BC
+    // blez        $22, L_1A3C
     if (RSP_SIGNED(r22) <= 0) {
         // sqv         $v7[0], 0x0($23)
         rsp.SQV<0>(rsp.vpu.r[7], r23, 0X0);
-        goto L_19BC;
+        goto L_1A3C;
     }
     // sqv         $v7[0], 0x0($23)
     rsp.SQV<0>(rsp.vpu.r[7], r23, 0X0);
@@ -2413,11 +2578,11 @@ L_193C:
     goto L_193C;
     // addi        $23, $23, 0x10
     r23 = RSP_ADD32(r23, 0X10);
-L_19BC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x19BC;
+L_1A3C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A3C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x19BC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A3C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2431,17 +2596,17 @@ L_19BC:
     // ssv         $v24[0], 0x8($24)
     rsp.SSV<0>(rsp.vpu.r[24], r24, 0X4);
     // jal         0x1174
-    r31 = 0x19CC;
+    r31 = 0x1A4C;
     // sdv         $v19[0], 0x0($24)
     rsp.SDV<0>(rsp.vpu.r[19], r24, 0X0);
     goto L_1174;
     // sdv         $v19[0], 0x0($24)
     rsp.SDV<0>(rsp.vpu.r[19], r24, 0X0);
-L_19CC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x19CC;
+L_1A4C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A4C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x19CC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A4C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2454,11 +2619,11 @@ L_19CC:
     r30 = RSP_ADD32(r30, -0X8);
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_19D4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x19D4;
+L_1A54:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A54;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x19D4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A54 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2467,11 +2632,11 @@ L_19D4:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_19D4
+    // bne         $5, $zero, L_1A54
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_19D4;
+        goto L_1A54;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -2479,6 +2644,19 @@ L_19D4:
     // mtc0        $zero, SP_SEMAPHORE
     goto L_10EC;
     // mtc0        $zero, SP_SEMAPHORE
+L_1A64:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A64;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A64 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // sll         $2, $25, 8
     r2 = S32(r25) << 8;
     // srl         $2, $2, 8
@@ -2497,26 +2675,26 @@ L_19D4:
     r14 = S32(U32(r26) >> 16);
     // andi        $15, $14, 0x1
     r15 = r14 & 0X1;
-    // bgtz        $15, L_1A38
+    // bgtz        $15, L_1AB8
     if (RSP_SIGNED(r15) > 0) {
         // addi        $1, $24, 0x0
         r1 = RSP_ADD32(r24, 0X0);
-        goto L_1A38;
+        goto L_1AB8;
     }
     // addi        $1, $24, 0x0
     r1 = RSP_ADD32(r24, 0X0);
     // jal         0x114C
-    r31 = 0x1A18;
+    r31 = 0x1A98;
     // addi        $3, $zero, 0x4F
     r3 = RSP_ADD32(0, 0X4F);
     goto L_114C;
     // addi        $3, $zero, 0x4F
     r3 = RSP_ADD32(0, 0X4F);
-L_1A18:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A18;
+L_1A98:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A98;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A18 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A98 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2527,11 +2705,11 @@ L_1A18:
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_1A1C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A1C;
+L_1A9C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A9C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A1C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A9C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2540,11 +2718,11 @@ L_1A1C:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_1A1C
+    // bne         $5, $zero, L_1A9C
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_1A1C;
+        goto L_1A9C;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -2557,11 +2735,11 @@ L_1A1C:
     rsp.LQV<0>(rsp.vpu.r[18], r24, 0X2);
     // lqv         $v19[0], 0x30($24)
     rsp.LQV<0>(rsp.vpu.r[19], r24, 0X3);
-L_1A38:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A38;
+L_1AB8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1AB8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A38 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1AB8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2586,29 +2764,16 @@ L_1A38:
     r17 = RSP_ADD32(0, 0X170);
     // mfc2        $22, $v24[8]
     rsp.MFC2<8>(r22, rsp.vpu.r[24]);
-    // beq         $15, $zero, L_1B28
+    // beq         $15, $zero, L_1BA8
     if (r15 == 0) {
         // mfc2        $23, $v24[2]
         rsp.MFC2<2>(r23, rsp.vpu.r[24]);
-        goto L_1B28;
+        goto L_1BA8;
     }
     // mfc2        $23, $v24[2]
     rsp.MFC2<2>(r23, rsp.vpu.r[24]);
     // addi        $3, $zero, 0x4F
     r3 = RSP_ADD32(0, 0X4F);
-L_1A64:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1A64;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1A64 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // vxor        $v20, $v20, $v20
     rsp.VXOR<0>(rsp.vpu.r[20], rsp.vpu.r[20], rsp.vpu.r[20]);
     // lsv         $v20[14], 0x50($24)
@@ -2627,6 +2792,19 @@ L_1A64:
     rsp.LQV<0>(rsp.vpu.r[29], r21, 0X0);
     // vmadn       $v23, $v30, $v24[1]
     rsp.VMADN<9>(rsp.vpu.r[23], rsp.vpu.r[30], rsp.vpu.r[24]);
+L_1B08:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B08;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B08 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // lqv         $v27[0], 0x0($19)
     rsp.LQV<0>(rsp.vpu.r[27], r19, 0X0);
     // vmadh       $v20, $v31, $v20[7]
@@ -2635,11 +2813,11 @@ L_1A64:
     rsp.LQV<0>(rsp.vpu.r[28], r20, 0X0);
     // vmadn       $v21, $v31, $v0[0]
     rsp.VMADN<8>(rsp.vpu.r[21], rsp.vpu.r[31], rsp.vpu.r[0]);
-    // bgez        $23, L_1AA8
+    // bgez        $23, L_1B28
     if (RSP_SIGNED(r23) >= 0) {
         // vxor        $v19, $v19, $v19
         rsp.VXOR<0>(rsp.vpu.r[19], rsp.vpu.r[19], rsp.vpu.r[19]);
-        goto L_1AA8;
+        goto L_1B28;
     }
     // vxor        $v19, $v19, $v19
     rsp.VXOR<0>(rsp.vpu.r[19], rsp.vpu.r[19], rsp.vpu.r[19]);
@@ -2649,11 +2827,11 @@ L_1A64:
     goto L_1B2C;
     // vge         $v20, $v20, $v24[0]
     rsp.VGE<8>(rsp.vpu.r[20], rsp.vpu.r[20], rsp.vpu.r[24]);
-L_1AA8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1AA8;
+L_1B28:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B28;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1AA8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B28 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2664,8 +2842,34 @@ L_1AA8:
     }
     // vlt         $v20, $v20, $v24[0]
     rsp.VLT<8>(rsp.vpu.r[20], rsp.vpu.r[20], rsp.vpu.r[24]);
+L_1B2C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B2C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B2C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // vmudl       $v23, $v30, $v24[5]
     rsp.VMUDL<13>(rsp.vpu.r[23], rsp.vpu.r[30], rsp.vpu.r[24]);
+L_1B30:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B30;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B30 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // lqv         $v26[0], 0x0($18)
     rsp.LQV<0>(rsp.vpu.r[26], r18, 0X0);
     // vmadn       $v23, $v30, $v24[4]
@@ -2680,11 +2884,11 @@ L_1AA8:
     rsp.VMADN<8>(rsp.vpu.r[19], rsp.vpu.r[31], rsp.vpu.r[0]);
     // vmulf       $v16, $v20, $v24[6]
     rsp.VMULF<14>(rsp.vpu.r[16], rsp.vpu.r[20], rsp.vpu.r[24]);
-    // bgez        $22, L_1ADC
+    // bgez        $22, L_1B5C
     if (RSP_SIGNED(r22) >= 0) {
         // vmulf       $v15, $v20, $v24[7]
         rsp.VMULF<15>(rsp.vpu.r[15], rsp.vpu.r[20], rsp.vpu.r[24]);
-        goto L_1ADC;
+        goto L_1B5C;
     }
     // vmulf       $v15, $v20, $v24[7]
     rsp.VMULF<15>(rsp.vpu.r[15], rsp.vpu.r[20], rsp.vpu.r[24]);
@@ -2692,13 +2896,26 @@ L_1AA8:
     // vge         $v18, $v18, $v24[3]
     rsp.VGE<11>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
     goto L_1B60;
-    // vge         $v18, $v18, $v24[3]
-    rsp.VGE<11>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
-L_1ADC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1ADC;
+L_1B58:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B58;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1ADC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B58 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
+    // vge         $v18, $v18, $v24[3]
+    rsp.VGE<11>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
+L_1B5C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B5C;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B5C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2709,6 +2926,19 @@ L_1ADC:
     }
     // vlt         $v18, $v18, $v24[3]
     rsp.VLT<11>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
+L_1B60:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B60;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B60 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // vmulf       $v29, $v29, $v10[5]
     rsp.VMULF<13>(rsp.vpu.r[29], rsp.vpu.r[29], rsp.vpu.r[10]);
     // vmacf       $v29, $v17, $v16
@@ -2729,19 +2959,6 @@ L_1ADC:
     r21 = RSP_ADD32(r21, 0X10);
     // vmacf       $v28, $v17, $v16
     rsp.VMACF<0>(rsp.vpu.r[28], rsp.vpu.r[17], rsp.vpu.r[16]);
-L_1B08:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B08;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B08 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // sqv         $v27[0], 0x0($19)
     rsp.SQV<0>(rsp.vpu.r[27], r19, 0X0);
     // vmulf       $v26, $v26, $v10[5]
@@ -2758,11 +2975,11 @@ L_1B08:
     rsp.SQV<0>(rsp.vpu.r[26], r18, 0X0);
     // addi        $18, $18, 0x10
     r18 = RSP_ADD32(r18, 0X10);
-L_1B28:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B28;
+L_1BA8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BA8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B28 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BA8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2773,26 +2990,13 @@ L_1B28:
     }
     // vaddc       $v21, $v21, $v24[2]
     rsp.VADDC<10>(rsp.vpu.r[21], rsp.vpu.r[21], rsp.vpu.r[24]);
-L_1B2C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B2C;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B2C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // vadd        $v20, $v20, $v24[1]
     rsp.VADD<9>(rsp.vpu.r[20], rsp.vpu.r[20], rsp.vpu.r[24]);
-L_1B30:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B30;
+L_1BB0:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BB0;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B30 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BB0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2807,11 +3011,11 @@ L_1B30:
     rsp.VADDC<13>(rsp.vpu.r[19], rsp.vpu.r[19], rsp.vpu.r[24]);
     // lqv         $v17[0], 0x0($16)
     rsp.LQV<0>(rsp.vpu.r[17], r16, 0X0);
-    // bgez        $23, L_1B4C
+    // bgez        $23, L_1BCC
     if (RSP_SIGNED(r23) >= 0) {
         // vadd        $v18, $v18, $v24[4]
         rsp.VADD<12>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
-        goto L_1B4C;
+        goto L_1BCC;
     }
     // vadd        $v18, $v18, $v24[4]
     rsp.VADD<12>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
@@ -2821,11 +3025,11 @@ L_1B30:
     goto L_1BD0;
     // vge         $v20, $v20, $v24[0]
     rsp.VGE<8>(rsp.vpu.r[20], rsp.vpu.r[20], rsp.vpu.r[24]);
-L_1B4C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B4C;
+L_1BCC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BCC;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B4C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BCC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2836,19 +3040,11 @@ L_1B4C:
     }
     // vlt         $v20, $v20, $v24[0]
     rsp.VLT<8>(rsp.vpu.r[20], rsp.vpu.r[20], rsp.vpu.r[24]);
-    // bgez        $22, L_1B60
-    if (RSP_SIGNED(r22) >= 0) {
-        // lqv         $v27[0], 0x0($19)
-        rsp.LQV<0>(rsp.vpu.r[27], r19, 0X0);
-        goto L_1B60;
-    }
-    // lqv         $v27[0], 0x0($19)
-    rsp.LQV<0>(rsp.vpu.r[27], r19, 0X0);
-L_1B58:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B58;
+L_1BD0:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BD0;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B58 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BD0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2857,17 +3053,25 @@ L_1B58:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
+    // bgez        $22, L_1BE0
+    if (RSP_SIGNED(r22) >= 0) {
+        // lqv         $v27[0], 0x0($19)
+        rsp.LQV<0>(rsp.vpu.r[27], r19, 0X0);
+        goto L_1BE0;
+    }
+    // lqv         $v27[0], 0x0($19)
+    rsp.LQV<0>(rsp.vpu.r[27], r19, 0X0);
     // j           L_1BE4
     // vge         $v18, $v18, $v24[3]
     rsp.VGE<11>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
     goto L_1BE4;
     // vge         $v18, $v18, $v24[3]
     rsp.VGE<11>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
-L_1B60:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1B60;
+L_1BE0:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BE0;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1B60 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BE0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2878,6 +3082,19 @@ L_1B60:
     }
     // vlt         $v18, $v18, $v24[3]
     rsp.VLT<11>(rsp.vpu.r[18], rsp.vpu.r[18], rsp.vpu.r[24]);
+L_1BE4:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BE4;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BE4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // vmulf       $v16, $v20, $v24[6]
     rsp.VMULF<14>(rsp.vpu.r[16], rsp.vpu.r[20], rsp.vpu.r[24]);
     // sqv         $v20[0], 0x0($24)
@@ -2916,19 +3133,6 @@ L_1B60:
     rsp.VMULF<15>(rsp.vpu.r[15], rsp.vpu.r[18], rsp.vpu.r[24]);
     // sqv         $v27[0], 0x0($19)
     rsp.SQV<0>(rsp.vpu.r[27], r19, 0X0);
-L_1BB0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BB0;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BB0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // vmulf       $v28, $v28, $v10[5]
     rsp.VMULF<13>(rsp.vpu.r[28], rsp.vpu.r[28], rsp.vpu.r[10]);
     // addi        $19, $19, 0x10
@@ -2943,24 +3147,11 @@ L_1BB0:
     rsp.SQV<0>(rsp.vpu.r[28], r20, 0X0);
     // addi        $20, $20, 0x10
     r20 = RSP_ADD32(r20, 0X10);
-    // blez        $17, L_1BDC
+    // blez        $17, L_1C5C
     if (RSP_SIGNED(r17) <= 0) {
         // sqv         $v26[0], 0x0($18)
         rsp.SQV<0>(rsp.vpu.r[26], r18, 0X0);
-        goto L_1BDC;
-    }
-L_1BD0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BD0;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BD0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
+        goto L_1C5C;
     }
     // sqv         $v26[0], 0x0($18)
     rsp.SQV<0>(rsp.vpu.r[26], r18, 0X0);
@@ -2970,11 +3161,11 @@ L_1BD0:
     goto L_1BB0;
     // addi        $18, $18, 0x10
     r18 = RSP_ADD32(r18, 0X10);
-L_1BDC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BDC;
+L_1C5C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1C5C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BDC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1C5C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -2987,31 +3178,18 @@ L_1BDC:
     rsp.SQV<0>(rsp.vpu.r[18], r24, 0X2);
     // sqv         $v19[0], 0x30($24)
     rsp.SQV<0>(rsp.vpu.r[19], r24, 0X3);
-L_1BE4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BE4;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BE4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // jal         0x1174
-    r31 = 0x1BEC;
+    r31 = 0x1C6C;
     // sqv         $v24[0], 0x40($24)
     rsp.SQV<0>(rsp.vpu.r[24], r24, 0X4);
     goto L_1174;
     // sqv         $v24[0], 0x40($24)
     rsp.SQV<0>(rsp.vpu.r[24], r24, 0X4);
-L_1BEC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BEC;
+L_1C6C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1C6C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BEC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1C6C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3022,11 +3200,11 @@ L_1BEC:
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
-L_1BF0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1BF0;
+L_1C70:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1C70;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1BF0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1C70 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3035,11 +3213,11 @@ L_1BF0:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // bne         $5, $zero, L_1BF0
+    // bne         $5, $zero, L_1C70
     if (r5 != 0) {
         // mfc0        $5, SP_DMA_BUSY
         r5 = 0;
-        goto L_1BF0;
+        goto L_1C70;
     }
     // mfc0        $5, SP_DMA_BUSY
     r5 = 0;
@@ -3050,6 +3228,19 @@ L_1BF0:
     goto L_10EC;
     // addi        $30, $30, -0x8
     r30 = RSP_ADD32(r30, -0X8);
+L_1C84:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1C84;
+    ctx->pc_trail_idx++;
+    if (++ctx->watchdog_count > 100000000ULL) {
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1C84 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        for (uint32_t i = 0; i < 32; i++) {
+            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
+            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
+        }
+        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
+            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
+        return RspExitReason::Watchdog;
+    }
     // lqv         $v31[0], 0x50($zero)
     rsp.LQV<0>(rsp.vpu.r[31], 0, 0X5);
     // andi        $22, $25, 0xFFFF
@@ -3068,11 +3259,11 @@ L_1BF0:
     rsp.MTC2<0>(r26, rsp.vpu.r[30]);
     // addi        $21, $zero, 0x170
     r21 = RSP_ADD32(0, 0X170);
-L_1C28:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1C28;
+L_1CA8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CA8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1C28 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CA8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3095,11 +3286,11 @@ L_1C28:
     rsp.LQV<0>(rsp.vpu.r[28], r22, 0X0);
     // lqv         $v29[0], 0x0($23)
     rsp.LQV<0>(rsp.vpu.r[29], r23, 0X0);
-    // bgtz        $21, L_1C28
+    // bgtz        $21, L_1CA8
     if (RSP_SIGNED(r21) > 0) {
         // sqv         $v27[0], 0x7F0($22)
         rsp.SQV<0>(rsp.vpu.r[27], r22, -0X1);
-        goto L_1C28;
+        goto L_1CA8;
     }
     // sqv         $v27[0], 0x7F0($22)
     rsp.SQV<0>(rsp.vpu.r[27], r22, -0X1);
@@ -3123,11 +3314,11 @@ L_1C28:
     r24 = RSP_MEM_W_LOAD(0X3C, r1);
     // andi        $22, $22, 0x1
     r22 = r22 & 0X1;
-    // beq         $22, $zero, L_1C98
+    // beq         $22, $zero, L_1D18
     if (r22 == 0) {
         // lqv         $v2[0], 0x20($zero)
         rsp.LQV<0>(rsp.vpu.r[2], 0, 0X2);
-        goto L_1C98;
+        goto L_1D18;
     }
     // lqv         $v2[0], 0x20($zero)
     rsp.LQV<0>(rsp.vpu.r[2], 0, 0X2);
@@ -3137,19 +3328,6 @@ L_1C28:
     r25 = RSP_MEM_W_LOAD(0X1E4, 0);
     // lw          $26, 0x1E8($zero)
     r26 = RSP_MEM_W_LOAD(0X1E8, 0);
-L_1C84:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1C84;
-    ctx->pc_trail_idx++;
-    if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1C84 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
-        for (uint32_t i = 0; i < 32; i++) {
-            uint32_t pos = (ctx->pc_trail_idx + i) & 31;
-            fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
-        }
-        fprintf(stderr, "[rsp watchdog] gprs: r1=%08X r2=%08X r3=%08X r25=%08X r26=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X jt=%08X dma_mem=%08X dma_dram=%08X\n",
-            ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
-        return RspExitReason::Watchdog;
-    }
     // lw          $9, 0x1EC($zero)
     r9 = RSP_MEM_W_LOAD(0X1EC, 0);
     // lw          $10, 0x1F0($zero)
@@ -3162,11 +3340,11 @@ L_1C84:
     goto L_1134;
     // lw          $12, 0x1F8($zero)
     r12 = RSP_MEM_W_LOAD(0X1F8, 0);
-L_1C98:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1C98;
+L_1D18:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D18;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1C98 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D18 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3182,17 +3360,17 @@ L_1C98:
     // addi        $28, $zero, 0x1E0
     r28 = RSP_ADD32(0, 0X1E0);
     // jal         0x1B08
-    r31 = 0x1CAC;
+    r31 = 0x1D2C;
     // addi        $29, $29, -0x1
     r29 = RSP_ADD32(r29, -0X1);
     goto L_1B08;
     // addi        $29, $29, -0x1
     r29 = RSP_ADD32(r29, -0X1);
-L_1CAC:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CAC;
+L_1D2C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D2C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CAC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D2C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3202,17 +3380,17 @@ L_1CAC:
         return RspExitReason::Watchdog;
     }
     // jal         0x1B58
-    r31 = 0x1CB4;
+    r31 = 0x1D34;
     // addi        $29, $zero, 0x7F
     r29 = RSP_ADD32(0, 0X7F);
     goto L_1B58;
     // addi        $29, $zero, 0x7F
     r29 = RSP_ADD32(0, 0X7F);
-L_1CB4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CB4;
+L_1D34:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D34;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CB4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D34 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3224,17 +3402,17 @@ L_1CB4:
     // lw          $27, 0x1EC($zero)
     r27 = RSP_MEM_W_LOAD(0X1EC, 0);
     // jal         0x1B08
-    r31 = 0x1CC0;
+    r31 = 0x1D40;
     // addi        $28, $zero, 0x60
     r28 = RSP_ADD32(0, 0X60);
     goto L_1B08;
     // addi        $28, $zero, 0x60
     r28 = RSP_ADD32(0, 0X60);
-L_1CC0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CC0;
+L_1D40:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D40;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CC0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D40 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3244,17 +3422,17 @@ L_1CC0:
         return RspExitReason::Watchdog;
     }
     // jal         0x1B58
-    r31 = 0x1CC8;
+    r31 = 0x1D48;
     // lw          $27, 0x1F0($zero)
     r27 = RSP_MEM_W_LOAD(0X1F0, 0);
     goto L_1B58;
     // lw          $27, 0x1F0($zero)
     r27 = RSP_MEM_W_LOAD(0X1F0, 0);
-L_1CC8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CC8;
+L_1D48:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D48;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CC8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D48 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3264,17 +3442,17 @@ L_1CC8:
         return RspExitReason::Watchdog;
     }
     // jal         0x1B08
-    r31 = 0x1CD0;
+    r31 = 0x1D50;
     // addi        $28, $zero, 0xE0
     r28 = RSP_ADD32(0, 0XE0);
     goto L_1B08;
     // addi        $28, $zero, 0xE0
     r28 = RSP_ADD32(0, 0XE0);
-L_1CD0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CD0;
+L_1D50:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D50;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CD0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D50 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3284,17 +3462,17 @@ L_1CD0:
         return RspExitReason::Watchdog;
     }
     // jal         0x1B58
-    r31 = 0x1CD8;
+    r31 = 0x1D58;
     // lw          $27, 0x1F4($zero)
     r27 = RSP_MEM_W_LOAD(0X1F4, 0);
     goto L_1B58;
     // lw          $27, 0x1F4($zero)
     r27 = RSP_MEM_W_LOAD(0X1F4, 0);
-L_1CD8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CD8;
+L_1D58:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D58;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CD8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D58 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3304,17 +3482,17 @@ L_1CD8:
         return RspExitReason::Watchdog;
     }
     // jal         0x1B08
-    r31 = 0x1CE0;
+    r31 = 0x1D60;
     // addi        $28, $zero, 0x160
     r28 = RSP_ADD32(0, 0X160);
     goto L_1B08;
     // addi        $28, $zero, 0x160
     r28 = RSP_ADD32(0, 0X160);
-L_1CE0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CE0;
+L_1D60:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D60;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CE0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D60 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3324,17 +3502,17 @@ L_1CE0:
         return RspExitReason::Watchdog;
     }
     // jal         0x1B58
-    r31 = 0x1CE8;
+    r31 = 0x1D68;
     // lw          $9, 0x1E8($zero)
     r9 = RSP_MEM_W_LOAD(0X1E8, 0);
     goto L_1B58;
     // lw          $9, 0x1E8($zero)
     r9 = RSP_MEM_W_LOAD(0X1E8, 0);
-L_1CE8:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1CE8;
+L_1D68:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D68;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1CE8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D68 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3345,11 +3523,11 @@ L_1CE8:
     }
     // lw          $25, 0x1E0($zero)
     r25 = RSP_MEM_W_LOAD(0X1E0, 0);
-    // bgtz        $9, L_1D04
+    // bgtz        $9, L_1D84
     if (RSP_SIGNED(r9) > 0) {
         // lw          $3, 0x1E4($zero)
         r3 = RSP_MEM_W_LOAD(0X1E4, 0);
-        goto L_1D04;
+        goto L_1D84;
     }
     // lw          $3, 0x1E4($zero)
     r3 = RSP_MEM_W_LOAD(0X1E4, 0);
@@ -3363,11 +3541,11 @@ L_1CE8:
     goto L_1130;
     // addi        $12, $zero, 0x200
     r12 = RSP_ADD32(0, 0X200);
-L_1D04:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D04;
+L_1D84:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D84;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D04 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D84 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3389,17 +3567,17 @@ L_1D04:
     // addi        $28, $zero, 0x1E0
     r28 = RSP_ADD32(0, 0X1E0);
     // jal         0x1B08
-    r31 = 0x1D24;
+    r31 = 0x1DA4;
     // add         $29, $zero, $10
     r29 = RSP_ADD32(0, r10);
     goto L_1B08;
     // add         $29, $zero, $10
     r29 = RSP_ADD32(0, r10);
-L_1D24:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D24;
+L_1DA4:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1DA4;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D24 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1DA4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3415,17 +3593,17 @@ L_1D24:
     // vxor        $v0, $v0, $v0
     rsp.VXOR<0>(rsp.vpu.r[0], rsp.vpu.r[0], rsp.vpu.r[0]);
     // jal         0x1B58
-    r31 = 0x1D38;
+    r31 = 0x1DB8;
     // add         $25, $25, $12
     r25 = RSP_ADD32(r25, r12);
     goto L_1B58;
     // add         $25, $25, $12
     r25 = RSP_ADD32(r25, r12);
-L_1D38:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D38;
+L_1DB8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1DB8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D38 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1DB8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3434,28 +3612,28 @@ L_1D38:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // beq         $2, $3, L_1D4C
+    // beq         $2, $3, L_1DCC
     if (r2 == r3) {
         // addi        $27, $zero, 0xBE0
         r27 = RSP_ADD32(0, 0XBE0);
-        goto L_1D4C;
+        goto L_1DCC;
     }
     // addi        $27, $zero, 0xBE0
     r27 = RSP_ADD32(0, 0XBE0);
     // addi        $28, $26, 0x0
     r28 = RSP_ADD32(r26, 0X0);
     // jal         0x1B30
-    r31 = 0x1D4C;
+    r31 = 0x1DCC;
     // add         $29, $zero, $11
     r29 = RSP_ADD32(0, r11);
     goto L_1B30;
     // add         $29, $zero, $11
     r29 = RSP_ADD32(0, r11);
-L_1D4C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D4C;
+L_1DCC:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1DCC;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D4C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1DCC after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3496,11 +3674,11 @@ L_1D4C:
     rsp.LQV<0>(rsp.vpu.r[23], r4, 0X7);
     // addi        $4, $4, 0x80
     r4 = RSP_ADD32(r4, 0X80);
-L_1D8C:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1D8C;
+L_1E0C:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1E0C;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1D8C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1E0C after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3527,11 +3705,11 @@ L_1D8C:
     rsp.LQV<0>(rsp.vpu.r[12], r6, 0X7);
     // addi        $7, $7, -0x1
     r7 = RSP_ADD32(r7, -0X1);
-L_1DB0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1DB0;
+L_1E30:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1E30;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1DB0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1E30 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3608,21 +3786,21 @@ L_1DB0:
     r4 = RSP_ADD32(r4, 0X80);
     // addi        $8, $8, -0x1
     r8 = RSP_ADD32(r8, -0X1);
-    // bgtz        $8, L_1DB0
+    // bgtz        $8, L_1E30
     if (RSP_SIGNED(r8) > 0) {
         // addi        $5, $5, 0x80
         r5 = RSP_ADD32(r5, 0X80);
-        goto L_1DB0;
+        goto L_1E30;
     }
     // addi        $5, $5, 0x80
     r5 = RSP_ADD32(r5, 0X80);
     // addi        $8, $zero, 0x1
     r8 = RSP_ADD32(0, 0X1);
-    // bgtz        $7, L_1D8C
+    // bgtz        $7, L_1E0C
     if (RSP_SIGNED(r7) > 0) {
         // addi        $6, $6, 0x80
         r6 = RSP_ADD32(r6, 0X80);
-        goto L_1D8C;
+        goto L_1E0C;
     }
     // addi        $6, $6, 0x80
     r6 = RSP_ADD32(r6, 0X80);
@@ -3648,11 +3826,11 @@ L_1DB0:
     r4 = RSP_ADD32(0, 0X560);
     // addi        $5, $zero, 0x860
     r5 = RSP_ADD32(0, 0X860);
-L_1E78:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1E78;
+L_1EF8:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1EF8;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1E78 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x1EF8 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3809,26 +3987,26 @@ L_1E78:
     rsp.SSV<14>(rsp.vpu.r[31], r5, 0X3F);
     // addi        $4, $4, 0x80
     r4 = RSP_ADD32(r4, 0X80);
-    // bgtz        $7, L_1E78
+    // bgtz        $7, L_1EF8
     if (RSP_SIGNED(r7) > 0) {
         // addi        $5, $5, 0x80
         r5 = RSP_ADD32(r5, 0X80);
-        goto L_1E78;
+        goto L_1EF8;
     }
     // addi        $5, $5, 0x80
     r5 = RSP_ADD32(r5, 0X80);
     // jal         0x1B58
-    r31 = 0x1FB0;
+    r31 = 0x2030;
     // add         $26, $26, $12
     r26 = RSP_ADD32(r26, r12);
     goto L_1B58;
     // add         $26, $26, $12
     r26 = RSP_ADD32(r26, r12);
-L_1FB0:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1FB0;
+L_2030:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x2030;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1FB0 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x2030 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3837,28 +4015,28 @@ L_1FB0:
             ctx->r1, ctx->r2, ctx->r3, ctx->r25, ctx->r26, ctx->r27, ctx->r28, ctx->r29, ctx->r30, ctx->r31, ctx->jump_target, ctx->dma_mem_address, ctx->dma_dram_address);
         return RspExitReason::Watchdog;
     }
-    // beq         $3, $zero, L_1FC4
+    // beq         $3, $zero, L_1044
     if (r3 == 0) {
         // addi        $27, $25, 0x0
         r27 = RSP_ADD32(r25, 0X0);
-        goto L_1FC4;
+        goto L_1044;
     }
     // addi        $27, $25, 0x0
     r27 = RSP_ADD32(r25, 0X0);
     // addi        $28, $zero, 0x1E0
     r28 = RSP_ADD32(0, 0X1E0);
     // jal         0x1B08
-    r31 = 0x1FC4;
+    r31 = 0x2044;
     // add         $29, $zero, $10
     r29 = RSP_ADD32(0, r10);
     goto L_1B08;
     // add         $29, $zero, $10
     r29 = RSP_ADD32(0, r10);
-L_1FC4:
-    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x1FC4;
+L_2044:
+    ctx->pc_trail[ctx->pc_trail_idx & 31] = 0x2044;
     ctx->pc_trail_idx++;
     if (++ctx->watchdog_count > 100000000ULL) {
-        fprintf(stderr, "[rsp watchdog] hung at PC 0x1FC4 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
+        fprintf(stderr, "[rsp watchdog] hung at PC 0x2044 after %llu transitions; PC trail (oldest..newest):\n", (unsigned long long)ctx->watchdog_count);
         for (uint32_t i = 0; i < 32; i++) {
             uint32_t pos = (ctx->pc_trail_idx + i) & 31;
             fprintf(stderr, "  [%2u] PC=0x%04X\n", i, ctx->pc_trail[pos]);
@@ -3900,32 +4078,35 @@ L_1FC4:
     return RspExitReason::ImemOverrun;
 do_indirect_jump:
     switch ((jump_target | 0x1000) & 0X1FFF) { 
-        case 0x1CAC: goto L_1CAC;
-        case 0x1038: goto L_1038;
-        case 0x1CC0: goto L_1CC0;
-        case 0x1084: goto L_1084;
-        case 0x10C4: goto L_10C4;
-        case 0x119C: goto L_119C;
-        case 0x15C0: goto L_15C0;
-        case 0x11E4: goto L_11E4;
-        case 0x19CC: goto L_19CC;
-        case 0x1174: goto L_1174;
-        case 0x11B4: goto L_11B4;
-        case 0x1754: goto L_1754;
+        case 0x107C: goto L_107C;
+        case 0x2044: goto L_2044;
+        case 0x1034: goto L_1034;
+        case 0x1C6C: goto L_1C6C;
+        case 0x10B8: goto L_10B8;
+        case 0x11F4: goto L_11F4;
+        case 0x1D40: goto L_1D40;
+        case 0x1104: goto L_1104;
+        case 0x1144: goto L_1144;
+        case 0x1264: goto L_1264;
+        case 0x1A4C: goto L_1A4C;
+        case 0x1234: goto L_1234;
+        case 0x1640: goto L_1640;
+        case 0x17D4: goto L_17D4;
         case 0x12B0: goto L_12B0;
-        case 0x1A18: goto L_1A18;
-        case 0x1BEC: goto L_1BEC;
-        case 0x1CB4: goto L_1CB4;
-        case 0x1CC8: goto L_1CC8;
-        case 0x1CD0: goto L_1CD0;
-        case 0x1CD8: goto L_1CD8;
-        case 0x1CE0: goto L_1CE0;
-        case 0x1CE8: goto L_1CE8;
-        case 0x1D24: goto L_1D24;
-        case 0x1D38: goto L_1D38;
-        case 0x1D4C: goto L_1D4C;
-        case 0x1FB0: goto L_1FB0;
-        case 0x1FC4: goto L_1FC4;
+        case 0x1A98: goto L_1A98;
+        case 0x1D2C: goto L_1D2C;
+        case 0x1D34: goto L_1D34;
+        case 0x1D48: goto L_1D48;
+        case 0x1D50: goto L_1D50;
+        case 0x1D58: goto L_1D58;
+        case 0x1D60: goto L_1D60;
+        case 0x119C: goto L_119C;
+        case 0x1D68: goto L_1D68;
+        case 0x1DA4: goto L_1DA4;
+        case 0x1DB8: goto L_1DB8;
+        case 0x1DCC: goto L_1DCC;
+        case 0x1C84: goto L_1C84;
+        case 0x2030: goto L_2030;
         case 0x10EC: goto L_10EC;
         case 0x139C: goto L_139C;
         case 0x127C: goto L_127C;
@@ -3935,11 +4116,9 @@ do_indirect_jump:
         case 0x1248: goto L_1248;
         case 0x1208: goto L_1208;
         case 0x1348: goto L_1348;
-        case 0x1C84: goto L_1C84;
         case 0x12D4: goto L_12D4;
         case 0x1384: goto L_1384;
         case 0x10A0: goto L_10A0;
-        case 0x1144: goto L_1144;
     }
     printf("Unhandled jump target 0x%04X in microcode aspMain, coming from [%s:%d]\n", jump_target, debug_file, debug_line);
     printf("Register dump: r0  = %08X r1  = %08X r2  = %08X r3  = %08X r4  = %08X r5  = %08X r6  = %08X r7  = %08X\n"
