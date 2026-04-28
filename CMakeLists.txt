@@ -40,6 +40,13 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
 
 target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/rt64/src)
 
+# ---- ares-bridge (oracle for divergence diff against Ares) -----------------
+# The ares-bridge subdir is added transitively by librecomp's
+# add_subdirectory of N64Recomp, so we don't need our own
+# add_subdirectory here. Pass -DWITH_ARES_BRIDGE=ON to opt into the
+# real Ares-backed implementation (the placeholder is always built).
+# We just declare the include path + link dependency below.
+
 # ---- RecompiledFuncs library (the recompiled game C) -----------------------
 add_library(RecompiledFuncs STATIC)
 target_compile_options(RecompiledFuncs PRIVATE
@@ -61,6 +68,7 @@ add_executable(PokemonStadiumRecomp
     src/main/main.cpp
     src/main/rt64_render_context.cpp
     src/main/debug_server.cpp
+    src/main/ares_worker.cpp
     src/main/register_overlays.cpp
     src/main/rsp_aspmain_hook.cpp
     extras.c
@@ -143,4 +151,20 @@ target_link_libraries(PokemonStadiumRecomp PRIVATE
     librecomp
     ultramodern
     rt64
+    ares_bridge
+)
+
+# Force-include all of ares_bridge.lib so the static initializer that
+# installs the RSP per-instruction hook (HookInstaller in
+# ares_rsp_ring.cpp) is not dropped by /OPT:REF. Without this, lld-link
+# strips the unreferenced global and the hook never fires, leaving
+# ares_rsp_trace_count stuck at 0 even while Ares runs.
+if (MSVC)
+    target_link_options(PokemonStadiumRecomp PRIVATE
+        "/WHOLEARCHIVE:$<TARGET_FILE:ares_bridge>"
+    )
+endif()
+
+target_include_directories(PokemonStadiumRecomp PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/ares-bridge/include
 )

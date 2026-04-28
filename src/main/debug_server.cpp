@@ -28,15 +28,20 @@
 #include <winsock2.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "debug_server.h"
 #include "librecomp/ultra_trace.hpp"
+#include "librecomp/rsp.hpp"
+#include "ares_bridge.h"
+#include "ares_worker.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -374,6 +379,204 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"addr":)" + std::to_string(addr) +
                R"(,"n":)" + std::to_string(n) +
                R"(,"hex":")" + hex + R"("})";
+    }
+    // ---------------- Ares oracle bridge -----------------------------------
+    // The ares-bridge library is linked into the runner. These commands
+    // expose the oracle to external diff harnesses (tools/diff_aspmain.py).
+    // The bridge runs in this process; calls block the debug-server thread
+    // until the oracle returns. The runner's main thread is unaffected.
+    if (cmd == "ares_status") {
+        // Read every counter on the dedicated Ares thread so the trace
+        // ring's thread_local state is consistent with the writer.
+        return ares_worker::dispatch([]() -> std::string {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "{\"ok\":true,\"is_real\":%d,\"version\":\"%s\","
+                "\"trace_count\":%llu,\"trace_enabled\":%d,\"trace_boot_count\":%u}",
+                ares_bridge_is_real(),
+                ares_bridge_version() ? ares_bridge_version() : "?",
+                (unsigned long long)ares_rsp_trace_count(),
+                ares_rsp_trace_is_enabled(),
+                (unsigned)ares_rsp_trace_boot_count());
+            return std::string(buf);
+        });
+    }
+    if (cmd == "ares_init_oracle") {
+        // Args: {"rom_path": "..."}. ROM path is mandatory — caller picks
+        // the same baserom.z64 the runner is using.
+        std::string rom = get_str(line, "rom_path");
+        if (rom.empty()) return R"({"ok":false,"error":"missing rom_path"})";
+        return ares_worker::dispatch([&rom]() -> std::string {
+            ares_status_t s = ares_init(rom.c_str());
+            if (s != ARES_BRIDGE_OK && s != ARES_BRIDGE_ALREADY_INITIALIZED) {
+                char buf[160];
+                std::snprintf(buf, sizeof(buf),
+                    "{\"ok\":false,\"error\":\"ares_init failed\",\"status\":%d}", (int)s);
+                return std::string(buf);
+            }
+            ares_status_t r = ares_reset();
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                "{\"ok\":%s,\"init_status\":%d,\"reset_status\":%d}",
+                (r == ARES_BRIDGE_OK ? "true" : "false"), (int)s, (int)r);
+            return std::string(buf);
+        });
+    }
+    if (cmd == "ares_reset_oracle") {
+        return ares_worker::dispatch([]() -> std::string {
+            ares_status_t r = ares_reset();
+            char buf[96];
+            std::snprintf(buf, sizeof(buf),
+                "{\"ok\":%s,\"status\":%d}",
+                (r == ARES_BRIDGE_OK ? "true" : "false"), (int)r);
+            return std::string(buf);
+        });
+    }
+    if (cmd == "ares_step_frame") {
+        // Args: {"n": <count>}. Default 1, max 600 (~10s of emulated
+        // time at 60Hz — keeps the server thread responsive).
+        int n = get_int(line, "n", 1);
+        if (n < 1) n = 1;
+        if (n > 600) n = 600;
+        return ares_worker::dispatch([n]() -> std::string {
+            int done = 0;
+            ares_status_t last = ARES_BRIDGE_OK;
+            for (int i = 0; i < n; i++) {
+                last = ares_step_frame();
+                if (last != ARES_BRIDGE_OK) break;
+                done++;
+            }
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                "{\"ok\":%s,\"frames\":%d,\"status\":%d,\"trace_count\":%llu}",
+                (last == ARES_BRIDGE_OK ? "true" : "false"),
+                done, (int)last,
+                (unsigned long long)ares_rsp_trace_count());
+            return std::string(buf);
+        });
+    }
+    // CPU-side accessors (ares_read_pc, ares_read_cpu_register,
+    // ares_read_memory, ares_set_controller, ares_step_instruction) are
+    // intentionally NOT exposed yet — those bridge entry points are
+    // unimplemented in ares_core_glue.cpp (Phase 3+) and abort the
+    // process. The aspMain divergence diff is RSP-side, so the trace
+    // ring below has all the state we need; CPU accessors come online
+    // when Phase 3 lands.
+    if (cmd == "ares_rsp_trace_recent" || cmd == "ares_rsp_trace_boot" ||
+        cmd == "ares_rsp_trace_at_pc") {
+      return ares_worker::dispatch([&line, &cmd]() -> std::string {
+        // Three RSP trace queries share the same event-rendering tail.
+        //   ares_rsp_trace_recent {n}        → last n events from sliding ring
+        //   ares_rsp_trace_boot {start, n}   → slice [start, start+n) from boot snapshot
+        //   ares_rsp_trace_at_pc {pc, n}     → up to n most-recent events whose pc == arg
+        int n = get_int(line, "n", 32);
+        if (n < 1) n = 1;
+        if (n > 1024) n = 1024;
+        std::vector<ares_rsp_trace_event_t> events; events.reserve((size_t)n);
+
+        if (cmd == "ares_rsp_trace_recent") {
+            uint64_t total = ares_rsp_trace_count();
+            if ((uint64_t)n > total) n = (int)total;
+            for (int i = 0; i < n; i++) {
+                uint64_t idx = total - (uint64_t)n + (uint64_t)i;
+                ares_rsp_trace_event_t ev{};
+                if (ares_rsp_trace_get(idx, &ev)) events.push_back(ev);
+            }
+        } else if (cmd == "ares_rsp_trace_boot") {
+            int start = get_int(line, "start", 0);
+            if (start < 0) start = 0;
+            uint32_t total = ares_rsp_trace_boot_count();
+            for (int i = 0; i < n; i++) {
+                uint32_t pos = (uint32_t)start + (uint32_t)i;
+                if (pos >= total) break;
+                ares_rsp_trace_event_t ev{};
+                if (ares_rsp_trace_boot_get(pos, &ev)) events.push_back(ev);
+            }
+        } else { // ares_rsp_trace_at_pc
+            // Scan backward from the most recent event for up to "n"
+            // matches OR until 65536 events scanned (bound on cost).
+            uint32_t want_pc = get_uint(line, "pc", 0) & 0xFFFu;
+            uint64_t total = ares_rsp_trace_count();
+            int scanned = 0;
+            const int kScanCap = 65536;
+            for (uint64_t i = total; i-- > 0 && scanned < kScanCap && (int)events.size() < n; ) {
+                ares_rsp_trace_event_t ev{};
+                if (!ares_rsp_trace_get(i, &ev)) break; // ring rolled past
+                scanned++;
+                if ((ev.pc & 0xFFFu) == want_pc) events.push_back(ev);
+            }
+            // events accumulated newest-first; reverse to chronological.
+            std::reverse(events.begin(), events.end());
+        }
+
+        std::string out = std::string(R"({"ok":true,"trace_count":)") +
+                          std::to_string(ares_rsp_trace_count()) +
+                          R"(,"events":[)";
+        for (size_t i = 0; i < events.size(); i++) {
+            const auto& ev = events[i];
+            char buf[1024];
+            // Render gpr[] inline as a compact array. dma_* fields named
+            // to match the C struct so the harness can deserialize without
+            // a translation table.
+            int off = std::snprintf(buf, sizeof(buf),
+                "%s{\"seq\":%llu,\"pc\":%u,\"dma_mem_addr\":%u,"
+                "\"dma_dram_addr\":%u,\"dma_rd_len\":%u,\"dma_wr_len\":%u,"
+                "\"status\":%u,\"gpr\":[",
+                (i ? "," : ""),
+                (unsigned long long)ev.seq, (unsigned)ev.pc,
+                (unsigned)ev.dma_mem_addr, (unsigned)ev.dma_dram_addr,
+                (unsigned)ev.dma_rd_len, (unsigned)ev.dma_wr_len,
+                (unsigned)ev.status);
+            out.append(buf, (size_t)off);
+            for (int g = 0; g < 32; g++) {
+                char gbuf[16];
+                int goff = std::snprintf(gbuf, sizeof(gbuf), "%s%u",
+                    (g ? "," : ""), (unsigned)ev.gpr[g]);
+                out.append(gbuf, (size_t)goff);
+            }
+            out += "]}";
+        }
+        out += "]}";
+        return out;
+      });
+    }
+    if (cmd == "ares_rsp_trace_set_enabled") {
+        bool on = get_bool(line, "on", true);
+        return ares_worker::dispatch([on]() -> std::string {
+            ares_rsp_trace_set_enabled(on ? 1 : 0);
+            return std::string(R"({"ok":true,"enabled":)") +
+                   std::to_string(ares_rsp_trace_is_enabled()) + "}";
+        });
+    }
+
+    if (cmd == "get_last_pc_trail") {
+        // Returns the live pc_trail of the most-recently-launched RSP
+        // ucode (typically aspMain on Stadium). Use this to monitor
+        // a hang in real-time without waiting for the watchdog to trip.
+        // Returns 32 PCs in chronological order (oldest first), the
+        // current ring index, and the watchdog counter.
+        recomp::rsp::PcTrailSnapshot snap{};
+        bool ok = recomp::rsp::get_last_pc_trail(&snap);
+        if (!ok || !snap.valid) {
+            return R"({"ok":true,"valid":false})";
+        }
+        // Render entries in chronological order: ring start = (idx & 31),
+        // wrapping forward 32 times reaches the newest entry just
+        // before idx.
+        std::string out = R"({"ok":true,"valid":true,"idx":)" +
+                          std::to_string(snap.idx) +
+                          R"(,"watchdog_count":)" +
+                          std::to_string(snap.watchdog_count) +
+                          R"(,"pc_trail":[)";
+        for (int i = 0; i < 32; i++) {
+            uint32_t pos = (snap.idx + (uint32_t)i) & 31u;
+            char tmp[16];
+            std::snprintf(tmp, sizeof(tmp), "%s%u",
+                (i ? "," : ""), (unsigned)snap.entries[pos]);
+            out += tmp;
+        }
+        out += "]}";
+        return out;
     }
     if (cmd == "tail_errlog") {
         FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "rb");

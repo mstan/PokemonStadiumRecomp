@@ -53,6 +53,7 @@
 
 #include "pokestadium_render.h"
 #include "debug_server.h"
+#include "ares_worker.h"
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
@@ -456,6 +457,13 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[PSR] SDL audio/controller init OK\n"); std::fflush(stderr);
     reset_audio(48000);
     std::fprintf(stderr, "[PSR] reset_audio done\n"); std::fflush(stderr);
+
+    // Start the dedicated Ares-oracle worker thread BEFORE the debug
+    // server so all ares_* TCP commands route to that one thread (Ares'
+    // libco scheduler uses thread_local state, so cothreads must be
+    // created and run on the same OS thread).
+    pkmnstadium::ares_worker::start();
+    std::fprintf(stderr, "[PSR] ares worker thread started\n"); std::fflush(stderr);
 
     // Start the TCP debug server before recomp::start so a debugger
     // script can connect immediately and observe the boot.
