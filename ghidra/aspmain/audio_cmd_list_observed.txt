@@ -1,0 +1,29 @@
+Audio command list dumped from runtime at task->t.data_ptr = 0x800C8810
+size 0x4C8 (= 153 cmds * 8 bytes/cmd).
+
+First 30 cmds:
+  idx  w0          w1           opcode
+  ---  ----------  -----------  ------
+    0  0x020004E0  0x000002E0   0x02 CLEARBUFF
+    1  0x020007C0  0x000002E0   0x02 CLEARBUFF
+    2  0x0C00DA83  0x07C007C0   0x0C MIXER
+    3  0x0C005A82  0x093007C0   0x0C MIXER
+    4  0x061707C0  0x000B87D0   0x06 SAVEBUFF
+    5  0x02000930  0x00000170   0x02 CLEARBUFF
+    6  0x04170000  0x000B87D0   0x04 LOADBUFF
+    7  0x04170170  0x000B7330   0x04 LOADBUFF
+    8  0x0C00D99A  0x00000170   0x0C MIXER
+    9  0x06170170  0x000B7330   0x06 SAVEBUFF
+   10  0x0C002666  0x01700000   0x0C MIXER
+   ... (truncated, full list reproducible via tools/dump_libultra_boot.py
+   while runtime running)
+
+Opcode distribution across all 153 cmds:
+  op=0x02 CLEARBUFF      count=15  handler=0x119C
+  op=0x04 LOADBUFF       count=37  handler=0x11C8
+  op=0x06 SAVEBUFF       count=40  handler=0x1208
+  op=0x0A DMEMMOVE       count= 3  handler=0x1348
+  op=0x0B LOADADPCM      count= 3  handler=0x1248
+  op=0x0C MIXER          count=50  handler=0x1C84
+  op=0x0D INTERLEAVE     count= 2  handler=0x12D4
+  op=0x0E POLEF          count= 3  handler=0x02B0

@@ -1,0 +1,334 @@
+================================================================
+GHIDRA SETUP — Stadium aspMain RSP microcode
+================================================================
+
+GOAL: figure out why Stadium's recompiled aspMain hangs in an
+infinite L_11B4 ↔ L_10EC trampoline. We need to understand the
+binary's intended control flow well enough to either:
+
+  (a) prove the dispatch table is rewritten at runtime to point
+      at PC 0x1188 (handler prologue) instead of 0x119C
+      (mid-function), OR
+
+  (b) identify some side-effect / subtle semantics in L_119C →
+      L_1174 → L_10EC that breaks the loop on real hardware
+      (e.g. r31 modification, semaphore-driven control flow), OR
+
+  (c) discover the dispatch table is at a different DMEM offset
+      than DMEM[0..0x1F].
+
+THIS IS RSP MICROCODE ONLY — not the whole game ROM.
+================================================================
+
+What's in this directory
+========================
+
+aspMain_text.bin       — 4096 bytes, the IMEM contents.
+                         ROM offset 0x68020..0x69020. This is
+                         what runs as RSP code starting at
+                         vram 0x04001000 (= "PC 0x1000" in our
+                         existing analysis, since the bottom 12
+                         bits = IMEM-relative addr).
+
+aspMain_data.bin       — 3968 bytes (0xF80), the DMEM contents.
+                         ROM offset 0x7F670..0x805F0. This is
+                         what gets DMA'd to DMEM[0..0xF7F] before
+                         the ucode starts. First 32 bytes are
+                         the dispatch handler table.
+
+aspMain_full_sp.bin    — 8192 bytes combining data + text into
+                         a single image at vram 0x04000000:
+                           [0x0000..0x0F7F] = DMEM (data)
+                           [0x0F80..0x0FFF] = zero gap
+                           [0x1000..0x1FFF] = IMEM (text)
+                         IMPORT THIS ONE — it gives Ghidra both
+                         segments mapped in the right place
+                         relative to each other in a single
+                         memory block.
+
+audio_cmd_list_observed.txt
+                       — what the live game sends as the first
+                         audio task's command list. 153 cmds
+                         total, opcodes 0x02/04/06/0A/0B/0C/0D/0E.
+
+boot_libultra_trace.jsonl
+                       — the libultra-call ring captured during a
+                         live boot run. Useful as cross-reference
+                         for which functions execute in what order
+                         right around the audio-task firing.
+
+================================================================
+PART 1 — One-time setup
+================================================================
+
+1. Install Ghidra 11.x or newer:
+   https://ghidra-sre.org/   (download the .zip, extract anywhere)
+   Run ghidraRun.bat (Windows). On first launch, accept the
+   license; let it create its default ~/.ghidra dir.
+
+2. Inside Ghidra:
+   File → New Project → Non-Shared Project
+     Project Directory: F:\Projects\PokemonStadiumRecomp\ghidra\aspmain\projects
+     Project Name:      aspMain
+   Click Finish. (The projects/ subdir is gitignored — Ghidra
+   writes large machine-specific .gpr/.lock files there.)
+
+================================================================
+PART 2 — Import aspMain (the ucode binary)
+================================================================
+
+We're importing the COMBINED data+text image as RAW BINARY at
+vram 0x04000000. Ghidra's ELF / N64 loaders don't apply here;
+this is just RSP microcode we're hand-mapping.
+
+3. File → Import File...
+     Navigate to: F:\Projects\PokemonStadiumRecomp\ghidra\aspmain\
+     Pick:        aspMain_full_sp.bin
+     Click "Select File To Import"
+
+4. Ghidra shows the Import dialog. Set EXACTLY these fields:
+
+     Format:      Raw Binary
+     Language:    Click "..." next to Language and search
+                  "MIPS:BE:32:default"
+                  pick the one whose Compiler shows "default"
+                  (NOT "default-ido"; compiler doesn't matter
+                   here since this isn't ELF code with debug)
+
+     Click "Options..." button (very important):
+       Block Name:    aspMain
+       Base Address:  04000000
+       File Offset:   0
+       Length:        leave blank (loads full file = 0x2000)
+       Apply Processor Defined Labels: yes
+       Apply Processor Relocations:    no   (raw binary, no relocs)
+       File Bytes — Use:        yes (the default)
+     Click OK on Options.
+
+   Click OK on the main Import dialog. Ghidra imports the file.
+
+5. Double-click the new "aspMain_full_sp.bin" entry in the
+   project tree to open it in the CodeBrowser.
+
+6. Ghidra asks: "aspMain_full_sp.bin has not been analyzed.
+   Would you like to analyze it now?"
+     Click No.   <-- We'll do it manually after splitting the
+                     memory map, because RSP IMEM and DMEM are
+                     two separate spaces with different access
+                     semantics and we don't want analysis on the
+                     data segment.
+
+================================================================
+PART 3 — Split the memory map into DMEM + IMEM
+================================================================
+
+7. Window → Memory Map.
+   You'll see one block:
+     aspMain   04000000   04001FFF   ... etc.
+
+8. Right-click that block → Split Block...
+     New Block Name: aspMain_DMEM
+     Length:         00000F80      (the actual DMEM data size)
+   Click OK.
+
+   Now you have:
+     aspMain_DMEM   04000000   04000F7F   (data — read-only)
+     aspMain        04000F80   04001FFF   (rest — gap + text)
+
+9. Right-click "aspMain" (the second block) → Split Block...
+     New Block Name: aspMain_DMEM_unused
+     Length:         00000080      (the 0xF80..0xFFF zero-gap)
+   Click OK.
+
+10. Right-click "aspMain" (the third block, now starting at
+    0x04001000) → Rename → "aspMain_IMEM" → OK.
+
+11. For the IMEM block (aspMain_IMEM):
+    Right-click → Set Permissions → check Read AND Execute,
+    leave Write unchecked. Click OK.
+
+12. For DMEM (aspMain_DMEM):
+    Right-click → Set Permissions → Read only.
+
+You should now see three blocks:
+     aspMain_DMEM         04000000   04000F7F   R--
+     aspMain_DMEM_unused  04000F80   04000FFF   ---
+     aspMain_IMEM         04001000   04001FFF   R-X
+
+================================================================
+PART 4 — Analyze just IMEM
+================================================================
+
+13. Click anywhere in the aspMain_IMEM range (e.g. address
+    04001000 in the listing).
+
+14. Analysis → Auto Analyze 'aspMain_full_sp.bin'...
+
+    In the analyzer dialog:
+      - Leave the standard analyzers checked (Basic, MIPS Constant
+        Reference Analyzer, etc.).
+      - UNcheck "ASCII Strings" (we don't care about strings here).
+      - Make sure "Decompiler Switch Analysis" IS checked — that's
+        what gives us proper switch/case detection on the dispatch
+        `jr r1`.
+
+    Address Set Selection — click "Selection" tab if available
+    and limit to 04001000..04001FFF (IMEM). If not available,
+    just analyze the whole program; data segment will produce
+    junk disassembly but we'll ignore it.
+
+    Click Analyze.
+
+================================================================
+PART 5 — Mark the dispatch handler entries
+================================================================
+
+15. The dispatch table is at 04000000..0400001F (DMEM bytes 0..1F).
+    Add a label there:
+      Navigate to address 04000000 (CTRL+G → 04000000).
+      Right-click → Edit Label → "DISPATCH_TABLE" → OK.
+
+16. Set the data type so Ghidra reads the table as 16 halfwords:
+      Navigate to 04000000.
+      Right-click → Data → Choose Data Type → enter "word"
+        (= 2 bytes). Click OK.
+      Right-click the new word → Repeat / Apply To → Array...
+        Length = 16 elements.
+      Now Ghidra shows it as a 16-element array of halfwords.
+
+17. For each dispatch handler PC, add a label at the
+    corresponding IMEM address:
+
+      04001000  rspboot_entry         (= PC 0x1000)
+      0400102C  L_102C
+      04001038  L_1038                (post-DMA busy-wait)
+      04001048  L_1048                (DISPATCH_LOOP)
+      0400106C  L_106C                (post-handler advance)
+      0400108C  L_108C                (END_OF_FRAME / break 0)
+      040010A0  L_10A0                (DEAD_INIT_FUNC)
+      040010C8  DMA_SETUP_RD          (sets SP_MEM_ADDR/DRAM_ADDR)
+      040010EC  L_10EC                (DMA_TRIGGER_RETURN)
+      040010F4  DMA_SETUP_WR
+      04001120  L_1120
+      04001148  L_1148
+      0400114C  L_114C
+      04001174  L_1174                (DMA wait + chain to L_10EC)
+      04001188  HANDLER_FALLTHROUGH   (sets r3 from cmd word)
+      0400119C  HANDLER_OP02_CLEARBUFF  (mid-function entry — OUR HANG)
+      040011B4  L_11B4                (also DMA wait + chain to L_10EC)
+      040011C8  HANDLER_OP04_LOADBUFF
+      04001208  HANDLER_OP06_SAVEBUFF
+      04001248  HANDLER_OP0B_LOADADPCM
+      0400127C  HANDLER_OP09_SETVOL
+      040012D4  HANDLER_OP0D_INTERLEAVE
+      04001348  HANDLER_OP0A_DMEMMOVE
+      04001384  HANDLER_OP0F_SETLOOP
+      0400139C  HANDLER_OP01_ADPCM
+      040017EC  HANDLER_OP05_RESAMPLE
+      04001A64  HANDLER_OP03_ENVMIXER
+      04001C84  HANDLER_OP0C_MIXER
+
+    Use CTRL+G to navigate to each address; right-click → Edit
+    Label → enter the name.
+
+================================================================
+PART 6 — The actual analysis question
+================================================================
+
+The recompiler-driven hang reproduces this trail:
+  L_119C → L_1174 → L_10EC → L_11B4 → L_10EC → L_11B4 → ...
+because:
+  - Dispatch[0x02] = 0x119C (HANDLER_OP02_CLEARBUFF) is a
+    mid-function entry that skips the r3-from-cmd-word setup
+    at HANDLER_FALLTHROUGH (PC 0x1188).
+  - The handler does `r3 -= 1; jal L_1174 (r31 = 0x11B4)`.
+  - L_1174 chains via `j L_10EC`. L_10EC does `jr r31; DMA`.
+    r31 = 0x11B4, so control goes to L_11B4.
+  - L_11B4 is identical to L_1174: DMA wait + `j L_10EC`.
+    L_10EC's `jr r31` STILL sees r31 = 0x11B4. **Infinite loop.**
+
+Investigation tasks (in priority order):
+
+A. Search for any `sw` or `sh` instruction whose destination is
+   in DMEM[0..0x1F] (the dispatch table). If a handler ever
+   writes to dispatch table at runtime, the table we DMA-loaded
+   from ROM is just initial values — the real handler PCs may
+   differ.
+
+   In Ghidra:
+     Search → Memory...
+       Search Value: leave empty
+       Search Format: Decimal/Hex
+       Search Selection: all of aspMain_IMEM
+     OR use Search → For Instruction Pattern... with
+     "sw 0x?, 0x0(0x?)" / "sh 0x?, 0x0(0x?)" template, or
+     use the Decompiler view per-handler and look for stores
+     into low-DMEM offsets.
+
+   What we want: any code that sets DMEM[0..0x1F] = something.
+   If it exists, follow when/why.
+
+B. Trace WHERE r31 might get modified between the L_11AC jal
+   and the second visit to L_11B4. Specifically:
+
+   Open HANDLER_OP02_CLEARBUFF (PC 0x119C) in the decompiler
+   (right-click → Decompile or press F5). Walk the control flow
+   step by step, looking at each register write. Pay close
+   attention to:
+     - Any `jal`/`jalr` in the sub-functions called from L_119C
+     - Any side-effect of `mtc0 r0, SP_SEMAPHORE` (PC 0x11C4)
+       that might affect register state on real hardware
+
+C. Compare HANDLER_FALLTHROUGH (PC 0x1188) vs the L_119C
+   mid-function entry. The fall-through entry sets:
+     r3 = cmd bits[23:12]   (length field)
+     r1 = cmd bits[11:0]    (DMEM offset)
+   then falls into r1 += 0x4F0 at 0x119C. So the L_119C entry
+   ASSUMES r1 and r3 are already set. WHO sets them for the
+   dispatch path? The dispatch (L_1048) doesn't.
+
+   If you find the answer to "who sets r3 and r1 before L_119C
+   is dispatched-to", that's our fix — we just replicate that
+   in the pre-task hook.
+
+D. The dispatch table entry 0x02B0 (dispatch[0x0E] = POLEF
+   handler) is suspicious — 0x02B0 is in the DATA segment, not
+   the text segment. `(0x02B0 | 0x1000) & 0x1FFF = 0x12B0`,
+   and PC 0x12B0 IS a real instruction. But why is the table
+   value 0x02B0 instead of 0x12B0? Maybe Stadium's actual
+   dispatch math is different from our recompiled
+   `(r26 >> 23) & 0xFE; lh DMEM[r1]; jr r1` — perhaps it adds
+   0x1000 explicitly somewhere, OR uses a different computation
+   that masks differently.
+
+================================================================
+PART 7 — Optional: import the live trace
+================================================================
+
+The boot_libultra_trace.jsonl file captures every libultra call
+made during a live boot run, with timestamps. If you want to
+cross-reference what's happening at the SCHEDULER level when
+the audio task fires:
+
+  python F:/Projects/PokemonStadiumRecomp/tools/dump_libultra_boot.py
+  (with the runner running on TCP 4371)
+
+The JSONL is one event per line. Useful command:
+  cat boot_libultra_trace.jsonl | python -c "
+  import json, sys
+  for ln in sys.stdin:
+      e = json.loads(ln)
+      if e['name'].startswith('rsp_run_task') or 'SpTask' in e['name']:
+          print(e)
+  "
+
+================================================================
+What's NOT in this directory
+================================================================
+
+- Scripts (Ghidra Python automation) — to be added if repeatable
+  workflows emerge.
+- The full ROM — see ../instructions.txt for whole-game analysis.
+- A live database — Ghidra writes ghidra/aspmain/projects/aspMain.gpr
+  on your machine; that's gitignored.
+================================================================
