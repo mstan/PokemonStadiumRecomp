@@ -2943,3 +2943,16 @@ text = "pkmnstadium_pool_alloc_enter(ctx->r4);"
 func = "main_pool_alloc"
 before_vram = 0x80002618   # right after `lw $v0, 0x1C($sp)` — v0 set
 text = "pkmnstadium_pool_alloc_exit(rdram, ctx->r2);"
+
+# Game_DoCopyProtection — returns -0x10 if check trips. Hooks log
+# (input state, output state) on every call; warn loudly if state
+# was modified (i.e. trip).
+[[patches.hook]]
+func = "Game_DoCopyProtection"
+before_vram = 0x80028FA0   # entry
+text = "pkmnstadium_copyprot_enter(ctx->r4);"
+
+[[patches.hook]]
+func = "Game_DoCopyProtection"
+before_vram = 0x80029000   # right after `lw $v0, 0x18($sp)` — v0 set, before jr
+text = "pkmnstadium_copyprot_exit(ctx->r2);"

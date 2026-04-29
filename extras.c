@@ -317,6 +317,28 @@ void pkmnstadium_pool_alloc_enter(uint32_t size) {
     s_pool_sp++;
 }
 
+/* Game_DoCopyProtection diagnostic. Returns -0x10 (= 0xFFFFFFF0)
+ * if the copy-protection check trips. We see 0xFFFFFFF0 stored at
+ * what might be gLastGameState; this hook tells us definitively
+ * whether the function is responsible. */
+static __thread uint32_t s_copyprot_state_stack[16];
+static __thread int s_copyprot_sp = 0;
+void pkmnstadium_copyprot_enter(uint32_t state) {
+    if (s_copyprot_sp < 16) s_copyprot_state_stack[s_copyprot_sp] = state;
+    s_copyprot_sp++;
+}
+void pkmnstadium_copyprot_exit(uint32_t v0) {
+    s_copyprot_sp--;
+    if (s_copyprot_sp < 0 || s_copyprot_sp >= 16) return;
+    uint32_t in_state = s_copyprot_state_stack[s_copyprot_sp];
+    if (v0 != in_state) {
+        fprintf(stderr,
+            "[copyprot] TRIPPED: input state=0x%X output=0x%X\n",
+            in_state, v0);
+        fflush(stderr);
+    }
+}
+
 void pkmnstadium_pool_alloc_exit(uint8_t* rdram, uint32_t v0) {
     s_pool_sp--;
     if (s_pool_sp < 0 || s_pool_sp >= 16) return;
