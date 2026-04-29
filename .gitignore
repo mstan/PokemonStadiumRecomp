@@ -59,4 +59,7 @@ _experimental_*
 saves.txt
 tools/_derive.stderr
 tools/_splice.py
+# Build artifacts produced by tools/_decompress_*.py — regenerable from
+# baserom.z64 + the script. The script is the source of truth.
+tools/*_decompressed.bin
 lib/

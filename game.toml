@@ -2845,39 +2845,84 @@ section = ".fragment77"
 vram = 0x8FC00000
 size = 0x8
 
-[[input.manual_funcs]]
-# fragment78 header trampoline. fragment78 is the 78th fragment in the
-# ROM at 0x1206400 — pret's split bundled it under pokemon_models bin
-# until we carved it out. id=0xEF, link-vram 0x8FF00000. The textbin
-# header (J 0x8FF00020 ; nop) needs an 8-byte function entry so
-# Stadium's J trampoline at fragment+0 dispatches into func_map.
-name = "fragment78_entry"
-section = ".fragment78"
+# ── Decompressed fragments (CPU-decompressed at runtime) ──────────────────
+#
+# Stadium decompresses some fragments from PERS-SZP/Yay0 wrappers in ROM
+# at runtime via CPU code (NOT PI DMA). The decompressed bytes — including
+# all MIPS instructions in the fragment — never appear at any single
+# offset in baserom.z64, so pret's splat can't see them and our
+# previous "carve it out of pokemon_models" approach was sourcing the
+# wrong bytes (see project_fragment78_wrong_source.md memory entry).
+#
+# This block tells N64Recomp to decompress the wrapper at build time
+# from baserom.z64 directly, parse the resulting FRAGMENT-format blob,
+# and synthesize an in-memory section so the rest of the recompilation
+# pipeline treats it like any other ELF section. At runtime, Stadium
+# does the same decompression itself — so the recompiled C matches the
+# bytes Stadium actually executes.
+[[input.decompressed_section]]
+name = "fragment78"
 vram = 0x8FF00000
-size = 0x8
+rom_wrapper = 0x9E93F0   # PERS-SZP magic at this ROM offset
+wrapper_format = "pers_szp_yay0"
 
 # ── Runtime fragment registration hook ────────────────────────────────────
 #
 # Stadium has two fragment-load paths: (1) PI DMA → load_overlays(), which
 # registers funcs in func_map at the runtime address each section was
-# DMA'd to; and (2) CPU-side yay0 decompression that writes fragment
-# bytes to RDRAM via direct stores from recompiled libultra/main code.
-# Path (2) bypasses do_dma entirely, so load_overlays / the trampoline
-# scanner never see those fragments.
+# DMA'd to; and (2) CPU-side decompression (PERS-SZP/Yay0) that writes
+# fragment bytes to RDRAM via direct stores. Path (2) bypasses do_dma
+# entirely, so load_overlays / the trampoline scanner never see those
+# fragments.
 #
 # Both paths converge on Memmap_RelocateFragment(id, fragment_ptr) right
 # before the fragment is dispatched. Hooking that one chokepoint covers
-# both paths. The hook fires at function entry — fragment bytes are
-# already in RDRAM at that point but relocations haven't been applied
-# yet, which matches what the trampoline scanner already expects (it
-# decodes J targets in link-time form and resolves via section.ram_addr
-# aliases in func_map).
-#
-# Without this hook the symptom is `[Warn] get_function lookup miss:
-# 0x801D7A30 — returning trampoline` deep into Stadium's boot, where
-# 0x801D7A30 is the runtime base of a CPU-decompressed fragment whose
-# +0x00 J slot dispatches via func_map and never finds anything.
+# both paths.
 [[patches.hook]]
 func = "Memmap_RelocateFragment"
 before_vram = 0x80001E50  # first instr of Memmap_RelocateFragment ⇒ entry hook
 text = "recomp_register_runtime_fragment(rdram, ctx->r4, ctx->r5);"
+
+# DIAGNOSTIC: register-state probe at the crashing instruction.
+# func_86B0027C @ 0x86B002C0 is `lw $a3, 0x0($t8)` — the AV in the
+# current crash report. t8 (= ctx->r24) was just loaded from
+# MEM[v0+8] at 0x86B002B0; v0 (= ctx->r2) was the return value from
+# func_80019D18. We need to know:
+#   - r2  : did func_80019D18 return a sensible pointer?
+#   - r24 : what was MEM[r2+8] (the value about to be deref'd)?
+#   - r19 : the s3 struct pointer for context.
+# All three are gpr (uint64_t) in the recomp_context. Logged every
+# iteration; the LAST line in stderr before the crash is the bad one.
+[[patches.hook]]
+func = "func_86B0027C"
+before_vram = 0x86B002C0  # lw $a3, 0x0($t8) — the AV instruction
+text = """
+extern void psr_log_crash_regs(uint8_t* rdram, uint64_t r2, uint64_t r24, uint64_t r19);
+psr_log_crash_regs(rdram, ctx->r2, ctx->r24, ctx->r19);
+"""
+
+# DIAGNOSTIC: process_geo_layout entry — capture the segptr argument
+# and pool. Tells us what the caller is asking the geo processor to
+# walk. Fired on every call so we can correlate with the func_86B0027C
+# probe (the second call is the broken one).
+[[patches.hook]]
+func = "process_geo_layout"
+before_vram = 0x80018B70  # entry
+text = """
+extern void psr_log_geo_entry(uint64_t pool, uint64_t segptr);
+psr_log_geo_entry(ctx->r4, ctx->r5);
+"""
+
+# DIAGNOSTIC: process_geo_layout AFTER Util_ConvertAddrToVirtAddr.
+# Captures the converted address (the actual gGeoLayoutCommand pointer
+# the loop will dereference) and the first 8 bytes there. If the first
+# byte is an END opcode (0x01 in M64-style geo layouts), the loop will
+# exit immediately — explaining the empty struct in the second
+# iteration crash.
+[[patches.hook]]
+func = "process_geo_layout"
+before_vram = 0x80018BB4  # right after jal Util_ConvertAddrToVirtAddr returns
+text = """
+extern void psr_log_geo_command(uint8_t* rdram, uint64_t converted_addr);
+psr_log_geo_command(rdram, ctx->r2);
+"""

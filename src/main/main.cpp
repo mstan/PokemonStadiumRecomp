@@ -53,6 +53,7 @@
 
 #include "pokestadium_render.h"
 #include "debug_server.h"
+#include <librecomp/ultra_trace.hpp>
 #include "ares_worker.h"
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
@@ -380,10 +381,20 @@ static LONG WINAPI psr_crash_filter(EXCEPTION_POINTERS* info) {
         }
         if (info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION
             && info->ExceptionRecord->NumberParameters >= 2) {
+            uintptr_t fault_host = (uintptr_t)info->ExceptionRecord->ExceptionInformation[1];
             fprintf(f, "  access:  %s @ 0x%p\n",
                 info->ExceptionRecord->ExceptionInformation[0] == 0 ? "read" :
                 info->ExceptionRecord->ExceptionInformation[0] == 1 ? "write" : "execute",
-                (void*)info->ExceptionRecord->ExceptionInformation[1]);
+                (void*)fault_host);
+            uint8_t* rdram_base = recomp_runtime_get_rdram();
+            if (rdram_base != nullptr) {
+                intptr_t off = (intptr_t)(fault_host - (uintptr_t)rdram_base);
+                uint32_t vaddr = (uint32_t)(0x80000000u + (uint32_t)off);
+                fprintf(f, "  rdram_base: %p\n", (void*)rdram_base);
+                fprintf(f, "  rdram_off:  0x%llX (%lld dec)\n",
+                    (unsigned long long)(uint64_t)off, (long long)off);
+                fprintf(f, "  decoded vaddr: 0x%08X\n", vaddr);
+            }
         }
         // Dump last 32 trace ring entries — what the game thread was
         // executing right before the crash. Critical for diagnosis.
