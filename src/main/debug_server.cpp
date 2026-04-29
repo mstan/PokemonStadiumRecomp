@@ -218,6 +218,15 @@ static std::string handle_command(const std::string& line) {
         g_stick_y_override.store(0);
         return R"({"ok":true})";
     }
+    if (cmd == "claim_input") {
+        // Arm the override flag without changing button/stick state.
+        // Needed by automated harnesses so libultra's osContInit (which
+        // runs once during boot, before any set_button) sees a
+        // controller present in port 1. Must be sent BEFORE osContInit
+        // — i.e. immediately after the TCP server accepts.
+        g_input_override_active.store(true);
+        return R"({"ok":true})";
+    }
     if (cmd == "fast_forward") {
         g_fast_forward.store(get_bool(line, "on", true));
         return R"({"ok":true})";

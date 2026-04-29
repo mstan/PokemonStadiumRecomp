@@ -165,6 +165,9 @@ def main() -> int:
                    help="Path for JSON report")
     p.add_argument("--quit-after", action="store_true",
                    help="Send {cmd:quit} after diagnostics (clean shutdown)")
+    p.add_argument("--peek", action="append", default=[],
+                   help="rdram_peek spec: ADDR:N (hex addr, decimal bytes). "
+                        "Repeatable. Read post-sequence (before crash, if any).")
     p.add_argument("--runner-stderr", default=str(ROOT / "build" / "drive_runner.stderr"),
                    help="When launching, redirect runner stderr here")
     args = p.parse_args()
@@ -233,6 +236,13 @@ def main() -> int:
 
         event("connected")
 
+        # Arm the input override IMMEDIATELY so libultra's osContInit
+        # (one-shot during boot) sees a controller present in port 1.
+        # Without this, the game reports "Controller 1 not connected"
+        # and ignores everything we send via set_button afterward.
+        claim = call({"cmd": "claim_input"}, timeout=2.0)
+        event("claim_input", **claim)
+
         booted = wait_for_boot(args.boot_frame, args.boot_timeout)
         event("boot_status", **booted)
         if booted.get("_err"):
@@ -258,6 +268,23 @@ def main() -> int:
 
         time.sleep(args.post_wait)
         call({"cmd": "clear_input"})
+
+        # Pre-crash peeks. Must run BEFORE diagnostics (which themselves
+        # may fail if the runner died). On crash these will silently fail.
+        peek_results: list[dict[str, Any]] = []
+        for spec in args.peek:
+            try:
+                a_str, n_str = spec.split(":")
+                addr = int(a_str, 0)
+                n = int(n_str, 0)
+            except Exception:
+                event("peek_parse_error", spec=spec)
+                continue
+            r = call({"cmd": "rdram_peek", "addr": addr, "n": n}, timeout=2.0)
+            r["_spec"] = spec
+            peek_results.append(r)
+            event("peek", spec=spec, hex=r.get("hex"), err=r.get("error"))
+        report["peeks"] = peek_results
 
         # Diagnostics — try TCP first, fall back to file read for errlog
         # if the server is unresponsive (likely if the runner crashed).

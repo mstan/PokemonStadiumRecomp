@@ -408,8 +408,15 @@ static ultramodern::input::connected_device_info_t get_connected_device_info(int
     if (controller_num == 0) {
         ensure_pad_open();
     }
+    // The TCP debug-server override is also a valid "controller" — it
+    // synthesizes contStat from set_button/set_stick. Without this
+    // branch, headless harness runs (no physical pad) hit
+    // "Controller 1 not connected" and the game ignores all the
+    // synthesized input.
+    bool override_active =
+        (controller_num == 0 && pkmnstadium::dbg::g_input_override_active.load());
     ultramodern::input::connected_device_info_t info{};
-    info.connected_device = (controller_num == 0 && g_pad)
+    info.connected_device = ((controller_num == 0 && g_pad) || override_active)
         ? ultramodern::input::Device::Controller
         : ultramodern::input::Device::None;
     info.connected_pak = ultramodern::input::Pak::None;
