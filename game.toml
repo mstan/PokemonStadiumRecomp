@@ -2862,11 +2862,19 @@ size = 0x8
 # stubs instead of trying to statically recompile each variant. For
 # now, declare just fragment78 explicitly — Stadium boots through
 # this fragment cleanly.
-[[input.decompressed_section]]
-name = "fragment78"
-vram = 0x8FF00000
-rom_wrapper = 0x9E93F0   # PERS-SZP magic at this ROM offset
+# Stadium uses link vram 0x8FF00000 as a dynamic asset slot — 282 distinct
+# fragment bodies stream through it as the player traverses content. The
+# pattern block scans the ROM for every wrapper, deduplicates by content
+# hash, and synthesizes one section per distinct content. The runtime
+# side (register_runtime_fragment) hashes the bytes Stadium just
+# decompressed and looks up the matching section.
+[[input.decompressed_section_pattern]]
+base_name      = "frag_8FF00000"
+vram           = 0x8FF00000
 wrapper_format = "pers_szp_yay0"
+
+[output]
+collision_policy = "suffix"
 
 # ── Runtime fragment registration hook ────────────────────────────────────
 #
