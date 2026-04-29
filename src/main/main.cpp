@@ -300,6 +300,13 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
 
     if (controller_num != 0 || !g_pad) return false;
 
+    // Diagnostic input log: when buttons change, print what we're
+    // about to deliver. Lets us diff "what the user pressed" vs
+    // "what we're telling Stadium," which is the cheapest way to
+    // diagnose mis-routed buttons (e.g. Start triggering a reset
+    // because we accidentally OR'd in another bit).
+    static uint16_t s_last_buttons = 0;
+
     auto pressed = [&](SDL_GameControllerButton b) {
         return SDL_GameControllerGetButton(g_pad, b) ? 1 : 0;
     };
@@ -333,8 +340,58 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
 
     int16_t lx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
     int16_t ly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
-    *x_out =  float(lx) / 32767.0f * 80.0f;  // N64 stick range ~[-80, 80]
-    *y_out = -float(ly) / 32767.0f * 80.0f;
+    // Radial deadzone: Xbox One controller sticks rest at ~±300-1500
+    // raw; without a deadzone, Stadium reads idle noise as "player
+    // tilted the stick" and combines it with button presses — pressing
+    // Start with even small drift gets interpreted as "cancel/skip"
+    // rather than "confirm," which is what was making the title screen
+    // soft-reset back to the boot sequence on any button press.
+    //
+    // 8000 raw matches the C-button deadzone we already use for the
+    // right stick; well above typical resting drift but well below
+    // intentional tilts. Re-scale OUTSIDE the deadzone so the player
+    // gets full N64 stick range from a partial Xbox tilt.
+    constexpr int16_t LSTICK_DEADZONE = 8000;
+    auto apply_deadzone = [](int16_t raw) -> float {
+        int32_t v = raw;
+        if (v >  LSTICK_DEADZONE) {
+            return float(v - LSTICK_DEADZONE) / float(32767 - LSTICK_DEADZONE) * 80.0f;
+        }
+        if (v < -LSTICK_DEADZONE) {
+            return float(v + LSTICK_DEADZONE) / float(32767 - LSTICK_DEADZONE) * 80.0f;
+        }
+        return 0.0f;
+    };
+    *x_out =  apply_deadzone(lx);
+    *y_out = -apply_deadzone(ly);
+
+    // Diagnostic: log only when the button mask changes (don't flood
+    // stderr every poll cycle). Useful for diagnosing
+    // "press Start, game soft-resets" type bugs where we may be
+    // delivering an extra button alongside Start.
+    if (*buttons_out != s_last_buttons) {
+        fprintf(stderr,
+            "[input] btn change: 0x%04X (was 0x%04X) "
+            "stick=(%+.2f,%+.2f)%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+            *buttons_out, s_last_buttons, *x_out, *y_out,
+            (*buttons_out & 0x8000) ? " A"      : "",
+            (*buttons_out & 0x4000) ? " B"      : "",
+            (*buttons_out & 0x2000) ? " Z"      : "",
+            (*buttons_out & 0x1000) ? " START"  : "",
+            (*buttons_out & 0x0800) ? " D-Up"   : "",
+            (*buttons_out & 0x0400) ? " D-Down" : "",
+            (*buttons_out & 0x0200) ? " D-Left" : "",
+            (*buttons_out & 0x0100) ? " D-Right": "",
+            (*buttons_out & 0x0020) ? " L"      : "",
+            (*buttons_out & 0x0010) ? " R"      : "",
+            (*buttons_out & 0x0008) ? " C-Up"   : "",
+            (*buttons_out & 0x0004) ? " C-Down" : "",
+            (*buttons_out & 0x0002) ? " C-Left" : "",
+            (*buttons_out & 0x0001) ? " C-Right": "");
+        fflush(stderr);
+        s_last_buttons = *buttons_out;
+    }
+
     return true;
 }
 
