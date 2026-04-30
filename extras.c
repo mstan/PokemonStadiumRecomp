@@ -158,20 +158,33 @@ static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
  * Stderr-prints the FIRST entry per function, then keeps counting
  * silently (avoids flooding stderr while still surfacing rare events).
  */
-#define INTERESTING_FN_COUNT 12
+#define INTERESTING_FN_COUNT 25
 static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
-    "func_80005084",  /* SP DONE handler (case 0x64) */
-    "func_80005148",  /* RDP DONE handler (case 0x65) */
-    "func_80004B0C",  /* SP DONE inner (calls task->queue) */
-    "func_80004C68",  /* RDP DONE inner (sets unk_1E=2, posts task->queue) */
-    "func_80004E94",  /* case 0x67 task-launch trigger */
-    "func_80004F08",  /* case 0x68 PreNMI handler */
-    "func_80004F70",  /* case 0x66 VI handler */
-    "func_80004E60",  /* task launcher wrapper */
-    "func_800049D4",  /* osSpTaskLoad+StartGo */
-    "func_80005194",  /* sched main loop entry */
-    "func_8000183C",  /* gfx_sched main loop (thread 5) */
-    "func_8002B330",  /* Game_Thread main */
+    "func_80005084",        /* SP DONE handler (case 0x64) */
+    "func_80005148",        /* RDP DONE handler (case 0x65) */
+    "func_80004B0C",        /* SP DONE inner (calls task->queue) */
+    "func_80004C68",        /* RDP DONE inner (sets unk_1E=2, posts task->queue) */
+    "func_80004E94",        /* case 0x67 task-launch trigger */
+    "func_80004F08",        /* case 0x68 PreNMI handler */
+    "func_80004F70",        /* case 0x66 VI handler */
+    "func_80004E60",        /* task launcher wrapper */
+    "func_800049D4",        /* osSpTaskLoad+StartGo */
+    "func_80005194",        /* sched main loop entry */
+    "func_8000183C",        /* gfx_sched main loop (thread 5) */
+    "Game_Thread",          /* Game_Thread main (named symbol) */
+    "fragment17_entry",     /* intro fragment entry */
+    "fragment36_entry",     /* title-screen fragment entry */
+    "func_800290E4",        /* FRAGMENT_LOAD_AND_CALL caller for intro */
+    "func_80029310",        /* runs intro then sets state=TITLE_SCREEN */
+    "func_800293CC",        /* TITLE_SCREEN handler — calls fragment36 */
+    "Cont_ReadInputs",      /* controller poll consumer */
+    "func_821009B4",        /* fragment36 main loop */
+    "func_82100054",        /* fragment36 exit-state computer */
+    "func_82100AB8",        /* fragment36 setup */
+    "func_82100C98",        /* fragment36 main entry (called by func_800293CC) */
+    "fragment37_entry",     /* AREA_SELECT fragment entry */
+    "func_80029828",        /* STATE_AREA_SELECT handler */
+    "func_82100054",        /* (already above) */
 };
 static volatile uint64_t k_interesting_counts[INTERESTING_FN_COUNT];
 
@@ -327,6 +340,50 @@ void pkmnstadium_copyprot_enter(uint32_t state) {
     if (s_copyprot_sp < 16) s_copyprot_state_stack[s_copyprot_sp] = state;
     s_copyprot_sp++;
 }
+/* Logs fragment36's view of (buttonPressed & 0x9000) and D_82100EC8
+ * each loop iteration. Reveals whether the press-detection check
+ * sees the rising edge. */
+static __thread int s_frag36_iter = 0;
+/* Cont_ReadInputs entry/exit — log rate and any rising-edge consumption.
+ * Logs buttonDown BEFORE write (= prev) and AFTER (= current). */
+static __thread uint32_t s_cri_count = 0;
+static __thread uint32_t s_cri_last_logged = 0;
+void pkmnstadium_cri_enter(uint32_t prev_buttondown_via_cont0_word) {
+    s_cri_count++;
+    if (s_cri_count <= 5 || (s_cri_count % 100) == 0) {
+        fprintf(stderr, "[cri] entry #%u\n", s_cri_count);
+        fflush(stderr);
+    }
+}
+void pkmnstadium_cri_exit(uint32_t cur_buttondown_via_cont0_word, uint32_t buttonpressed) {
+    if (buttonpressed != 0 || (s_cri_count - s_cri_last_logged) >= 200) {
+        s_cri_last_logged = s_cri_count;
+        fprintf(stderr,
+            "[cri] #%u current=0x%X buttonPressed=0x%X\n",
+            s_cri_count, cur_buttondown_via_cont0_word & 0xFFFF,
+            buttonpressed & 0xFFFF);
+        fflush(stderr);
+    }
+}
+
+/* Log fragment36's main-entry return value (= next gCurrentGameState). */
+void pkmnstadium_frag36_exit(uint32_t v0) {
+    fprintf(stderr, "[frag36] EXIT — return value (next state) = 0x%X\n", v0);
+    fflush(stderr);
+}
+
+void pkmnstadium_frag36_check(uint32_t btn_pressed_word, uint32_t input_enable) {
+    s_frag36_iter++;
+    /* Only log nonzero btn or first 5 + every 50th iter to avoid flood */
+    if (btn_pressed_word != 0 || s_frag36_iter <= 5 || (s_frag36_iter % 50) == 0) {
+        fprintf(stderr,
+            "[frag36] iter=%d btnPressed=0x%X (& 0x9000 = 0x%X) D_82100EC8=%u\n",
+            s_frag36_iter, btn_pressed_word & 0xFFFF,
+            btn_pressed_word & 0x9000, input_enable);
+        fflush(stderr);
+    }
+}
+
 void pkmnstadium_copyprot_exit(uint32_t v0) {
     s_copyprot_sp--;
     if (s_copyprot_sp < 0 || s_copyprot_sp >= 16) return;

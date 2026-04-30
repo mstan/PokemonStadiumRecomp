@@ -50,6 +50,9 @@ extern "C" {
     uint64_t pkmnstadium_trace_write_idx(void);
     const char* pkmnstadium_trace_at(uint64_t idx);
     uint32_t pkmnstadium_trace_capacity(void);
+    uint64_t pkmnstadium_interesting_fn_count(int idx);
+    const char* pkmnstadium_interesting_fn_name(int idx);
+    int pkmnstadium_interesting_fn_total(void);
 }
 
 namespace pkmnstadium {
@@ -220,6 +223,26 @@ static std::string handle_command(const std::string& line) {
         g_stick_x_override.store(0);
         g_stick_y_override.store(0);
         return R"({"ok":true})";
+    }
+    if (cmd == "interesting_fns") {
+        // Returns the non-evicting interesting-function counters from
+        // extras.c. Useful when the trace ring is dominated by audio
+        // and game-thread activity gets evicted within ~10ms.
+        int n = pkmnstadium_interesting_fn_total();
+        std::string out = R"({"ok":true,"fns":[)";
+        for (int i = 0; i < n; i++) {
+            const char* name = pkmnstadium_interesting_fn_name(i);
+            uint64_t cnt = pkmnstadium_interesting_fn_count(i);
+            char buf[128];
+            std::snprintf(buf, sizeof(buf),
+                "%s{\"name\":\"%s\",\"count\":%llu}",
+                (i ? "," : ""),
+                name ? name : "?",
+                (unsigned long long)cnt);
+            out += buf;
+        }
+        out += "]}";
+        return out;
     }
     if (cmd == "set_volume") {
         // Args: {"value": 0.0..1.0}. Out-of-range values are clamped.

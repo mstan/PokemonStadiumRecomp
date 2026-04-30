@@ -2956,3 +2956,25 @@ text = "pkmnstadium_copyprot_enter(ctx->r4);"
 func = "Game_DoCopyProtection"
 before_vram = 0x80029000   # right after `lw $v0, 0x18($sp)` — v0 set, before jr
 text = "pkmnstadium_copyprot_exit(ctx->r2);"
+
+# fragment36 loop body — log buttonPressed + D_82100EC8 each iter.
+# Hook position 0x82100A1C is right after `lhu $t8, 0x8($t7)` (load
+# of buttonPressed) and before `andi $t9, $t8, 0x9000`. ctx->r24 holds
+# the just-loaded buttonPressed halfword. ctx->r17 ($s1) holds the
+# pointer to D_82100EC8 (set up at function start).
+[[patches.hook]]
+func = "func_821009B4"
+before_vram = 0x82100A1C
+text = "pkmnstadium_frag36_check((uint32_t)MEM_HU(ctx->r15, 0X8), MEM_W(ctx->r17, 0));"
+
+# Cont_ReadInputs entry — log rate and rising-edge captures.
+[[patches.hook]]
+func = "Cont_ReadInputs"
+before_vram = 0x80005AB0   # entry
+text = "pkmnstadium_cri_enter(0);"
+
+# fragment36 exit hook — log the return value (= next gCurrentGameState)
+[[patches.hook]]
+func = "func_82100C98"
+before_vram = 0x82100DAC   # right before jr — $v0 already loaded
+text = "pkmnstadium_frag36_exit(ctx->r2);"
