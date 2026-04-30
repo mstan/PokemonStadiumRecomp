@@ -3002,3 +3002,10 @@ text = "ctx->r2 = pkmnstadium_force_80007604_ret((uint32_t)ctx->r2);"
 func = "func_82100B1C"
 before_vram = 0x82100B58   # right after func_80007604 returns; forces ctx->r2 = 1
 text = "ctx->r2 = 1;"
+
+# Force func_800484E0 (asset-loader pending count) to always return 0,
+# bypassing the wait loop in func_8000D2B4.
+[[patches.hook]]
+func = "func_800484E0"
+before_vram = 0x8004856C   # before jr $ra (delay slot is just sp adjust)
+text = "ctx->r2 = 0;"

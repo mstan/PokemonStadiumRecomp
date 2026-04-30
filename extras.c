@@ -158,7 +158,7 @@ static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
  * Stderr-prints the FIRST entry per function, then keeps counting
  * silently (avoids flooding stderr while still surfacing rare events).
  */
-#define INTERESTING_FN_COUNT 25
+#define INTERESTING_FN_COUNT 30
 static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_80005084",        /* SP DONE handler (case 0x64) */
     "func_80005148",        /* RDP DONE handler (case 0x65) */
@@ -184,7 +184,12 @@ static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_82100C98",        /* fragment36 main entry (called by func_800293CC) */
     "fragment37_entry",     /* AREA_SELECT fragment entry */
     "func_80029828",        /* STATE_AREA_SELECT handler */
-    "func_82100054",        /* (already above) */
+    "func_82100B1C",        /* fragment36 fade-out wait */
+    "func_800076C0",        /* fragment36 cleanup callee */
+    "func_8000D2B4",        /* fragment36 cleanup callee */
+    "func_8004FF20",        /* fragment36 cleanup callee */
+    "func_80005EAC",        /* fragment36 cleanup callee */
+    "main_pool_pop_state",  /* fragment36 last cleanup */
 };
 static volatile uint64_t k_interesting_counts[INTERESTING_FN_COUNT];
 
