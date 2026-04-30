@@ -538,6 +538,93 @@ void pkmnstadium_cri_exit(uint32_t cur_buttondown_via_cont0_word, uint32_t butto
     }
 }
 
+/* process_geo_layout dispatch-site diagnostic.
+ *
+ * Inside process_geo_layout, the dispatch is:
+ *   t9 = GeoLayoutJumpTable[cmd_byte];   // 4 bytes per entry
+ *   jalr t9;                              // call dispatched handler
+ *
+ * If cmd_byte is out of range (table has 40 entries, indices 0..39),
+ * the table read goes off the end into adjacent .rodata. The
+ * recompiler then can't find a matching function for the bogus
+ * address. This hook fires right before the jalr; if t9 is small
+ * (< 0x80000000), log cmd_byte + t9 + the cmd-stream pointer + a
+ * dump of nearby cmd bytes so we can identify the malformed layout.
+ */
+void pkmnstadium_geo_dispatch_log(uint8_t* rdram, uint32_t cmd_byte,
+                                    uint32_t fn_ptr, uint32_t cmd_stream_addr) {
+    if (fn_ptr >= 0x80000000u) return;
+    static int s_logged = 0;
+    s_logged++;
+    if (s_logged > 5) return;  // first few are enough to identify
+    fprintf(stderr,
+        "[geo-dispatch] SUSPECT cmd_byte=0x%02X (=%u) -> fn=0x%08X "
+        "cmd_stream=0x%08X\n",
+        cmd_byte & 0xFF, cmd_byte & 0xFF, fn_ptr, cmd_stream_addr);
+    /* Dump 16 bytes of the cmd stream around its current position. */
+    if (cmd_stream_addr >= 0x80000000u && cmd_stream_addr < 0x80800000u) {
+        uint32_t paddr = cmd_stream_addr & 0x1FFFFFFFu;
+        if (paddr >= 8 && paddr + 16 < (1u << 30)) {
+            fprintf(stderr, "  cmd_stream context [%08X-8..+8]:",
+                cmd_stream_addr);
+            for (int i = -8; i < 16; i++) {
+                fprintf(stderr, " %02X", rdram[(paddr + i) ^ 3]);
+                if (i == -1) fprintf(stderr, " |");
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+    fflush(stderr);
+}
+
+/* Util_ConvertAddrToVirtAddr exit diagnostic.
+ *
+ * Catches any (input → output) pair where output is a non-NULL value
+ * smaller than 0x80000000 — that means a segment/fragment was missing
+ * its registration and the function returned the input pass-through,
+ * which downstream callers will use as a function pointer or memory
+ * address and crash on. */
+void pkmnstadium_addr_translate_log(uint32_t in, uint32_t out) {
+    int suspect = (out != 0 && out < 0x80000000u);
+    if (!suspect) return;
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 8 || (s_n & 31) == 0) {
+        fprintf(stderr,
+            "[addr-xlate] #%d SUSPECT in=0x%08X -> out=0x%08X\n",
+            s_n, in, out);
+        fflush(stderr);
+    }
+}
+
+/* func_80010FDC entry diagnostic.
+ *
+ * Stadium hits a get_function lookup miss at 0x00000E00 inside this
+ * function — `arg1 = Util_ConvertAddrToVirtAddr(arg1); arg1(0, arg0);`
+ * The result of the segment translation is being called as a function,
+ * but the translated value is too small to be a real function address.
+ *
+ * Log arg1 BEFORE conversion (the seg-addr from the geo layout) and
+ * AFTER conversion (what got called), plus arg0 (the GraphNode) and
+ * arg2 (data ptr). Tells us which geo layout source has the bad
+ * function-pointer reference. */
+void pkmnstadium_geo_render_call_log(uint32_t arg0_node, uint32_t arg1_seg,
+                                       uint32_t arg2_data) {
+    static int s_n = 0;
+    s_n++;
+    /* Log first 16 calls + any whose input is "small" (likely to
+     * translate to a near-NULL function pointer). */
+    int small = (arg1_seg != 0 && arg1_seg < 0x80000000u) &&
+                ((arg1_seg & 0xFF000000u) == 0);
+    if (s_n <= 16 || small) {
+        fprintf(stderr,
+            "[geo-render] #%d node=0x%08X arg1(seg)=0x%08X arg2=0x%08X%s\n",
+            s_n, arg0_node, arg1_seg, arg2_data,
+            small ? " <-- SUSPECT (low addr)" : "");
+        fflush(stderr);
+    }
+}
+
 /* Stop all libnaudio voices by clearing each voice's unk_038
  * (sequence-stream pointer). func_8003AD58 (the per-voice synth)
  * skips voices with unk_038 == NULL, so this is sufficient to

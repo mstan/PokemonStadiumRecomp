@@ -3017,6 +3017,39 @@ func = "func_8003AD58"
 before_vram = 0x8003AF60
 text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (uint32_t)ctx->r11, (uint32_t)MEM_W(ctx->r16, 0X28), (uint16_t)ctx->r3);"
 
+# process_geo_layout dispatch-site hook — fires right before the
+# `jalr $t9` at vram 0x80018C00 inside process_geo_layout. Logs
+# cmd_byte (r14), fn_ptr (r25), and gGeoLayoutCommand (r16) whenever
+# fn_ptr is out of valid kseg0 range. Pinpoints malformed/out-of-
+# range geo layout commands.
+[[patches.hook]]
+func = "process_geo_layout"
+before_vram = 0x80018C00
+text = "pkmnstadium_geo_dispatch_log(rdram, (uint32_t)ctx->r14, (uint32_t)ctx->r25, (uint32_t)ctx->r16);"
+
+# Util_ConvertAddrToVirtAddr exit hook — log every (input → output)
+# where output is a non-NULL pass-through (= < 0x80000000). Those
+# are the cases where a segment/fragment lookup failed and the raw
+# input was returned, which downstream callers treat as a vaddr and
+# crash on. At hook position 0x80002F20 (the jr $ra), ctx->r4 still
+# holds the original input arg, ctx->r2 has the return value.
+[[patches.hook]]
+func = "Util_ConvertAddrToVirtAddr"
+before_vram = 0x80002F20   # right before jr $ra
+text = "pkmnstadium_addr_translate_log((uint32_t)ctx->r4, (uint32_t)ctx->r2);"
+
+# func_80010FDC entry diagnostic — geo layout cmd-8 handler that
+# converts arg1 from seg-addr to vaddr then CALLS it. Stadium hits
+# a lookup miss here at 0x00000E00; this hook logs the input
+# arg1 (raw seg-addr from geo layout) so we can find which geo
+# layout source has the bad function-pointer reference. At entry:
+# ctx->r4=arg0 (GraphNode*), ctx->r5=arg1 (seg-addr fn-ptr),
+# ctx->r6=arg2 (data void*).
+[[patches.hook]]
+func = "func_80010FDC"
+before_vram = 0x80010FDC   # entry
+text = "pkmnstadium_geo_render_call_log((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6);"
+
 # Stop libnaudio voices at fragment36 cleanup (right before
 # main_pool_pop_state frees the 1 MiB SoundBank buffer that the
 # synth's unk_090 still points at). Without this, the synth
