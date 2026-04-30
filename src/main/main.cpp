@@ -306,16 +306,19 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
     *x_out = 0.0f;
     *y_out = 0.0f;
 
-    // TCP debug-server input override takes priority over physical pad.
-    // Lets a debugger script press buttons / move stick over the wire.
-    if (controller_num == 0 && pkmnstadium::dbg::g_input_override_active.load()) {
-        *buttons_out = pkmnstadium::dbg::g_buttons_override.load();
-        *x_out = float(pkmnstadium::dbg::g_stick_x_override.load());
-        *y_out = float(pkmnstadium::dbg::g_stick_y_override.load());
-        return true;
-    }
-
     if (controller_num != 0) return false;
+
+    // TCP override is OR'd in (not exclusive). claim_input arms the
+    // override so libultra's osContInit reports port 1 connected,
+    // but unattended keyboard/pad input should still get through.
+    // The harness's set_button calls layer on top.
+    uint16_t override_buttons = 0;
+    float override_x = 0.0f, override_y = 0.0f;
+    if (pkmnstadium::dbg::g_input_override_active.load()) {
+        override_buttons = pkmnstadium::dbg::g_buttons_override.load();
+        override_x = float(pkmnstadium::dbg::g_stick_x_override.load());
+        override_y = float(pkmnstadium::dbg::g_stick_y_override.load());
+    }
 
     // Diagnostic input log: when buttons change, print what we're
     // about to deliver. Lets us diff "what the user pressed" vs
@@ -436,6 +439,15 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
     };
     *x_out =  apply_deadzone(lx);
     *y_out = -apply_deadzone(ly);
+
+    // Apply TCP override: OR buttons in, replace stick if non-zero.
+    // claim_input arms the override flag (so osContInit reports
+    // port-1 connected), but a harness that wants pure-TCP control
+    // sets specific buttons via set_button. Otherwise keyboard/pad
+    // pass through normally.
+    *buttons_out |= override_buttons;
+    if (override_x != 0.0f) *x_out = override_x;
+    if (override_y != 0.0f) *y_out = override_y;
 
     // Diagnostic: log only when the button mask changes (don't flood
     // stderr every poll cycle). Useful for diagnosing
