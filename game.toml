@@ -3009,3 +3009,15 @@ text = "ctx->r2 = 1;"
 func = "func_800484E0"
 before_vram = 0x8004856C   # before jr $ra (delay slot is just sp adjust)
 text = "ctx->r2 = 0;"
+
+# Audio voice-table NULL-deref diagnostic — capture state right before
+# the crashing `lw $a0, 0x0($t4)` at 0x8003AF64. At hook position
+# 0x8003AF60 (the `addu $t4, $t3, $v0` that computes the bad addr):
+#   ctx->r16 = $s0 = arg0->unk_090 (the unk_D_800FC7D0_08C* struct)
+#   ctx->r17 = $s1 = arg0 itself (the unk_D_800FC7D0* struct)
+#   ctx->r11 = $t3 = MEM_W($s0, 0x2C) = the suspect wave-table pointer
+#   ctx->r3  = $v1 = MEM_HU($s1, 0xC2) = the array index
+[[patches.hook]]
+func = "func_8003AD58"
+before_vram = 0x8003AF60
+text = "pkmnstadium_audio_diag((uint32_t)ctx->r16, (uint32_t)ctx->r17, (uint32_t)ctx->r11, (uint32_t)MEM_W(ctx->r16, 0X28), (uint16_t)ctx->r3);"

@@ -1,5 +1,7 @@
 #include "librecomp/rsp.hpp"
 #include "librecomp/rsp_vu_impl.hpp"
+#include <set>
+#include <utility>
 RspExitReason aspMain_impl(uint8_t* rdram, RspContext* ctx) {
     uint32_t&                 r1 = ctx->r1;   uint32_t&  r2 = ctx->r2;   uint32_t&  r3 = ctx->r3;   uint32_t&  r4 = ctx->r4;   uint32_t&  r5 = ctx->r5;   uint32_t&  r6 = ctx->r6;   uint32_t&  r7 = ctx->r7;
     uint32_t&  r8 = ctx->r8;  uint32_t&  r9 = ctx->r9;   uint32_t& r10 = ctx->r10; uint32_t& r11 = ctx->r11; uint32_t& r12 = ctx->r12; uint32_t& r13 = ctx->r13; uint32_t& r14 = ctx->r14; uint32_t& r15 = ctx->r15;
@@ -4134,14 +4136,33 @@ do_indirect_jump:
         case 0x1384: goto L_1384;
         case 0x10A0: goto L_10A0;
     }
-    printf("Unhandled jump target 0x%04X in microcode aspMain, coming from [%s:%d]\n", jump_target, debug_file, debug_line);
-    printf("Register dump: r0  = %08X r1  = %08X r2  = %08X r3  = %08X r4  = %08X r5  = %08X r6  = %08X r7  = %08X\n"
-           "               r8  = %08X r9  = %08X r10 = %08X r11 = %08X r12 = %08X r13 = %08X r14 = %08X r15 = %08X\n"
-           "               r16 = %08X r17 = %08X r18 = %08X r19 = %08X r20 = %08X r21 = %08X r22 = %08X r23 = %08X\n"
-           "               r24 = %08X r25 = %08X r26 = %08X r27 = %08X r28 = %08X r29 = %08X r30 = %08X r31 = %08X\n",
-           0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16,
-           r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31);
-    return RspExitReason::UnhandledJumpTarget;
+    // Stadium's audio tasks use multiple ucode_data variants with
+    // dispatch tables the static analysis didn't fully see. When
+    // execution lands on an unknown command-handler offset, the
+    // semantic of "audio command we don't recognize" is the same as
+    // hitting end-of-list: stop processing this task cleanly so the
+    // next task can run. Returning Broke matches that — runner
+    // continues, audio for this specific track is silent, no fatal.
+    //
+    // We log once per (target, debug_line) so the diagnostic is
+    // visible without spamming. Keeping the rate-limited log lets us
+    // identify which audio tracks have un-handled commands and feed
+    // that back into RSPRecomp's static analysis as additional
+    // emit-table entries.
+    {
+        static std::set<std::pair<uint32_t, int>> warned;
+        auto key = std::make_pair(jump_target, debug_line);
+        if (warned.insert(key).second) {
+            fprintf(stderr,
+                "[aspMain] unknown command-dispatch target 0x%X from [%s:%d]; "
+                "treating as end-of-list (returning Broke). This audio track "
+                "will be silent. r1=%08X r25=%08X r26=%08X r28=%08X r29=%08X\n",
+                (unsigned)jump_target, debug_file, debug_line,
+                r1, r25, r26, r28, r29);
+            fflush(stderr);
+        }
+    }
+    return RspExitReason::Broke;
 }
 
 RspExitReason aspMain(uint8_t* rdram, [[maybe_unused]] uint32_t ucode_addr) {

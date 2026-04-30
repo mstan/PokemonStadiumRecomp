@@ -158,7 +158,7 @@ static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
  * Stderr-prints the FIRST entry per function, then keeps counting
  * silently (avoids flooding stderr while still surfacing rare events).
  */
-#define INTERESTING_FN_COUNT 30
+#define INTERESTING_FN_COUNT 37
 static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_80005084",        /* SP DONE handler (case 0x64) */
     "func_80005148",        /* RDP DONE handler (case 0x65) */
@@ -184,6 +184,13 @@ static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_82100C98",        /* fragment36 main entry (called by func_800293CC) */
     "fragment37_entry",     /* AREA_SELECT fragment entry */
     "func_80029828",        /* STATE_AREA_SELECT handler */
+    "func_8003AD58",        /* audio synth voice-process */
+    "func_8003C204",        /* offset->ptr lazy-resolver in libnaudio */
+    "func_8003979C",        /* candidate wave-bank loader */
+    "func_80037340",        /* audio init wrapper */
+    "func_80038B68",        /* audio config setup */
+    "n_alAudioFrame",       /* per-frame synth */
+    "func_80039D58",        /* sound-bank parser (sets unk_08C/090) */
     "func_82100B1C",        /* fragment36 fade-out wait */
     "func_800076C0",        /* fragment36 cleanup callee */
     "func_8000D2B4",        /* fragment36 cleanup callee */
@@ -333,6 +340,41 @@ static __thread int s_pool_sp = 0;
 void pkmnstadium_pool_alloc_enter(uint32_t size) {
     if (s_pool_sp < 16) s_pool_size_stack[s_pool_sp] = size;
     s_pool_sp++;
+}
+
+/* Audio voice-table NULL-deref diagnostic.
+ *
+ * Stadium's libnaudio synth crashes in func_8003AD58 around vram
+ * 0x8003AF54: `lw $t3, 0x2C($s0)` loads a wave-table pointer that
+ * appears to be NULL or a small unresolved offset. The struct
+ * unk_D_800FC7D0_08C has lazy-promoted fields (unk_04/08/0C) that
+ * func_8003C204 resolves on demand. Maybe unk_2C never gets that
+ * treatment and stays as a stored-in-ROM offset.
+ *
+ * This hook captures (s0, s0->unk_28, s0->unk_2C, arg0->unk_090)
+ * once on first invocation so we can SEE what's there.
+ */
+/* Logs only when the about-to-read address is invalid (NULL or
+ * out-of-rdram). Lets us catch the actual crashing call without
+ * spamming on every healthy synth frame. */
+void pkmnstadium_audio_diag(uint32_t s0_vaddr, uint32_t s1_vaddr,
+                             uint32_t unk_2C_field, uint32_t unk_28_field,
+                             uint16_t v1_index)
+{
+    uint32_t target = unk_2C_field + (uint32_t)v1_index * 4;
+    /* Valid kseg0 RAM range is roughly [0x80000000, 0x80800000) for
+     * 8 MiB N64 expansion-pak. Anything outside is suspect. */
+    int suspect = (target < 0x80000000u) || (target >= 0x80800000u) || (unk_2C_field == 0);
+    static __thread int s_n_logged = 0;
+    if (!suspect && s_n_logged > 5) return;
+    s_n_logged++;
+    fprintf(stderr,
+        "[audio-crash] %s s0(unk_090)=0x%08X unk_28=0x%08X unk_2C=0x%08X "
+        "idx=%u target=0x%08X\n",
+        suspect ? "*** SUSPECT ***" : "ok",
+        s0_vaddr, unk_28_field, unk_2C_field,
+        (unsigned)v1_index, target);
+    fflush(stderr);
 }
 
 /* Game_DoCopyProtection diagnostic. Returns -0x10 (= 0xFFFFFFF0)
