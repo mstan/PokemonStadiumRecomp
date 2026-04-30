@@ -2979,29 +2979,24 @@ func = "func_82100C98"
 before_vram = 0x82100DAC   # right before jr — $v0 already loaded
 text = "pkmnstadium_frag36_exit(ctx->r2);"
 
-# Workaround: force the fade-out "done" byte to 1 at func_82100B1C
-# entry so the wait loop exits immediately. Real fix is to make the
-# gfx scheduler tick the fade-progress counter. See extras.c.
-[[patches.hook]]
-func = "func_82100B1C"
-before_vram = 0x82100B1C   # entry
-text = "pkmnstadium_force_fade_done(rdram);"
-
-# Direct workaround: hook func_80007604's exit (right before jr) and
-# force return value to 1. This makes ANY caller that uses it as a
-# "transition done?" check see "yes done" immediately. Targets
-# fragment36's title-exit wait loop.
-[[patches.hook]]
-func = "func_80007604"
-before_vram = 0x8000760C   # before jr
-text = "ctx->r2 = pkmnstadium_force_80007604_ret((uint32_t)ctx->r2);"
-
-# Override at the caller side: after func_82100B1C calls func_80007604,
-# force the result to 1 so the wait-for-fade-done loop exits.
-[[patches.hook]]
-func = "func_82100B1C"
-before_vram = 0x82100B58   # right after func_80007604 returns; forces ctx->r2 = 1
-text = "ctx->r2 = 1;"
+# Disabled 2026-04-29: fade-out wait bypass hooks for func_82100B1C
+# are removed in favor of letting the fade run naturally. Reason:
+# while these hooks unblocked fragment36 cleanup, they created an
+# audio use-after-free at AREA_SELECT — fragment36's SoundBank
+# (loaded into a 1 MiB main_pool buffer at fragment36.c:351) gets
+# discarded when main_pool pops, but the synth's voice state still
+# holds pointers into it. Without the fade ramping voices to silence
+# first, the synth then derefs garbage. The proper fix is to let
+# the wait run; if it hangs, the gfx-scheduler tick path needs work
+# (func_800069F0 should run once per frame from func_80006FE8 — see
+# the fade-tick counters added to extras.c).
+#
+# [[patches.hook]] func = "func_82100B1C" before_vram = 0x82100B1C
+#   text = "pkmnstadium_force_fade_done(rdram);"
+# [[patches.hook]] func = "func_80007604" before_vram = 0x8000760C
+#   text = "ctx->r2 = pkmnstadium_force_80007604_ret((uint32_t)ctx->r2);"
+# [[patches.hook]] func = "func_82100B1C" before_vram = 0x82100B58
+#   text = "ctx->r2 = 1;"
 
 # Force func_800484E0 (asset-loader pending count) to always return 0,
 # bypassing the wait loop in func_8000D2B4.
@@ -3020,7 +3015,7 @@ text = "ctx->r2 = 0;"
 [[patches.hook]]
 func = "func_8003AD58"
 before_vram = 0x8003AF60
-text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (uint32_t)ctx->r11, (uint32_t)MEM_W(ctx->r16, 0X28), (uint16_t)ctx->r3); ctx->r11 = pkmnstadium_audio_safe_ptr((uint32_t)ctx->r11, (uint16_t)ctx->r3);"
+text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (uint32_t)ctx->r11, (uint32_t)MEM_W(ctx->r16, 0X28), (uint16_t)ctx->r3);"
 
 # Phase 1 diagnosis: log first 64 invocations of the libnaudio
 # offset->absolute lazy-resolver. Captures (arr_addr, base, count)

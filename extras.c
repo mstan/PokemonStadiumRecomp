@@ -158,7 +158,7 @@ static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
  * Stderr-prints the FIRST entry per function, then keeps counting
  * silently (avoids flooding stderr while still surfacing rare events).
  */
-#define INTERESTING_FN_COUNT 44
+#define INTERESTING_FN_COUNT 48
 static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_80005084",        /* SP DONE handler (case 0x64) */
     "func_80005148",        /* RDP DONE handler (case 0x65) */
@@ -198,6 +198,10 @@ static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_8003B2B4",        /* called inside func_8003AD58 (env update) */
     "n_alInit",             /* libnaudio init (vram 0x80042920) */
     "n_alSynNew",           /* libnaudio synth init (vram 0x800491C0) */
+    "func_800069F0",        /* per-frame fade ticker — increments unk_13, transitions unk_11 */
+    "func_80006FE8",        /* gfx setup that calls func_800069F0 */
+    "func_80007778",        /* gfx submit / vsync wait inside func_821005EC */
+    "func_821005EC",        /* fragment36 per-frame work — called from fade wait loop */
     "func_82100B1C",        /* fragment36 fade-out wait */
     "func_800076C0",        /* fragment36 cleanup callee */
     "func_8000D2B4",        /* fragment36 cleanup callee */
@@ -349,51 +353,20 @@ void pkmnstadium_pool_alloc_enter(uint32_t size) {
     s_pool_sp++;
 }
 
-/* Audio voice-table NULL-deref diagnostic.
+/* Audio synth voice-table read regression detector.
  *
- * Stadium's libnaudio synth crashes in func_8003AD58 around vram
- * 0x8003AF54: `lw $t3, 0x2C($s0)` loads a wave-table pointer that
- * appears to be NULL or a small unresolved offset. The struct
- * unk_D_800FC7D0_08C has lazy-promoted fields (unk_04/08/0C) that
- * func_8003C204 resolves on demand. Maybe unk_2C never gets that
- * treatment and stays as a stored-in-ROM offset.
+ * Originally added to chase a NULL-deref crash in func_8003AD58
+ * (Stadium's per-voice synth). Diagnosed 2026-04-29 to a
+ * use-after-free: fragment36 loaded its SoundBank into a 1 MiB
+ * main_pool buffer and the fade-out wait was being bypassed, so
+ * main_pool was popped while the synth still held voice pointers
+ * into the freed bank.
  *
- * This hook captures (s0, s0->unk_28, s0->unk_2C, arg0->unk_090)
- * once on first invocation so we can SEE what's there.
- */
-/* If the suspect-data check passes (unk_2C is genuinely invalid),
- * redirect ctx->r11 to point at a safe zero-fill region so the
- * synth's lookup reads 0 rather than crashing. Result: that voice
- * plays as a "rest" for the frame instead of taking the runner
- * down. Returns the address to use for r11.
- *
- * This is NOT a stub — it's data-validation. The synth code reads
- * memory at a pointer that, in our runtime, contains uninitialized
- * audio sample bytes pretending to be a struct field. Without the
- * lazy-resolver running for unk_2C (which it doesn't in this code
- * path on AREA_SELECT music), the read crashes. Treating "pointer
- * outside RAM" as "rest" matches what the function does in its
- * else-branch when tmp == 0x60 (a music-rest note byte).
- *
- * Real fix lives in the libnaudio sequence parser — figure out
- * which call should resolve unk_2C. Until that's understood, this
- * keeps the runner alive.
- */
-uint32_t pkmnstadium_audio_safe_ptr(uint32_t unk_2C_field, uint16_t v1_index)
-{
-    uint32_t target = unk_2C_field + (uint32_t)v1_index * 4;
-    int suspect = (target < 0x80000000u) || (target >= 0x80800000u) || (unk_2C_field == 0);
-    if (suspect) {
-        /* Return kseg0 address of rdram[0..3] which is always
-         * readable + readable as zero in our model. */
-        return 0x80000000u;
-    }
-    return unk_2C_field;
-}
-
-/* On suspect (out-of-rdram target), dump the full 0x40 bytes of the
- * struct at s0 so we can see whether the whole struct is garbage or
- * just unk_2C. */
+ * Fixed by letting func_82100B1C run naturally (the fade ticks
+ * voices to silence before pool-pop). This hook is kept as a
+ * regression detector — if a future change reintroduces the bug,
+ * SUSPECT log lines and a struct dump fire so we can re-diagnose
+ * fast. */
 void pkmnstadium_audio_diag(uint8_t* rdram, uint32_t s0_vaddr,
                              uint32_t s1_vaddr,
                              uint32_t unk_2C_field, uint32_t unk_28_field,
@@ -566,49 +539,6 @@ void pkmnstadium_cri_exit(uint32_t cur_buttondown_via_cont0_word, uint32_t butto
 }
 
 /* Log fragment36's main-entry return value (= next gCurrentGameState). */
-/* Workaround: fragment36's exit cleanup func_82100B1C waits for the
- * gfx scheduler to flip the "fade-out done" byte at *(0x800A7464)+0x11
- * to 1. Our gfx scheduler doesn't tick that flag, so the wait spins
- * forever. Force the byte to 1 right after the transition kickoff
- * (func_80006CB4) so the next-iteration wait passes.
- *
- * This is a temporary skip. Real fix should make the renderer's
- * fade pipeline tick that counter normally.
- */
-/* Helper for func_80007604 hook: log first few calls + force ret=1. */
-uint32_t pkmnstadium_force_80007604_ret(uint32_t was) {
-    static __thread int s_n = 0;
-    s_n++;
-    if (s_n <= 3 || (s_n & 4095) == 0) {
-        fprintf(stderr, "[80007604] call#%d (was %u) -> forced 1\n", s_n, was);
-        fflush(stderr);
-    }
-    return 1;
-}
-
-void pkmnstadium_force_fade_done(uint8_t* rdram) {
-    /* MEM_W reads pointer at 0x800A7464 (paddr 0xA7464), with XOR-3 byte order. */
-    uint32_t paddr_ptr = 0x000A7464u;
-    uint32_t struct_ptr =
-        ((uint32_t)rdram[(paddr_ptr + 0) ^ 3] << 24) |
-        ((uint32_t)rdram[(paddr_ptr + 1) ^ 3] << 16) |
-        ((uint32_t)rdram[(paddr_ptr + 2) ^ 3] <<  8) |
-        ((uint32_t)rdram[(paddr_ptr + 3) ^ 3]);
-    if (struct_ptr == 0) return;
-    /* struct_ptr is a kseg0 vaddr; convert to paddr for our rdram array. */
-    uint32_t struct_paddr = struct_ptr & 0x1FFFFFFFu;
-    /* Byte at offset +0x11. With XOR-3 storage, write to (paddr+0x11)^3 = paddr+0x12. */
-    rdram[(struct_paddr + 0x11) ^ 3] = 1;
-    static int s_logged = 0;
-    if (!s_logged) {
-        s_logged = 1;
-        fprintf(stderr,
-            "[fade] forced *(0x%08X+0x11) = 1 to bypass title-exit "
-            "fade-out wait loop\n", struct_ptr);
-        fflush(stderr);
-    }
-}
-
 void pkmnstadium_frag36_exit(uint32_t v0) {
     fprintf(stderr, "[frag36] EXIT — return value (next state) = 0x%X\n", v0);
     fflush(stderr);
