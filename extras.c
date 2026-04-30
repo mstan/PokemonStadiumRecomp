@@ -538,6 +538,119 @@ void pkmnstadium_cri_exit(uint32_t cur_buttondown_via_cont0_word, uint32_t butto
     }
 }
 
+/* Stop all libnaudio voices by clearing each voice's unk_038
+ * (sequence-stream pointer). func_8003AD58 (the per-voice synth)
+ * skips voices with unk_038 == NULL, so this is sufficient to
+ * prevent the synth from dereferencing the voices' unk_090 bank
+ * pointer.
+ *
+ * Hooked at func_8004FF20 entry — fragment36 calls func_8004FF20
+ * right before main_pool_pop_state('TITL'), which frees the 1 MiB
+ * SoundBank buffer at fragment36.c:351. Without this, the synth
+ * keeps voicing the freed bank across the state transition and
+ * the audio thread crashes.
+ *
+ * Why not just call func_8004FCD8 (the libnaudio audio-stop)?
+ * Because that's a recompiled function and hooks can't easily
+ * cross-call recompiled funcs. Direct rdram writes do the same job.
+ *
+ * D_800FC7D0 (vaddr 0x800FC7D0) holds a pointer to the voice array;
+ * D_800FC7CC (vaddr 0x800FC7CC) holds the voice count;
+ * sizeof(unk_D_800FC7D0) = 0x150; unk_038 sits at offset 0x38.
+ */
+void pkmnstadium_audio_stop_voices(uint8_t* rdram) {
+    uint32_t count_paddr = 0x000FC7CCu;
+    uint32_t count =
+        ((uint32_t)rdram[(count_paddr + 0) ^ 3] << 24) |
+        ((uint32_t)rdram[(count_paddr + 1) ^ 3] << 16) |
+        ((uint32_t)rdram[(count_paddr + 2) ^ 3] <<  8) |
+        ((uint32_t)rdram[(count_paddr + 3) ^ 3]);
+    uint32_t arr_ptr_paddr = 0x000FC7D0u;
+    uint32_t arr_vaddr =
+        ((uint32_t)rdram[(arr_ptr_paddr + 0) ^ 3] << 24) |
+        ((uint32_t)rdram[(arr_ptr_paddr + 1) ^ 3] << 16) |
+        ((uint32_t)rdram[(arr_ptr_paddr + 2) ^ 3] <<  8) |
+        ((uint32_t)rdram[(arr_ptr_paddr + 3) ^ 3]);
+    if (arr_vaddr == 0 || arr_vaddr < 0x80000000u || arr_vaddr >= 0x80800000u) {
+        fprintf(stderr,
+            "[audio-stop] D_800FC7D0 array ptr out of range (0x%08X), skipped\n",
+            arr_vaddr);
+        fflush(stderr);
+        return;
+    }
+    if (count == 0 || count > 256) {
+        fprintf(stderr,
+            "[audio-stop] D_800FC7CC voice count out of range (%u), skipped\n",
+            count);
+        fflush(stderr);
+        return;
+    }
+    uint32_t arr_paddr = arr_vaddr & 0x1FFFFFFFu;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t voice_paddr = arr_paddr + i * 0x150u;
+        for (int b = 0; b < 4; b++) {
+            rdram[(voice_paddr + 0x38 + b) ^ 3] = 0;
+        }
+    }
+    static int s_logged = 0;
+    if (!s_logged) {
+        s_logged = 1;
+        fprintf(stderr,
+            "[audio-stop] cleared unk_038 for %u voice(s) at "
+            "0x%08X (size 0x150 each) — synth will skip these "
+            "until the next sequence-load reassigns them\n",
+            count, arr_vaddr);
+        fflush(stderr);
+    }
+}
+
+/* miniEkansInitCam entry diagnostic.
+ *
+ * The Ekans minigame (auto-attract path) crashes in miniUpdateCamera
+ * writing to D_87906054->unk_24.fovy where D_87906054 is NULL.
+ * D_87906054 is assigned at miniEkansInitCam entry as
+ * D_87906054 = D_87906050->unk_00.unk_0C, so either D_87906050 is
+ * NULL or its unk_0C child-list head field is NULL.
+ *
+ * Dump both at entry to localize. */
+void pkmnstadium_mini_ekans_init_cam_enter(uint8_t* rdram) {
+    uint32_t d50_addr = 0x87906050u;
+    uint32_t d50_paddr = d50_addr & 0x1FFFFFFFu;
+    uint32_t d50_val =
+        ((uint32_t)rdram[(d50_paddr + 0) ^ 3] << 24) |
+        ((uint32_t)rdram[(d50_paddr + 1) ^ 3] << 16) |
+        ((uint32_t)rdram[(d50_paddr + 2) ^ 3] <<  8) |
+        ((uint32_t)rdram[(d50_paddr + 3) ^ 3]);
+    fprintf(stderr,
+        "[ekans-cam] D_87906050(@0x%08X) holds = 0x%08X\n",
+        d50_addr, d50_val);
+    if (d50_val == 0 || d50_val < 0x80000000u || d50_val >= 0x80800000u) {
+        fprintf(stderr, "  (no further dump — D_87906050 outside RAM)\n");
+        fflush(stderr);
+        return;
+    }
+    /* Dump first 0x20 bytes of *D_87906050 (the GraphNode-or-similar root). */
+    uint32_t struct_paddr = d50_val & 0x1FFFFFFFu;
+    fprintf(stderr, "  [*D_87906050 @ 0x%08X]:", d50_val);
+    for (int i = 0; i < 0x20; i++) {
+        if ((i & 0xF) == 0) fprintf(stderr, "\n    +0x%02X:", i);
+        fprintf(stderr, " %02X", rdram[(struct_paddr + i) ^ 3]);
+    }
+    fprintf(stderr, "\n");
+    /* Read unk_00.unk_0C — that's what gets stored into D_87906054.
+     * If the struct layout matches, unk_0C is at offset 0xC inside
+     * unk_00; unk_00 is at offset 0 of the parent; so 0x0C absolute. */
+    uint32_t child_val =
+        ((uint32_t)rdram[(struct_paddr + 0xC) ^ 3] << 24) |
+        ((uint32_t)rdram[(struct_paddr + 0xD) ^ 3] << 16) |
+        ((uint32_t)rdram[(struct_paddr + 0xE) ^ 3] <<  8) |
+        ((uint32_t)rdram[(struct_paddr + 0xF) ^ 3]);
+    fprintf(stderr,
+        "  D_87906050->unk_00.unk_0C = 0x%08X  (will be stored into D_87906054)\n",
+        child_val);
+    fflush(stderr);
+}
+
 /* Log fragment36's main-entry return value (= next gCurrentGameState). */
 void pkmnstadium_frag36_exit(uint32_t v0) {
     fprintf(stderr, "[frag36] EXIT — return value (next state) = 0x%X\n", v0);

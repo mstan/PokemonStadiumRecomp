@@ -3017,6 +3017,28 @@ func = "func_8003AD58"
 before_vram = 0x8003AF60
 text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (uint32_t)ctx->r11, (uint32_t)MEM_W(ctx->r16, 0X28), (uint16_t)ctx->r3);"
 
+# Stop libnaudio voices at fragment36 cleanup (right before
+# main_pool_pop_state frees the 1 MiB SoundBank buffer that the
+# synth's unk_090 still points at). Without this, the synth
+# crashes after the state transition reading freed bank memory.
+# func_8004FF20 fires only from fragment36's exit chain.
+[[patches.hook]]
+func = "func_8004FF20"
+before_vram = 0x8004FF20   # entry
+text = "pkmnstadium_audio_stop_voices(rdram);"
+
+# miniEkansInitCam entry diagnostic — auto-attract crashes in
+# miniUpdateCamera writing to D_87906054->unk_24.fovy (NULL+0x2C).
+# D_87906054 is assigned at miniEkansInitCam entry as
+# D_87906054 = D_87906050->unk_00.unk_0C; this hook dumps both
+# D_87906050's stored pointer and the child field that becomes
+# D_87906054, to localize whether the geo-layout root is missing
+# or just its child list.
+[[patches.hook]]
+func = "miniEkansInitCam"
+before_vram = 0x86C03500   # entry
+text = "pkmnstadium_mini_ekans_init_cam_enter(rdram);"
+
 # Phase 1 diagnosis: log first 64 invocations of the libnaudio
 # offset->absolute lazy-resolver. Captures (arr_addr, base, count)
 # triplets so we can answer "did this struct ever get resolved?"
