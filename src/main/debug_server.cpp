@@ -53,6 +53,8 @@ extern "C" {
     uint64_t pkmnstadium_interesting_fn_count(int idx);
     const char* pkmnstadium_interesting_fn_name(int idx);
     int pkmnstadium_interesting_fn_total(void);
+    int pkmnstadium_resolver_log_total(void);
+    void pkmnstadium_resolver_log_get(int idx, uint32_t* arr, uint32_t* base, uint32_t* count);
 }
 
 namespace pkmnstadium {
@@ -239,6 +241,26 @@ static std::string handle_command(const std::string& line) {
                 (i ? "," : ""),
                 name ? name : "?",
                 (unsigned long long)cnt);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "resolver_log") {
+        // Returns the first N captured (arr, base, count) triplets from
+        // libnaudio's offset->absolute lazy-resolver func_8003C204.
+        // Phase 1 of audio crash diagnosis: lets us see whether the
+        // struct that ends up as arg0->unk_090 in the synth ever got
+        // resolved, and if so, which fields/counts.
+        int n = pkmnstadium_resolver_log_total();
+        std::string out = R"({"ok":true,"entries":[)";
+        for (int i = 0; i < n; i++) {
+            uint32_t arr = 0, base = 0, count = 0;
+            pkmnstadium_resolver_log_get(i, &arr, &base, &count);
+            char buf[96];
+            std::snprintf(buf, sizeof(buf),
+                "%s{\"arr\":\"0x%08X\",\"base\":\"0x%08X\",\"count\":%u}",
+                (i ? "," : ""), arr, base, count);
             out += buf;
         }
         out += "]}";

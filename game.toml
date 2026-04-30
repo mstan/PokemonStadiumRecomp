@@ -3021,3 +3021,23 @@ text = "ctx->r2 = 0;"
 func = "func_8003AD58"
 before_vram = 0x8003AF60
 text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (uint32_t)ctx->r11, (uint32_t)MEM_W(ctx->r16, 0X28), (uint16_t)ctx->r3); ctx->r11 = pkmnstadium_audio_safe_ptr((uint32_t)ctx->r11, (uint16_t)ctx->r3);"
+
+# Phase 1 diagnosis: log first 64 invocations of the libnaudio
+# offset->absolute lazy-resolver. Captures (arr_addr, base, count)
+# triplets so we can answer "did this struct ever get resolved?"
+# for the unk_D_800FC7D0_08C that the synth derefs at unk_2C.
+# Hook at function entry (0x8003C204).
+[[patches.hook]]
+func = "func_8003C204"
+before_vram = 0x8003C204
+text = "pkmnstadium_resolver_log((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6);"
+
+# Phase 1 diagnosis: dump the first 0x40 bytes of the struct at the
+# entry of func_8003BD2C (the SoundBank loader). Lets us diff against
+# the synth-read-time dump from pkmnstadium_audio_diag for the bank at
+# 0x8018A1B0 — answers whether the data was valid at load time and
+# got overwritten, or was bad from the start.
+[[patches.hook]]
+func = "func_8003BD2C"
+before_vram = 0x8003BD2C
+text = "pkmnstadium_sb_loader_enter(rdram, (uint32_t)ctx->r4);"

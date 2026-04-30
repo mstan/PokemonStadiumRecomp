@@ -158,7 +158,7 @@ static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
  * Stderr-prints the FIRST entry per function, then keeps counting
  * silently (avoids flooding stderr while still surfacing rare events).
  */
-#define INTERESTING_FN_COUNT 37
+#define INTERESTING_FN_COUNT 44
 static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_80005084",        /* SP DONE handler (case 0x64) */
     "func_80005148",        /* RDP DONE handler (case 0x65) */
@@ -190,7 +190,14 @@ static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_80037340",        /* audio init wrapper */
     "func_80038B68",        /* audio config setup */
     "n_alAudioFrame",       /* per-frame synth */
-    "func_80039D58",        /* sound-bank parser (sets unk_08C/090) */
+    "func_80039D58",        /* sound-bank parser path A (sets unk_08C/090) */
+    "func_80039F28",        /* sound-bank parser path B (sets unk_090) */
+    "func_8003A10C",        /* sound-bank parser path C (sets unk_090) */
+    "func_8003BD2C",        /* SoundBank loader (resolves wave_list, basenote, detune) */
+    "func_8003B214",        /* called inside func_8003AD58 right before unk_2C read */
+    "func_8003B2B4",        /* called inside func_8003AD58 (env update) */
+    "n_alInit",             /* libnaudio init (vram 0x80042920) */
+    "n_alSynNew",           /* libnaudio synth init (vram 0x800491C0) */
     "func_82100B1C",        /* fragment36 fade-out wait */
     "func_800076C0",        /* fragment36 cleanup callee */
     "func_8000D2B4",        /* fragment36 cleanup callee */
@@ -426,6 +433,100 @@ void pkmnstadium_audio_diag(uint8_t* rdram, uint32_t s0_vaddr,
         }
         fflush(stderr);
     }
+}
+
+/* func_8003C204 lazy-resolver argument log.
+ *
+ * Signature: void func_8003C204(u8* arr, u32 base, u32 count) — adds
+ * `base` to each non-zero entry of `arr[0..count]`. This is libnaudio's
+ * offset->absolute-pointer fixup. In disasm/src/38BB0.c we see it
+ * called for soundbank fields unk_04/unk_08/unk_0C, but not for
+ * unk_28/unk_2C — which are exactly the fields func_8003AD58 derefs
+ * and crashes on.
+ *
+ * Phase 1 question: do we ever see func_8003C204 called against the
+ * struct that ends up as arg0->unk_090 of the synth voice? If yes,
+ * our hypothesis (unk_2C never resolved) is wrong. If no, the
+ * hypothesis stands and the next question is "where SHOULD it be
+ * called and why isn't it."
+ *
+ * Capture the first N invocations' (arr, base, count). Triplet is
+ * cheap; first 64 calls fits easily. */
+#define RESOLVER_LOG_CAP 64
+static volatile int s_resolver_n = 0;
+typedef struct { uint32_t arr; uint32_t base; uint32_t count; } resolver_log_entry;
+static resolver_log_entry s_resolver_log[RESOLVER_LOG_CAP];
+
+void pkmnstadium_resolver_log(uint32_t arr, uint32_t base, uint32_t count) {
+    int idx = __atomic_fetch_add(&s_resolver_n, 1, __ATOMIC_RELAXED);
+    if (idx < RESOLVER_LOG_CAP) {
+        s_resolver_log[idx].arr = arr;
+        s_resolver_log[idx].base = base;
+        s_resolver_log[idx].count = count;
+    }
+}
+
+/* Public accessors (for debug_server "resolver_log" cmd). */
+int pkmnstadium_resolver_log_total(void) {
+    int n = __atomic_load_n(&s_resolver_n, __ATOMIC_RELAXED);
+    return n < RESOLVER_LOG_CAP ? n : RESOLVER_LOG_CAP;
+}
+void pkmnstadium_resolver_log_get(int idx, uint32_t* arr, uint32_t* base, uint32_t* count) {
+    if (idx < 0 || idx >= RESOLVER_LOG_CAP) {
+        if (arr)   *arr = 0;
+        if (base)  *base = 0;
+        if (count) *count = 0;
+        return;
+    }
+    if (arr)   *arr   = s_resolver_log[idx].arr;
+    if (base)  *base  = s_resolver_log[idx].base;
+    if (count) *count = s_resolver_log[idx].count;
+}
+
+/* func_8003BD2C SoundBank-loader entry snapshot.
+ *
+ * Dumps the first 0x40 bytes of the struct at arg0 BEFORE the loader
+ * runs. Combined with the post-resolve snapshot from
+ * pkmnstadium_audio_diag (taken at synth read time), tells us whether
+ * the bank was valid at load-time and got overwritten between then
+ * and synth read, OR whether the load-time data was already garbage.
+ *
+ * No behavior change. Just records the snapshot keyed by sb_addr;
+ * indexed lookup at synth-read time would let us diff. For Phase 1
+ * we just stderr-log so the diff is eyeballed. */
+#define SB_SNAPSHOT_CAP 16
+typedef struct {
+    uint32_t addr;
+    uint8_t  bytes[0x40];
+} sb_snapshot;
+static volatile int s_sb_n = 0;
+static sb_snapshot s_sb_snapshots[SB_SNAPSHOT_CAP];
+
+void pkmnstadium_sb_loader_enter(uint8_t* rdram, uint32_t sb_vaddr) {
+    int idx = __atomic_fetch_add(&s_sb_n, 1, __ATOMIC_RELAXED);
+    if (idx >= SB_SNAPSHOT_CAP) return;
+    s_sb_snapshots[idx].addr = sb_vaddr;
+    uint32_t paddr = sb_vaddr & 0x1FFFFFFFu;
+    if (paddr + 0x40 >= (1u << 30)) return;
+    for (int i = 0; i < 0x40; i++) {
+        s_sb_snapshots[idx].bytes[i] = rdram[(paddr + i) ^ 3];
+    }
+    /* Print one-line summary: first 8 bytes + content at offsets 0x24/0x28/0x2C. */
+    fprintf(stderr,
+        "[sb-load] arg0=0x%08X first8: %02X%02X%02X%02X %02X%02X%02X%02X "
+        "off24: %02X%02X%02X%02X off28: %02X%02X%02X%02X off2C: %02X%02X%02X%02X\n",
+        sb_vaddr,
+        s_sb_snapshots[idx].bytes[0], s_sb_snapshots[idx].bytes[1],
+        s_sb_snapshots[idx].bytes[2], s_sb_snapshots[idx].bytes[3],
+        s_sb_snapshots[idx].bytes[4], s_sb_snapshots[idx].bytes[5],
+        s_sb_snapshots[idx].bytes[6], s_sb_snapshots[idx].bytes[7],
+        s_sb_snapshots[idx].bytes[0x24], s_sb_snapshots[idx].bytes[0x25],
+        s_sb_snapshots[idx].bytes[0x26], s_sb_snapshots[idx].bytes[0x27],
+        s_sb_snapshots[idx].bytes[0x28], s_sb_snapshots[idx].bytes[0x29],
+        s_sb_snapshots[idx].bytes[0x2A], s_sb_snapshots[idx].bytes[0x2B],
+        s_sb_snapshots[idx].bytes[0x2C], s_sb_snapshots[idx].bytes[0x2D],
+        s_sb_snapshots[idx].bytes[0x2E], s_sb_snapshots[idx].bytes[0x2F]);
+    fflush(stderr);
 }
 
 /* Game_DoCopyProtection diagnostic. Returns -0x10 (= 0xFFFFFFF0)
