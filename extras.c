@@ -538,6 +538,121 @@ void pkmnstadium_cri_exit(uint32_t cur_buttondown_via_cont0_word, uint32_t butto
     }
 }
 
+/* Asset-loader chain diagnostic (ASSET_LOAD2 / func_800044F4
+ * / func_8000484C / func_800047C4) — the path that loads
+ * stadium_models for fragment62. The autonomous attract-demo
+ * crash traces back to process_geo_layout walking an
+ * uninitialized buffer that came out of this chain.
+ *
+ * Per-call thread-local 1-deep saved args, plus exit prints. */
+static __thread uint32_t s_load2_arg_rom_start[8];
+static __thread uint32_t s_load2_arg_rom_end[8];
+static __thread int s_load2_arg2_arg3[8];
+static __thread int s_load2_sp = 0;
+
+void pkmnstadium_load2_enter(uint32_t rom_start, uint32_t rom_end,
+                               uint32_t arg2, uint32_t arg3) {
+    if (s_load2_sp < 8) {
+        s_load2_arg_rom_start[s_load2_sp] = rom_start;
+        s_load2_arg_rom_end[s_load2_sp]   = rom_end;
+        s_load2_arg2_arg3[s_load2_sp]     = (int)((arg2 << 8) | arg3);
+    }
+    s_load2_sp++;
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 64) {
+        fprintf(stderr,
+            "[load2] enter rom=0x%08X..0x%08X arg2=%u arg3=%u depth=%d\n",
+            rom_start, rom_end, arg2, arg3, s_load2_sp);
+        fflush(stderr);
+    }
+}
+void pkmnstadium_load2_exit(uint32_t ret) {
+    s_load2_sp--;
+    int idx = s_load2_sp >= 0 && s_load2_sp < 8 ? s_load2_sp : 0;
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 64) {
+        fprintf(stderr,
+            "[load2] exit  rom=0x%08X..0x%08X arg2=%u arg3=%u -> 0x%08X\n",
+            s_load2_arg_rom_start[idx],
+            s_load2_arg_rom_end[idx],
+            (s_load2_arg2_arg3[idx] >> 8) & 0xFF,
+            s_load2_arg2_arg3[idx] & 0xFF,
+            ret);
+        fflush(stderr);
+    }
+}
+
+static __thread uint32_t s_aload_arg_archive[8];
+static __thread uint32_t s_aload_arg_file_number[8];
+static __thread int s_aload_sp = 0;
+
+void pkmnstadium_aload_enter(uint32_t archive, uint32_t file_number) {
+    if (s_aload_sp < 8) {
+        s_aload_arg_archive[s_aload_sp] = archive;
+        s_aload_arg_file_number[s_aload_sp] = file_number;
+    }
+    s_aload_sp++;
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 96) {
+        fprintf(stderr,
+            "[aload] enter archive=0x%08X file_number=%d depth=%d\n",
+            archive, (int32_t)file_number, s_aload_sp);
+        fflush(stderr);
+    }
+}
+void pkmnstadium_aload_exit(uint32_t ret) {
+    s_aload_sp--;
+    int idx = s_aload_sp >= 0 && s_aload_sp < 8 ? s_aload_sp : 0;
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 96) {
+        fprintf(stderr,
+            "[aload] exit  archive=0x%08X file_number=%d -> 0x%08X\n",
+            s_aload_arg_archive[idx],
+            (int32_t)s_aload_arg_file_number[idx], ret);
+        fflush(stderr);
+    }
+}
+
+void pkmnstadium_persload_enter(uint32_t archive, uint32_t file_ent) {
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 32) {
+        fprintf(stderr,
+            "[persload] enter archive=0x%08X file_ent=0x%08X\n",
+            archive, file_ent);
+        fflush(stderr);
+    }
+}
+void pkmnstadium_persload_exit(uint32_t ret) {
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 32) {
+        fprintf(stderr,
+            "[persload] exit  -> 0x%08X\n", ret);
+        fflush(stderr);
+    }
+}
+
+/* process_geo_layout entry diagnostic — log (pool, segptr) so we
+ * can identify the geo-data source for each call. The crashing call
+ * passed a segptr that translates via Memmap_GetFragmentVaddr to a
+ * pool address holding garbage; this hook lets us pin the
+ * fragment-vaddr source. */
+void pkmnstadium_geo_entry_log(uint32_t pool_arg, uint32_t segptr) {
+    static int s_n = 0;
+    s_n++;
+    if (s_n <= 32) {
+        fprintf(stderr,
+            "[geo-entry] #%d pool=0x%08X segptr=0x%08X\n",
+            s_n, pool_arg, segptr);
+        fflush(stderr);
+    }
+}
+
 /* process_geo_layout dispatch-site diagnostic.
  *
  * Inside process_geo_layout, the dispatch is:

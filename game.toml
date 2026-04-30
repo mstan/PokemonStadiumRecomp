@@ -3017,6 +3017,47 @@ func = "func_8003AD58"
 before_vram = 0x8003AF60
 text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (uint32_t)ctx->r11, (uint32_t)MEM_W(ctx->r16, 0X28), (uint16_t)ctx->r3);"
 
+# Asset-loader chain hooks — trace ASSET_LOAD2 (func_800044F4) and
+# its sub-asset getter (func_8000484C / func_800047C4) so we can
+# see whether stadium_models is actually being loaded into the
+# allocation that fragment62's process_geo_layout reads from.
+[[patches.hook]]
+func = "func_800044F4"
+before_vram = 0x800044F4   # entry
+text = "pkmnstadium_load2_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)ctx->r7);"
+
+[[patches.hook]]
+func = "func_800044F4"
+before_vram = 0x80004658   # right before jr $ra
+text = "pkmnstadium_load2_exit((uint32_t)ctx->r2);"
+
+[[patches.hook]]
+func = "func_8000484C"
+before_vram = 0x8000484C   # entry
+text = "pkmnstadium_aload_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5);"
+
+[[patches.hook]]
+func = "func_8000484C"
+before_vram = 0x80004954   # right before jr $ra
+text = "pkmnstadium_aload_exit((uint32_t)ctx->r2);"
+
+[[patches.hook]]
+func = "func_800047C4"
+before_vram = 0x800047C4   # entry
+text = "pkmnstadium_persload_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5);"
+
+[[patches.hook]]
+func = "func_800047C4"
+before_vram = 0x800047FC   # right before jr $ra
+text = "pkmnstadium_persload_exit((uint32_t)ctx->r2);"
+
+# process_geo_layout entry hook — log (pool, segptr) so we can
+# identify the geo-data source for the crashing call.
+[[patches.hook]]
+func = "process_geo_layout"
+before_vram = 0x80018B70
+text = "pkmnstadium_geo_entry_log((uint32_t)ctx->r4, (uint32_t)ctx->r5);"
+
 # process_geo_layout dispatch-site hook — fires right before the
 # `jalr $t9` at vram 0x80018C00 inside process_geo_layout. Logs
 # cmd_byte (r14), fn_ptr (r25), and gGeoLayoutCommand (r16) whenever
