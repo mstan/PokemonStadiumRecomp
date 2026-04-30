@@ -770,6 +770,102 @@ uint32_t pkmnstadium_memmap_get_exit(uint32_t game_result, uint32_t data_ctx) {
     return game_result;
 }
 
+/* Segment-map setter/clear diagnostic.
+ *
+ * Memmap_SetSegmentMap / Memmap_ClearSegmentMemmap are the only
+ * writers of gSegments[16] (the segment-id -> vaddr table consulted
+ * by Memmap_GetSegmentVaddr). The autonomous attract-demo crash
+ * shows process_geo_layout reading variant-384 bytes that decode as
+ * a stream of segment-6 references, while gSegments[6].vaddr is
+ * NULL at that moment — meaning either segment 6 was never mapped
+ * before attract, or it was mapped and then cleared too early.
+ *
+ * These hooks fire at function entry. Caller attribution is via a
+ * host backtrace (DbgHelp on Windows): N64Recomp does NOT populate
+ * ctx->r31 for direct C-call JAL targets that don't read $ra
+ * themselves, so the MIPS return address is not available. The
+ * recompiled C caller frame IS available, which resolves to a
+ * funcs_NN.c:line whose adjacent comment is the calling MIPS PC.
+ *
+ * Output is rate-limited to first 64 events of any id, but id==6
+ * ALWAYS logs, is tagged <SEG6>, and gets a host backtrace. */
+#ifdef _WIN32
+static void pkmnstadium_segmap_dump_host_backtrace(void) {
+    HANDLE proc = GetCurrentProcess();
+    SymInitialize(proc, NULL, TRUE);
+    void* frames[16];
+    USHORT n = CaptureStackBackTrace(0, 16, frames, NULL);
+    char symbuf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO* sym = (SYMBOL_INFO*)symbuf;
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen = 255;
+    IMAGEHLP_LINE64 line; memset(&line, 0, sizeof(line));
+    line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+    for (USHORT i = 0; i < n && i < 12; i++) {
+        DWORD64 disp64 = 0; DWORD disp32 = 0;
+        const char* name = "?"; const char* file = "?"; DWORD lineno = 0;
+        if (SymFromAddr(proc, (DWORD64)frames[i], &disp64, sym)) name = sym->Name;
+        if (SymGetLineFromAddr64(proc, (DWORD64)frames[i], &disp32, &line)) {
+            file = line.FileName; lineno = line.LineNumber;
+        }
+        fprintf(stderr, "  #%02u %s (%s:%lu)\n", i, name, file, lineno);
+    }
+}
+#else
+static void pkmnstadium_segmap_dump_host_backtrace(void) {}
+#endif
+
+void pkmnstadium_segmap_set_enter(uint32_t id, uint32_t vaddr,
+                                  uint32_t size, uint32_t game_state) {
+    static int s_n = 0;
+    static int s_n_id0 = 0;
+    s_n++;
+    /* id=0 (RDRAM identity remap) fires every frame; cap separately
+     * so it doesn't flood out the interesting non-id=0 events. */
+    if (id == 0) {
+        s_n_id0++;
+        if (s_n_id0 > 8) return;
+    }
+    fprintf(stderr,
+        "[segmap-set] #%d id=%u vaddr=0x%08X size=0x%X gs=0x%08X%s\n",
+        s_n, id, vaddr, size, game_state,
+        id == 6 ? "  <SEG6>" : "");
+    if (id == 6) pkmnstadium_segmap_dump_host_backtrace();
+    fflush(stderr);
+}
+
+/* func_80004258 (= ASSET_LOAD inner) entry diagnostic.
+ * Args: r4=id (segment id), r5=rom_start, r6=rom_end, r7=arg3.
+ * Body calls func_80003DC4(rom_start, rom_end, arg3, 0); if it
+ * returns non-NULL AND id > 0, calls Memmap_SetSegmentMap(id, ...).
+ * If we see id=6 entry events but no [segmap-set] for id=6, the
+ * inner loader returned NULL (or id was passed as 0). If we don't
+ * see id=6 entry at all, the call site (fragment75:96) is being
+ * skipped earlier in the call chain. */
+void pkmnstadium_asset_load_enter(uint32_t id, uint32_t rom_start,
+                                  uint32_t rom_end, uint32_t arg3,
+                                  uint32_t game_state) {
+    static int s_n = 0;
+    s_n++;
+    if (s_n > 256 && id != 6) return;
+    fprintf(stderr,
+        "[asset-load] #%d id=%u rom=0x%08X..0x%08X arg3=0x%X gs=0x%08X%s\n",
+        s_n, id, rom_start, rom_end, arg3, game_state,
+        id == 6 ? "  <SEG6-LOAD>" : "");
+    fflush(stderr);
+}
+
+void pkmnstadium_segmap_clear_enter(uint32_t id, uint32_t game_state) {
+    static int s_n = 0;
+    s_n++;
+    fprintf(stderr,
+        "[segmap-clear] #%d id=%u gs=0x%08X%s\n",
+        s_n, id, game_state,
+        id == 6 ? "  <SEG6>" : "");
+    if (id == 6) pkmnstadium_segmap_dump_host_backtrace();
+    fflush(stderr);
+}
+
 /* Asset-loader chain diagnostic (ASSET_LOAD2 / func_800044F4
  * / func_8000484C / func_800047C4) — the path that loads
  * stadium_models for fragment62. The autonomous attract-demo

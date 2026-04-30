@@ -3040,6 +3040,33 @@ before_vram = 0x80002140   # exit — override before delay-slot
 # first so the high bit triggers sign-extension to 0xFFFFFFFF800ABE00.
 text = "ctx->r4 = pkmnstadium_memmap_get_exit((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x800ABE00));"
 
+# Segment-map setter/clear hooks — capture every gSegments[id]
+# write so we can answer "is segment 6 ever mapped before attract,
+# and if so, when does it get cleared?" Hook fires at function
+# entry so ctx->r31 still holds the caller's return PC. Reads
+# gCurrentGameState (vram 0x80075668) so we can correlate writes
+# to BOOT/INTRO/TITLE/AREA_SELECT/etc. transitions.
+[[patches.hook]]
+func = "Memmap_SetSegmentMap"
+before_vram = 0x80001CE0   # entry — function start
+text = "pkmnstadium_segmap_set_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)MEM_W(0, (int32_t)0x80075668));"
+
+[[patches.hook]]
+func = "Memmap_ClearSegmentMemmap"
+before_vram = 0x80001D9C   # entry — function start
+text = "pkmnstadium_segmap_clear_enter((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x80075668));"
+
+# func_80004258 = ASSET_LOAD inner. Hook at function entry so we can
+# see every (id, rom_range, arg3) attempted, regardless of whether
+# the inner loader func_80003DC4 returned NULL (which would skip
+# Memmap_SetSegmentMap silently). Confirms whether the segment-6
+# load (fragment75:96 ASSET_LOAD(D_6000000, copyright, 0)) is even
+# being attempted.
+[[patches.hook]]
+func = "func_80004258"
+before_vram = 0x80004258   # entry — function start
+text = "pkmnstadium_asset_load_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)ctx->r7, (uint32_t)MEM_W(0, (int32_t)0x80075668));"
+
 # Asset-loader chain hooks — trace ASSET_LOAD2 (func_800044F4) and
 # its sub-asset getter (func_8000484C / func_800047C4) so we can
 # see whether stadium_models is actually being loaded into the
