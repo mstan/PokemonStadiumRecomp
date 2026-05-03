@@ -100,6 +100,11 @@ extern "C" size_t ultramodern_mesg_event_size(void);
 extern "C" uint64_t ultramodern_submit_gfx_count(void);
 extern "C" uint64_t ultramodern_submit_audio_count(void);
 extern "C" uint64_t ultramodern_submit_other_count(void);
+extern "C" uint64_t ultramodern_sp_complete_count(void);
+extern "C" uint64_t ultramodern_dp_complete_count(void);
+extern "C" void recomp_sp_task_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_sp_task_event_size(void);
 extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 
 // Map button name → N64 contStat bit.
@@ -196,7 +201,8 @@ static std::string handle_command(const std::string& line) {
             "{\"ok\":true,\"frame\":%llu,\"vi\":%llu,\"fast_forward\":%s,\"input_override\":%s,\"buttons\":%u,\"sx\":%d,\"sy\":%d,"
             "\"send_dl\":%llu,\"send_dl_gfx\":%llu,\"send_dl_audio\":%llu,\"send_dl_other\":%llu,\"update_screen\":%llu,"
             "\"external_requeues\":%llu,"
-            "\"submit_gfx\":%llu,\"submit_audio\":%llu,\"submit_other\":%llu}",
+            "\"submit_gfx\":%llu,\"submit_audio\":%llu,\"submit_other\":%llu,"
+            "\"sp_complete\":%llu,\"dp_complete\":%llu}",
             (unsigned long long)g_frame_count.load(),
             (unsigned long long)g_vi_ticks.load(),
             g_fast_forward.load() ? "true" : "false",
@@ -212,7 +218,9 @@ static std::string handle_command(const std::string& line) {
             (unsigned long long)ultramodern_external_requeues(),
             (unsigned long long)ultramodern_submit_gfx_count(),
             (unsigned long long)ultramodern_submit_audio_count(),
-            (unsigned long long)ultramodern_submit_other_count()
+            (unsigned long long)ultramodern_submit_other_count(),
+            (unsigned long long)ultramodern_sp_complete_count(),
+            (unsigned long long)ultramodern_dp_complete_count()
         );
         return buf;
     }
@@ -395,6 +403,67 @@ static std::string handle_command(const std::string& line) {
                 opn, e.mq, e.msg,
                 (unsigned)e.valid_before, (unsigned)e.valid_after,
                 (unsigned)e.block, (unsigned)e.game_thread);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "sp_task_recent") {
+        // Returns the last N osSpTaskStartGo events from the always-on
+        // ring in librecomp/sp.cpp. Used to identify the LAST gfx task
+        // submitted before send_dl freezes — answers the gfx-submit-
+        // freeze question at frame ~2400 / send_dl ~1157.
+        struct SpTaskEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint64_t frame;
+            uint64_t send_dl;
+            uint32_t mips_ra;
+            uint32_t task_ptr;
+            uint32_t task_type;
+            uint32_t task_flags;
+            uint32_t ucode;
+            uint32_t data_ptr;
+            uint32_t data_size;
+            uint32_t output_buff;
+            uint32_t output_buff_size;
+        };
+        if (recomp_sp_task_event_size() != sizeof(SpTaskEvent)) {
+            return R"({"ok":false,"error":"sp_task event size mismatch"})";
+        }
+        int n = get_int(line, "n", 128);
+        if (n < 1) n = 1;
+        if (n > 4096) n = 4096;
+        std::vector<SpTaskEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_sp_task_recent_copy(buf.data(), buf.size(), &got, &widx);
+        auto type_name = [](uint32_t t) -> const char* {
+            switch (t) {
+                case 1: return "M_GFXTASK";
+                case 2: return "M_AUDTASK";
+                case 3: return "M_VIDTASK";
+                case 4: return "M_NJPEGTASK";
+                case 6: return "M_HVQMTASK";
+                default: return "?";
+            }
+        };
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[384];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"frame\":%llu,\"send_dl\":%llu,"
+                "\"type\":\"%s\",\"task_ptr\":%u,\"mips_ra\":%u,"
+                "\"ucode\":%u,\"data_ptr\":%u,\"data_size\":%u,"
+                "\"output_buff\":%u,\"output_buff_size\":%u,\"flags\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                (unsigned long long)e.frame, (unsigned long long)e.send_dl,
+                type_name(e.task_type), e.task_ptr, e.mips_ra,
+                e.ucode, e.data_ptr, e.data_size,
+                e.output_buff, e.output_buff_size, e.task_flags);
             out += b;
         }
         out += "]}";

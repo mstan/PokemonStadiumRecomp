@@ -1,17 +1,23 @@
+"""Inspect last_run_report.json sp_task ring + status counters."""
 import json, sys
-d = json.load(open(sys.argv[1] if len(sys.argv) > 1 else "build/whitescreen.json"))
-diag = d.get("diagnostics", {})
-print("diagnostics keys:", list(diag.keys()))
-for k, v in diag.items():
-    print(f"--- {k} ---")
-    if isinstance(v, dict):
-        for k2, v2 in v.items():
-            if isinstance(v2, list):
-                print(f"  {k2}: ({len(v2)} entries) ...")
-                for e in v2[-20:]:
-                    print("    ", e)
-            else:
-                s = str(v2)
-                print(f"  {k2}:", s[:400])
-    else:
-        print(" ", str(v)[:500])
+
+p = sys.argv[1] if len(sys.argv) > 1 else "build/last_run_report.json"
+with open(p) as f:
+    d = json.load(f)
+
+st = d.get("status", {})
+print("=== status counters ===")
+for k in ("frame", "send_dl", "send_dl_gfx", "submit_gfx",
+         "submit_audio", "sp_complete", "dp_complete", "update_screen"):
+    print(f"  {k:18} = {st.get(k)}")
+
+sp = d.get("sp_task_recent", {})
+events = sp.get("events", [])
+gfx = [e for e in events if e.get("type") == "M_GFXTASK"]
+print(f"\nsp_task_recent: write_idx={sp.get('write_idx')}  events={len(events)}  gfx={len(gfx)}")
+if gfx:
+    last = gfx[-1]
+    print(f"  last gfx: seq={last['seq']} frame={last['frame']} send_dl={last['send_dl']}")
+    print(f"            data_ptr={last['data_ptr']:#010x} data_size={last['data_size']} ucode={last['ucode']:#010x}")
+else:
+    print("  NO M_GFXTASK in window")

@@ -60,6 +60,25 @@ extern "C" size_t   ultramodern_mesg_event_size(void);
 extern "C" uint64_t ultramodern_submit_gfx_count(void);
 extern "C" uint64_t ultramodern_submit_audio_count(void);
 extern "C" uint64_t ultramodern_submit_other_count(void);
+extern "C" uint64_t ultramodern_sp_complete_count(void);
+extern "C" uint64_t ultramodern_dp_complete_count(void);
+
+// RT64 interpreter probe — surfaces what the gfx thread is currently
+// executing. When dp_complete < submit_gfx these tell us how far into
+// task #N RT64 got and what its recent visited PCs are.
+extern "C" uint64_t rt64_interp_seq(void);
+extern "C" uint64_t rt64_interp_step(void);
+extern "C" uint64_t rt64_interp_task_index(void);
+extern "C" uint64_t rt64_interp_current_pc(void);
+extern "C" uint64_t rt64_interp_dl_start(void);
+extern "C" void rt64_interp_recent_copy(uint64_t* out, size_t cap,
+                                        size_t* n_written, uint64_t* seq_out);
+extern "C" size_t rt64_interp_cf_event_size(void);
+extern "C" void   rt64_interp_cf_recent_copy(void* out_void, size_t cap,
+                                             size_t* n_written, uint64_t* seq_out);
+extern "C" void     recomp_sp_task_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t   recomp_sp_task_event_size(void);
 
 // recomp runtime — provides RDRAM base for safe reads
 extern "C" uint8_t* recomp_runtime_get_rdram(void);
@@ -85,6 +104,35 @@ static std::mutex g_dump_mutex;
 // ── Helpers ──────────────────────────────────────────────────────────
 
 namespace {
+
+// Mirror of the in-librecomp/sp.cpp Event layout — keep in lockstep.
+struct SpTaskEvent {
+    uint64_t seq;
+    uint64_t ms;
+    uint64_t frame;
+    uint64_t send_dl;
+    uint32_t mips_ra;
+    uint32_t task_ptr;
+    uint32_t task_type;
+    uint32_t task_flags;
+    uint32_t ucode;
+    uint32_t data_ptr;
+    uint32_t data_size;
+    uint32_t output_buff;
+    uint32_t output_buff_size;
+};
+
+const char* sp_task_type_name(uint32_t t) {
+    // From ultra64.h: M_GFXTASK=1, M_AUDTASK=2, M_VIDTASK=3, M_NJPEGTASK=4, M_HVQMTASK=6 ...
+    switch (t) {
+        case 1: return "M_GFXTASK";
+        case 2: return "M_AUDTASK";
+        case 3: return "M_VIDTASK";
+        case 4: return "M_NJPEGTASK";
+        case 6: return "M_HVQMTASK";
+        default: return "?";
+    }
+}
 
 // Mirror of the in-ultramodern Event layout — keep in lockstep.
 struct MesgEvent {
@@ -272,6 +320,8 @@ void dump_status_json(FILE* f) {
         "    \"submit_gfx\": %llu,\n"
         "    \"submit_audio\": %llu,\n"
         "    \"submit_other\": %llu,\n"
+        "    \"sp_complete\": %llu,\n"
+        "    \"dp_complete\": %llu,\n"
         "    \"external_requeues\": %llu\n"
         "  },\n",
         (unsigned long long)g_frame_count.load(),
@@ -284,6 +334,8 @@ void dump_status_json(FILE* f) {
         (unsigned long long)ultramodern_submit_gfx_count(),
         (unsigned long long)ultramodern_submit_audio_count(),
         (unsigned long long)ultramodern_submit_other_count(),
+        (unsigned long long)ultramodern_sp_complete_count(),
+        (unsigned long long)ultramodern_dp_complete_count(),
         (unsigned long long)ultramodern_external_requeues());
 }
 
@@ -323,6 +375,173 @@ void dump_libultra_json(FILE* f, int n_max) {
             (unsigned)ev.pc, (unsigned)ev.a0, (unsigned)ev.a1,
             (unsigned)ev.a2, (unsigned)ev.a3,
             (unsigned long long)ev.ms);
+    }
+    std::fprintf(f, "]},\n");
+}
+
+// Capture the bytes of the LAST M_GFXTASK that was submitted before
+// freeze, written to build/last_run_freeze_dl.bin. Used to diagnose
+// hangs inside RT64::Interpreter::processDisplayLists where send_dl
+// started but dp_complete never fired (submit_gfx > dp_complete).
+// Offline GBI decoders read the bin to find the offending command.
+void dump_last_gfx_dl_to_file() {
+    if (recomp_sp_task_event_size() != sizeof(SpTaskEvent)) return;
+    // 4096 matches the ring cap in librecomp/sp.cpp. The post-freeze
+    // audio flood would push gfx events out of a smaller window.
+    std::vector<SpTaskEvent> buf(4096);
+    size_t got = 0;
+    uint64_t widx = 0;
+    recomp_sp_task_recent_copy(buf.data(), buf.size(), &got, &widx);
+    const SpTaskEvent* last_gfx = nullptr;
+    for (size_t i = got; i > 0; --i) {
+        const auto& e = buf[i - 1];
+        if (e.task_type == 1 /* M_GFXTASK */) { last_gfx = &e; break; }
+    }
+    if (!last_gfx) return;
+    uint8_t* rdram = recomp_runtime_get_rdram();
+    if (!rdram) return;
+    uint32_t addr = last_gfx->data_ptr;
+    uint32_t size = last_gfx->data_size;
+    if (size == 0 || size > 0x100000) return;
+    if (addr < 0x80000000u) return;
+    uint32_t off = addr - 0x80000000u;
+    constexpr uint32_t RDRAM_END = 0x800000u;
+    if (off >= RDRAM_END || off + size > RDRAM_END) return;
+    FILE* bf = std::fopen("build/last_run_freeze_dl.bin", "wb");
+    if (!bf) return;
+    // Byte access into rdram uses XOR-by-3 endian compensation (host
+    // is LE, rdram bytes are stored as if BE word-swapped). See the
+    // rdram_peek path in debug_server.cpp for the same pattern.
+    for (uint32_t i = 0; i < size; i++) {
+        uint8_t b = rdram[(off + i) ^ 3];
+        std::fwrite(&b, 1, 1, bf);
+    }
+    std::fclose(bf);
+}
+
+// Mirror of the in-rt64 CfEvent layout — keep in lockstep.
+struct InterpCfEvent {
+    uint64_t step;
+    uint64_t pc;
+    uint32_t w0;
+    uint32_t w1;
+    uint64_t target_or_pop;
+    uint32_t stack_depth_after;
+    uint32_t pad;
+};
+
+void dump_interp_cf_json(FILE* f) {
+    if (rt64_interp_cf_event_size() != sizeof(InterpCfEvent)) {
+        std::fprintf(f, "  \"interp_cf\": {\"error\": \"size_mismatch\"},\n");
+        return;
+    }
+    constexpr size_t N = 16384;
+    std::vector<InterpCfEvent> buf(N);
+    size_t got = 0;
+    uint64_t seq = 0;
+    rt64_interp_cf_recent_copy(buf.data(), buf.size(), &got, &seq);
+    std::fprintf(f,
+        "  \"interp_cf\": {\"seq\": %llu, \"events\": [",
+        (unsigned long long)seq);
+    for (size_t i = 0; i < got; i++) {
+        const auto& e = buf[i];
+        const uint8_t op = (e.w0 >> 24) & 0xFF;
+        const char* name = (op == 0xDE) ? "G_DL"
+                       : (op == 0xDF) ? "G_ENDDL"
+                       : "?";
+        std::fprintf(f,
+            "%s{\"step\":%llu,\"pc\":%llu,\"w0\":%u,\"w1\":%u,"
+            "\"target_or_pop\":%llu,\"op\":\"%s\",\"depth\":%u}",
+            (i ? "," : ""),
+            (unsigned long long)e.step,
+            (unsigned long long)e.pc,
+            e.w0, e.w1,
+            (unsigned long long)e.target_or_pop,
+            name, e.stack_depth_after);
+    }
+    std::fprintf(f, "]},\n");
+}
+
+// Snapshot of RT64::Interpreter::processDisplayLists state.
+// Critical for diagnosing infinite loops inside the renderer:
+//   step  = number of inner-loop iterations since current task started
+//   current_pc = host pointer of the DisplayList being processed *right now*
+//   recent[] = last N visited host pointers (sliding window)
+// If step is very high (millions), RT64 is in a true loop, and the
+// recent[] window contains the loop body.
+void dump_interp_probe_json(FILE* f) {
+    constexpr size_t N_PCS = 1024;
+    std::vector<uint64_t> buf(N_PCS);
+    size_t got = 0;
+    uint64_t seq = 0;
+    rt64_interp_recent_copy(buf.data(), buf.size(), &got, &seq);
+    uint64_t rdram_host_base = (uint64_t)recomp_runtime_get_rdram();
+    std::fprintf(f,
+        "  \"interp_probe\": {\n"
+        "    \"seq\": %llu,\n"
+        "    \"step\": %llu,\n"
+        "    \"task_index\": %llu,\n"
+        "    \"current_pc\": %llu,\n"
+        "    \"dl_start\": %llu,\n"
+        "    \"rdram_host_base\": %llu,\n"
+        "    \"recent_pcs\": [",
+        (unsigned long long)seq,
+        (unsigned long long)rt64_interp_step(),
+        (unsigned long long)rt64_interp_task_index(),
+        (unsigned long long)rt64_interp_current_pc(),
+        (unsigned long long)rt64_interp_dl_start(),
+        (unsigned long long)rdram_host_base);
+    for (size_t i = 0; i < got; i++) {
+        std::fprintf(f, "%s%llu", (i ? "," : ""), (unsigned long long)buf[i]);
+    }
+    std::fprintf(f, "]\n  },\n");
+}
+
+// Dump the full 8MB RDRAM image to build/last_run_rdram.bin so that
+// offline tools can follow G_DL chains through sub-DLs that live
+// outside the freeze task's data_ptr window. XOR-3 byte access used.
+void dump_full_rdram_to_file() {
+    uint8_t* rdram = recomp_runtime_get_rdram();
+    if (!rdram) return;
+    constexpr uint32_t RDRAM_SIZE = 0x800000u;
+    FILE* bf = std::fopen("build/last_run_rdram.bin", "wb");
+    if (!bf) return;
+    // Buffer in 64KB chunks to avoid 1-byte fwrite overhead.
+    constexpr uint32_t CHUNK = 0x10000u;
+    std::vector<uint8_t> buf(CHUNK);
+    for (uint32_t base = 0; base < RDRAM_SIZE; base += CHUNK) {
+        for (uint32_t i = 0; i < CHUNK; i++) {
+            buf[i] = rdram[(base + i) ^ 3];
+        }
+        std::fwrite(buf.data(), 1, CHUNK, bf);
+    }
+    std::fclose(bf);
+}
+
+void dump_sp_task_json(FILE* f, int n_max) {
+    if (recomp_sp_task_event_size() != sizeof(SpTaskEvent)) {
+        std::fprintf(f, "  \"sp_task_recent\": {\"error\": \"size_mismatch\"},\n");
+        return;
+    }
+    std::vector<SpTaskEvent> buf(n_max);
+    size_t got = 0;
+    uint64_t widx = 0;
+    recomp_sp_task_recent_copy(buf.data(), buf.size(), &got, &widx);
+    std::fprintf(f, "  \"sp_task_recent\": {\"write_idx\": %llu, \"events\": [",
+                 (unsigned long long)widx);
+    for (size_t i = 0; i < got; i++) {
+        const auto& e = buf[i];
+        std::fprintf(f,
+            "%s{\"seq\":%llu,\"ms\":%llu,\"frame\":%llu,\"send_dl\":%llu,"
+            "\"type\":\"%s\",\"task_ptr\":%u,\"mips_ra\":%u,"
+            "\"ucode\":%u,\"data_ptr\":%u,\"data_size\":%u,"
+            "\"output_buff\":%u,\"output_buff_size\":%u,\"flags\":%u}",
+            (i ? "," : ""),
+            (unsigned long long)e.seq, (unsigned long long)e.ms,
+            (unsigned long long)e.frame, (unsigned long long)e.send_dl,
+            sp_task_type_name(e.task_type), e.task_ptr, e.mips_ra,
+            e.ucode, e.data_ptr, e.data_size,
+            e.output_buff, e.output_buff_size, e.task_flags);
     }
     std::fprintf(f, "]},\n");
 }
@@ -467,6 +686,11 @@ extern "C" void psr_post_mortem_dump(const char* reason,
     dump_trace_json(f, 256);
     dump_libultra_json(f, 128);
     dump_mesg_json(f, 256);
+    dump_sp_task_json(f, 4096);
+    dump_last_gfx_dl_to_file();
+    dump_full_rdram_to_file();
+    dump_interp_probe_json(f);
+    dump_interp_cf_json(f);
     dump_all_threads_json(f, fault_info);
 
     std::fprintf(f, "  \"_end\": true\n}\n");
