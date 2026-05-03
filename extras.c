@@ -284,6 +284,34 @@ void pkmnstadium_lookup_exit(uint32_t v0) {
     }
 }
 
+/* n_alLoadParam voice descriptor probe. Hooked just before the
+ * crashing load `lw $t5, 0x8($v1)` at MIPS PC 0x8004FAE4. Logs
+ * (a3, v0, v1) where v1 is the about-to-be-derefed pointer. Prints
+ * to stderr when v1 falls outside RDRAM [0x80000000, 0x80800000) —
+ * i.e., the case that would trip the SEH access violation. Also
+ * keeps a ring of the last 64 calls so a post-mortem can show the
+ * recent context (good calls preceding the bad one). */
+#define VOICE_RING_CAP 64
+struct voice_ev { uint32_t a3, v0, v1; };
+static volatile struct voice_ev s_voice_ring[VOICE_RING_CAP];
+static volatile uint64_t s_voice_seq = 0;
+static __thread int s_voice_logged_bad = 0;
+
+void pkmnstadium_audio_voice_check(uint32_t a3, uint32_t v0, uint32_t v1) {
+    uint64_t s = s_voice_seq++;
+    s_voice_ring[s % VOICE_RING_CAP].a3 = a3;
+    s_voice_ring[s % VOICE_RING_CAP].v0 = v0;
+    s_voice_ring[s % VOICE_RING_CAP].v1 = v1;
+    /* RDRAM is [0x80000000, 0x80800000). Flag anything else. */
+    if ((v1 < 0x80000000u || v1 >= 0x80800000u) && !s_voice_logged_bad) {
+        s_voice_logged_bad = 1;
+        fprintf(stderr,
+            "[voice_check] BAD v1=0x%08X  a3=0x%08X  v0=0x%08X  seq=%llu\n",
+            v1, a3, v0, (unsigned long long)s);
+        fflush(stderr);
+    }
+}
+
 /* func_80003DC4(rom_start, rom_end, 0, 0) — the PERS-SZP wrapper
  * loader. Logs every call's args + first 8 bytes of the destination
  * (the wrapper magic) so we can correlate which entries actually

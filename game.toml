@@ -2892,6 +2892,18 @@ func = "Memmap_RelocateFragment"
 before_vram = 0x80001E50  # first instr of Memmap_RelocateFragment ⇒ entry hook
 text = "recomp_register_runtime_fragment(rdram, ctx->r4, ctx->r5);"
 
+# n_alLoadParam voice probe — fires just before the crashing load
+# `lw $t5, 0x8($v1)` at MIPS PC 0x8004FAE4. ctx->r2 = v0, ctx->r3 = v1
+# (post `lw $v1, 0xC($v0)` at 0x8004FAD8), ctx->r7 = a3. Records the
+# tuple in a 64-entry ring and prints to stderr the first time v1 is
+# OOB of RDRAM [0x80000000, 0x80800000) — that case would trip the
+# kids-club SIGSEGV. Without the probe we have no way to identify
+# which voice descriptor v0 came from.
+[[patches.hook]]
+func = "n_alLoadParam"
+before_vram = 0x8004FAE4
+text = "pkmnstadium_audio_voice_check(ctx->r7, ctx->r2, ctx->r3);"
+
 # func_80019D18 lookup diagnostic — capture (input_idx, return_v0)
 # pairs to identify which idx Stadium asks for that misses. The
 # menu-load crash at func_86B0027C deref's a NULL returned by this
