@@ -140,5 +140,4 @@ playable.
       reads) with per-site `game.toml` patches at each known
       kseg1-ROM-access site. Known site: `Game_DoCopyProtection`
       reading `*(u32*)0xB0000E38`. Wins: keeps the rdram region
-      free for mod use, follows the established N64Recomp project
-      pattern. Defer until the audio family is fully closed.
+      free for mod use. Defer until the audio family is fully closed.
