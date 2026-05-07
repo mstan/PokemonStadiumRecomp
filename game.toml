@@ -1999,6 +1999,22 @@ ignored = [
     "osSetTime",
 ]
 [[input.manual_funcs]]
+# proutSprintf — libultra static helper used by sprintf as the
+# putput callback to _Printf. Declared `static` in pret's
+# disasm/lib/ultralib/src/libc/sprintf.c, which is why the
+# recompiler's auto-discovery skips it; sprintf passes it as a
+# function pointer (vaddr 0x8005E020), and at the indirect call
+# inside _Printf the func_map lookup misses → trampoline-abort.
+# Force-emit the 9 MIPS instructions (memcpy + sp-adjust + jr).
+# Crash repro: launch quick-battle, watch pokemon intro animations,
+# screen fade to player controls — sprintf inside that transition
+# is the first reached call site.
+name = "proutSprintf"
+section = ".text"
+vram = 0x8005E020
+size = 0x24   # 0x8005E044 - 0x8005E020 = 9 instructions
+
+[[input.manual_funcs]]
 # fragment1 header trampoline (j + delay slot at offset 0). The
 # textbin header isn't disassembled by N64Recomp, so we declare it
 # manually as an 8-byte function. The J instruction at offset 0 jumps

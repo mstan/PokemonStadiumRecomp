@@ -248,11 +248,29 @@ static ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callba
 #endif
 }
 
+// TAB-hold turbo state. While TAB is pressed, g_fast_forward is forced
+// ON regardless of the env-var-driven persistent default. On release,
+// the persistent state is restored. Lets the user run at real-time
+// for reading text/cinematics and momentarily skip with TAB.
+//
+// Persistent state is set during init from PSR_TURBO env var; only
+// the TAB key driver mutates it back to the persistent value here.
+// TCP `fast_forward` toggles still update g_fast_forward directly,
+// which is consistent so long as TAB isn't being held at toggle time.
+static std::atomic<bool> s_turbo_persistent{true};
+
 static void update_gfx(void*) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_QUIT) {
             std::exit(0);
+        }
+        if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB &&
+            ev.key.repeat == 0) {
+            pkmnstadium::dbg::g_fast_forward.store(true);
+        } else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_TAB) {
+            pkmnstadium::dbg::g_fast_forward.store(
+                s_turbo_persistent.load());
         }
     }
 }
@@ -678,8 +696,9 @@ int main(int argc, char** argv) {
         }
     }
     pkmnstadium::dbg::g_fast_forward.store(turbo_default);
+    s_turbo_persistent.store(turbo_default);
     std::fprintf(stderr, "[PSR] PSR_TURBO=%s -> turbo %s "
-                 "(toggle via TCP `fast_forward`)\n",
+                 "(toggle via TCP `fast_forward`; hold TAB for momentary turbo)\n",
                  std::getenv("PSR_TURBO") ? std::getenv("PSR_TURBO") : "(unset)",
                  turbo_default ? "ON" : "off");
     std::fflush(stderr);
