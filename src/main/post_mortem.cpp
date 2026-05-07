@@ -91,6 +91,21 @@ extern "C" void pkmnstadium_afx_in_get  (uint32_t i, uint32_t* a, uint32_t* b, u
 extern "C" void pkmnstadium_afx_out_get (uint32_t i, uint32_t* a, uint32_t* b, uint32_t* c);
 extern "C" void pkmnstadium_mbp_pre_get (uint32_t i, uint32_t* a, uint32_t* b, uint32_t* c);
 extern "C" void pkmnstadium_mbp_disp_get(uint32_t i, uint32_t* a, uint32_t* b, uint32_t* c);
+extern "C" uint64_t pkmnstadium_mbp_chain_seq(void);
+extern "C" uint32_t pkmnstadium_mbp_chain_cap(void);
+extern "C" void pkmnstadium_mbp_chain_get(uint32_t i, uint32_t* kind,
+                                          uint32_t* depth_in, uint32_t* a0, uint32_t* a1,
+                                          uint32_t* v0_in, uint32_t* depth_out,
+                                          uint32_t* v0_out, uint32_t* s0_out);
+extern "C" uint64_t pkmnstadium_gdl_submit_seq(void);
+extern "C" uint64_t pkmnstadium_gdl_walk_seq(void);
+extern "C" uint32_t pkmnstadium_gdl_ring_cap(void);
+extern "C" void pkmnstadium_gdl_submit_get(uint32_t i, uint64_t* submit_seq,
+                                            uint32_t* target_vaddr, uint32_t* parent_vaddr,
+                                            uint8_t out_head[16]);
+extern "C" void pkmnstadium_gdl_walk_get(uint32_t i, uint64_t* submit_seq,
+                                          uint32_t* target_vaddr, uint32_t* parent_vaddr,
+                                          uint8_t out_head[16]);
 
 // recomp runtime — provides RDRAM base for safe reads
 extern "C" uint8_t* recomp_runtime_get_rdram(void);
@@ -673,6 +688,65 @@ void dump_audio_rings_json(FILE* f) {
              pkmnstadium_mbp_pre_get,  "v0", "s7", "a1");
     dump_one("audio_mbp_disp", pkmnstadium_mbp_disp_seq(),
              pkmnstadium_mbp_disp_get, "t8", "t9", "v0");
+
+    // n_alMainBusPull recursion-chain ring (entry/exit pairs with depth).
+    {
+        const uint64_t seq = pkmnstadium_mbp_chain_seq();
+        const uint32_t cap = pkmnstadium_mbp_chain_cap();
+        std::fprintf(f, "  \"audio_mbp_chain\": {\"seq\":%llu,\"cap\":%u,\"events\":[",
+                     (unsigned long long)seq, cap);
+        const uint64_t n = (seq < cap) ? seq : cap;
+        const uint64_t start = (seq < cap) ? 0 : (seq - cap);
+        for (uint64_t i = 0; i < n; i++) {
+            uint64_t idx = (start + i) % cap;
+            uint32_t kind, depth_in, a0, a1, v0_in, depth_out, v0_out, s0_out;
+            pkmnstadium_mbp_chain_get((uint32_t)idx, &kind, &depth_in, &a0, &a1,
+                                      &v0_in, &depth_out, &v0_out, &s0_out);
+            if (kind == 0) {
+                std::fprintf(f,
+                    "%s{\"i\":%llu,\"kind\":\"in\",\"depth\":%u,"
+                    "\"a0\":%u,\"a1\":%u,\"v0_in\":%u}",
+                    (i ? "," : ""), (unsigned long long)(start + i),
+                    depth_in, a0, a1, v0_in);
+            } else {
+                std::fprintf(f,
+                    "%s{\"i\":%llu,\"kind\":\"out\",\"depth\":%u,"
+                    "\"v0\":%u,\"s0\":%u}",
+                    (i ? "," : ""), (unsigned long long)(start + i),
+                    depth_out, v0_out, s0_out);
+            }
+        }
+        std::fprintf(f, "]},\n");
+    }
+
+    // GDL submit-time + walk-time CALL-target snapshot rings.
+    auto dump_gdl = [&](const char* key, uint64_t seq,
+                        void(*get)(uint32_t, uint64_t*, uint32_t*, uint32_t*, uint8_t*))
+    {
+        const uint32_t cap = pkmnstadium_gdl_ring_cap();
+        std::fprintf(f, "  \"%s\": {\"seq\":%llu,\"cap\":%u,\"events\":[",
+                     key, (unsigned long long)seq, cap);
+        const uint64_t n = (seq < cap) ? seq : cap;
+        const uint64_t start = (seq < cap) ? 0 : (seq - cap);
+        for (uint64_t i = 0; i < n; i++) {
+            uint64_t idx = (start + i) % cap;
+            uint64_t ssubmit;
+            uint32_t tgt, parent;
+            uint8_t head[16];
+            get((uint32_t)idx, &ssubmit, &tgt, &parent, head);
+            std::fprintf(f,
+                "%s{\"i\":%llu,\"submit_seq\":%llu,\"target\":%u,\"parent\":%u,\"head\":\"",
+                (i ? "," : ""), (unsigned long long)(start + i),
+                (unsigned long long)ssubmit, tgt, parent);
+            for (int k = 0; k < 16; k++) {
+                std::fprintf(f, "%02X", head[k]);
+            }
+            std::fprintf(f, "\"}");
+        }
+        std::fprintf(f, "]},\n");
+    };
+    dump_gdl("gdl_submit", pkmnstadium_gdl_submit_seq(), pkmnstadium_gdl_submit_get);
+    dump_gdl("gdl_walk",   pkmnstadium_gdl_walk_seq(),   pkmnstadium_gdl_walk_get);
 }
 
 void dump_seh_json(FILE* f, EXCEPTION_POINTERS* info) {

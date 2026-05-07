@@ -275,12 +275,24 @@ pokestadium::renderer::RT64Context::RT64Context(uint8_t* rdram,
 
 pokestadium::renderer::RT64Context::~RT64Context() = default;
 
+extern "C" void pkmnstadium_gdl_submit_snapshot(uint8_t* rdram, uint32_t dl_vaddr,
+                                                uint64_t submit_seq);
+
 void pokestadium::renderer::RT64Context::send_dl(const OSTask* task) {
     pkmnstadium::dbg::g_send_dl_count.fetch_add(1);
     switch (task->t.type) {
         case M_GFXTASK:    pkmnstadium::dbg::g_send_dl_gfx_count.fetch_add(1); break;
         case M_AUDTASK:    pkmnstadium::dbg::g_send_dl_audio_count.fetch_add(1); break;
         default:           pkmnstadium::dbg::g_send_dl_other_count.fetch_add(1); break;
+    }
+    /* Snapshot every G_DL push=1 (CALL) target's first 16 bytes BEFORE handing
+     * the DL to RT64. submit_seq = current send_dl_gfx counter so we can
+     * correlate with the walk-time snapshot the interpreter takes. */
+    if (task->t.type == M_GFXTASK) {
+        uint64_t submit_seq = pkmnstadium::dbg::g_send_dl_gfx_count.load();
+        pkmnstadium_gdl_submit_snapshot(app->core.RDRAM,
+                                        task->t.data_ptr & 0x3FFFFFF,
+                                        submit_seq);
     }
     app->state->rsp->reset();
     app->interpreter->loadUCodeGBI(task->t.ucode & 0x3FFFFFF, task->t.ucode_data & 0x3FFFFFF, true);

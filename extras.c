@@ -33,6 +33,16 @@
 struct recomp_context;
 typedef struct recomp_context recomp_context;
 
+/* Read a 32-bit big-endian value from rdram. rdram on the host
+ * side stores BE words in word-swapped (per-byte XOR-3) order, so
+ * to read the original big-endian word we recombine bytes via the
+ * usual (byte_index ^ 3) indexing. */
+#define MEM_LOAD_BE32(rdram, paddr) (\
+    ((uint32_t)(rdram)[((paddr) + 0) ^ 3] << 24) | \
+    ((uint32_t)(rdram)[((paddr) + 1) ^ 3] << 16) | \
+    ((uint32_t)(rdram)[((paddr) + 2) ^ 3] <<  8) | \
+    ((uint32_t)(rdram)[((paddr) + 3) ^ 3]))
+
 
 static void unhandled_abort(const char *kind, uint32_t pc, const char *detail) {
     /* Persistent-file copy: stderr in headless runs gets buffered and
@@ -312,6 +322,295 @@ void pkmnstadium_audio_voice_check(uint32_t a3, uint32_t v0, uint32_t v1) {
     }
 }
 
+/* n_alAdpcmPull aClearBuffer-overflow probe.
+ *
+ * Hooked at MIPS PC 0x8004F908 — the START of the inlined
+ * `aClearBuffer(ptr++, startZero + *outp, nOver << 1)` block in
+ * n_alAdpcmPull. At this point:
+ *   $s0 (r16) = filter (N_PVoice*)
+ *   $s2 (r18) = nOver        (samples to clear)
+ *   $v1 (r3)  = startZero    (s32, may be 0 if !decoded)
+ *   $t3 (r11) = outp         (s16* pointer)
+ *
+ * The captured cmd buffer (audio_task_corrupt.bin from a 2026-05-06
+ * Press-Start-past-title repro) contains CLEARBUFF cmds with
+ * count = nOver << 1 ≈ 0x0E58XXXX (~120M samples worth) emitted by
+ * specific voice slots. The post-task DMEM check then catches a
+ * zeroed dispatch table because the RSP handler (L_119C) clears
+ * 24800 bytes via DMEM addressing that wraps every 0x1000.
+ *
+ * Across 3 captured frames, the same 4 voice slots are pathological;
+ * d shrinks by ~0x240 and c grows by ~0x240 per frame, consistent
+ * with f->dc_memin accumulating past the sample's end.
+ *
+ * Goal: identify which N_PVoice (and which dc_table) is in this
+ * runaway state. On first observation of nOver > 0x400, dump the
+ * full N_PVoice + ALWaveTable so we can see which field is wrong.
+ *
+ * N_PVoice layout (n_synthInternals.h, verified against recomp):
+ *   0x00 ALLink node (8 bytes)
+ *   0x08 vvoice*
+ *   0x0C dc_state*
+ *   0x10 dc_lstate*
+ *   0x14 dc_loop.start  (s32)
+ *   0x18 dc_loop.end    (s32)
+ *   0x1C dc_loop.count  (s32)
+ *   0x20 dc_table*  (ALWaveTable*)
+ *   0x24 dc_bookSize
+ *   0x28 dc_dma func ptr
+ *   0x2C dc_dmaState
+ *   0x30 dc_sample
+ *   0x34 dc_lastsam
+ *   0x38 dc_first
+ *   0x3C dc_memin
+ *
+ * ALWaveTable layout (libaudio.h):
+ *   0x00 base*
+ *   0x04 len   (s32)
+ *   0x08 type, flags (u8 each)
+ *   0x0C waveInfo.adpcmWave.loop*
+ *   0x10 waveInfo.adpcmWave.book*
+ */
+/* Forward decl — defined further down. */
+static void pkmnstadium_wt_dump_for_filter(uint32_t filter_vaddr);
+
+void pkmnstadium_adpcm_overflow_dump(uint8_t* rdram,
+                                     uint32_t filter_vaddr,
+                                     uint32_t nOver,
+                                     uint32_t startZero,
+                                     uint32_t outp_vaddr) {
+    /* Threshold: a normal frame is FIXED_SAMPLE=184 samples, so a
+     * realistic nOver is at most a few hundred. 0x400 (1024) is a
+     * generous "definitely too big" threshold. */
+    if (nOver <= 0x400u) return;
+    /* Throttle: dump up to N distinct filter pointers, then go silent.
+     * We want to see whether multiple voices are pathological — if it's
+     * always the same N_PVoice, the bug is voice-specific; if different
+     * filters appear across runs, the bug is at the SET_WAVETABLE
+     * upstream call. */
+    enum { DUMP_CAP = 8 };
+    static uint32_t s_dumped_filters[DUMP_CAP];
+    static int s_dumped_count = 0;
+    for (int i = 0; i < s_dumped_count; i++) {
+        if (s_dumped_filters[i] == filter_vaddr) return;
+    }
+    if (s_dumped_count < DUMP_CAP) {
+        s_dumped_filters[s_dumped_count++] = filter_vaddr;
+    } else {
+        return;
+    }
+
+    fprintf(stderr,
+        "[adpcm-overflow] filter=0x%08X nOver=0x%X startZero=0x%X outp=0x%08X\n",
+        filter_vaddr, nOver, startZero, outp_vaddr);
+    /* Show the matching SET_WAVETABLE history so we can trace this
+     * voice's recent wavetable assignments. */
+    pkmnstadium_wt_dump_for_filter(filter_vaddr);
+
+    /* Read *outp (s16, sign-extended in the recomp). */
+    if (outp_vaddr >= 0x80000000u && outp_vaddr < 0x80800000u) {
+        uint32_t outp_paddr = outp_vaddr & 0x1FFFFFFFu;
+        int16_t outp_value = (int16_t)(
+            ((uint16_t)rdram[(outp_paddr + 0) ^ 3] << 8) |
+            ((uint16_t)rdram[(outp_paddr + 1) ^ 3]));
+        fprintf(stderr, "  *outp = %d (0x%04X)\n",
+            (int)outp_value, (unsigned)(uint16_t)outp_value);
+    }
+
+    if (filter_vaddr >= 0x80000000u && filter_vaddr < 0x80800000u) {
+        uint32_t f_paddr = filter_vaddr & 0x1FFFFFFFu;
+        uint32_t loop_start = MEM_LOAD_BE32(rdram, f_paddr + 0x14);
+        uint32_t loop_end   = MEM_LOAD_BE32(rdram, f_paddr + 0x18);
+        uint32_t loop_count = MEM_LOAD_BE32(rdram, f_paddr + 0x1C);
+        uint32_t dc_table   = MEM_LOAD_BE32(rdram, f_paddr + 0x20);
+        uint32_t dc_bookSz  = MEM_LOAD_BE32(rdram, f_paddr + 0x24);
+        uint32_t dc_sample  = MEM_LOAD_BE32(rdram, f_paddr + 0x30);
+        uint32_t dc_lastsam = MEM_LOAD_BE32(rdram, f_paddr + 0x34);
+        uint32_t dc_first   = MEM_LOAD_BE32(rdram, f_paddr + 0x38);
+        uint32_t dc_memin   = MEM_LOAD_BE32(rdram, f_paddr + 0x3C);
+        uint32_t dc_state   = MEM_LOAD_BE32(rdram, f_paddr + 0x0C);
+        fprintf(stderr,
+            "  N_PVoice fields:\n"
+            "    dc_state    = 0x%08X\n"
+            "    dc_loop.start  = 0x%08X (%d)\n"
+            "    dc_loop.end    = 0x%08X (%d)\n"
+            "    dc_loop.count  = 0x%08X (%d)\n"
+            "    dc_table    = 0x%08X\n"
+            "    dc_bookSize = 0x%08X\n"
+            "    dc_sample   = 0x%08X (%d)\n"
+            "    dc_lastsam  = 0x%08X (%d)\n"
+            "    dc_first    = 0x%08X\n"
+            "    dc_memin    = 0x%08X (%d)\n",
+            dc_state,
+            loop_start, (int32_t)loop_start,
+            loop_end,   (int32_t)loop_end,
+            loop_count, (int32_t)loop_count,
+            dc_table, dc_bookSz,
+            dc_sample, (int32_t)dc_sample,
+            dc_lastsam, (int32_t)dc_lastsam,
+            dc_first,
+            dc_memin, (int32_t)dc_memin);
+
+        /* Dump dc_table struct if pointer is in RAM. ROM-resident
+         * tables (kseg1 at 0xB0...) are not currently supported by
+         * this dump because rdram only covers DRAM. */
+        if (dc_table >= 0x80000000u && dc_table < 0x80800000u) {
+            uint32_t t_paddr = dc_table & 0x1FFFFFFFu;
+            uint32_t t_base = MEM_LOAD_BE32(rdram, t_paddr + 0x00);
+            uint32_t t_len  = MEM_LOAD_BE32(rdram, t_paddr + 0x04);
+            uint32_t t_type_flags = MEM_LOAD_BE32(rdram, t_paddr + 0x08);
+            uint32_t t_loop = MEM_LOAD_BE32(rdram, t_paddr + 0x0C);
+            uint32_t t_book = MEM_LOAD_BE32(rdram, t_paddr + 0x10);
+            fprintf(stderr,
+                "  dc_table fields:\n"
+                "    base       = 0x%08X\n"
+                "    len        = 0x%08X (%d)\n"
+                "    type/flags = 0x%08X\n"
+                "    .loop      = 0x%08X\n"
+                "    .book      = 0x%08X\n"
+                "    sample_end = base+len = 0x%08X\n"
+                "    memin_overshoot = 0x%X (memin past end)\n",
+                t_base, t_len, (int32_t)t_len, t_type_flags,
+                t_loop, t_book,
+                t_base + t_len,
+                (uint32_t)(dc_memin - (t_base + t_len)));
+        } else {
+            fprintf(stderr,
+                "  dc_table = 0x%08X (not in RDRAM, possibly ROM/kseg1)\n",
+                dc_table);
+        }
+    }
+    fflush(stderr);
+}
+
+/* n_alLoadParam(SET_WAVETABLE) call probe.
+ *
+ * Hooked at the function entry (PC 0x8004F95C). Captures
+ * (filter=$a0, paramID=$a1, param=$a2) for every n_alLoadParam call
+ * with paramID == AL_FILTER_SET_WAVETABLE (5). The ring stores the
+ * last N calls so [adpcm-overflow] can match a corrupt voice back to
+ * the SET_WAVETABLE call that gave it its (bad) wavetable.
+ *
+ * Note on "valid" wavetable contents: Stadium uses ROM-offset base
+ * pointers (e.g. base=0x01928ADC) — sound bank wavetables stored in
+ * the bank's loaded copy reference sample data still resident in
+ * ROM. So "base must be a kseg0/kseg1 pointer" is WRONG; we accept
+ * ROM offsets too. We don't pre-filter here — every SET_WAVETABLE
+ * call goes into the ring, and the dump is only taken on demand
+ * from pkmnstadium_adpcm_overflow_dump.
+ */
+#define WAVETABLE_RING_CAP 64
+struct wavetable_ev {
+    uint64_t seq;
+    uint32_t filter;
+    uint32_t param;
+    uint32_t first8_hi;  /* base */
+    uint32_t first8_lo;  /* len */
+    uint32_t second8_hi; /* type/flags packed */
+    uint32_t second8_lo; /* loop ptr */
+};
+static volatile struct wavetable_ev s_wt_ring[WAVETABLE_RING_CAP];
+static volatile uint64_t s_wt_seq = 0;
+
+void pkmnstadium_set_wavetable_probe(uint8_t* rdram,
+                                     uint32_t filter,
+                                     uint32_t paramID,
+                                     uint32_t param) {
+    if (paramID != 5u) return;
+    uint64_t s = s_wt_seq++;
+    int idx = (int)(s % WAVETABLE_RING_CAP);
+    s_wt_ring[idx].seq    = s;
+    s_wt_ring[idx].filter = filter;
+    s_wt_ring[idx].param  = param;
+    s_wt_ring[idx].first8_hi  = 0;
+    s_wt_ring[idx].first8_lo  = 0;
+    s_wt_ring[idx].second8_hi = 0;
+    s_wt_ring[idx].second8_lo = 0;
+    if (param >= 0x80000000u && param < 0x80800000u) {
+        uint32_t paddr = param & 0x1FFFFFFFu;
+        s_wt_ring[idx].first8_hi  = MEM_LOAD_BE32(rdram, paddr + 0);
+        s_wt_ring[idx].first8_lo  = MEM_LOAD_BE32(rdram, paddr + 4);
+        s_wt_ring[idx].second8_hi = MEM_LOAD_BE32(rdram, paddr + 8);
+        s_wt_ring[idx].second8_lo = MEM_LOAD_BE32(rdram, paddr + 12);
+    }
+}
+
+/* Dump the wavetable ring's entries that match `filter`. Caller
+ * holds the ring's "live" state lightly (no locking; readers may
+ * see partial writes). Used by pkmnstadium_adpcm_overflow_dump to
+ * trace a runaway voice back to its SET_WAVETABLE history. */
+static void pkmnstadium_wt_dump_for_filter(uint32_t filter_vaddr) {
+    int n = 0;
+    fprintf(stderr,
+        "  SET_WAVETABLE history for filter=0x%08X:\n", filter_vaddr);
+    /* Walk newest-first. */
+    uint64_t cur_seq = s_wt_seq;
+    for (uint64_t back = 0; back < WAVETABLE_RING_CAP && back < cur_seq; back++) {
+        uint64_t s = cur_seq - 1 - back;
+        int idx = (int)(s % WAVETABLE_RING_CAP);
+        if (s_wt_ring[idx].filter != filter_vaddr) continue;
+        if (s_wt_ring[idx].seq != s) continue;
+        fprintf(stderr,
+            "    seq=%llu param=0x%08X first16=%08X %08X %08X %08X\n",
+            (unsigned long long)s, s_wt_ring[idx].param,
+            s_wt_ring[idx].first8_hi, s_wt_ring[idx].first8_lo,
+            s_wt_ring[idx].second8_hi, s_wt_ring[idx].second8_lo);
+        if (++n >= 4) break;
+    }
+    if (n == 0) {
+        fprintf(stderr, "    (no SET_WAVETABLE calls for this filter in ring)\n");
+    }
+}
+
+/* main_pool_pop_state caller probe.
+ *
+ * The post-title audio UAF (2026-05-06) traced to a 1 MiB pool alloc
+ * landing at 0x8018A1B0 — overlapping wavetable structs that voices
+ * still pointed at. For the bump-allocator to land there again, a
+ * main_pool_pop_state must have run between the original
+ * SET_WAVETABLE and the load2 alloc. This probe logs every pop's
+ * caller PC + gCurrentGameState + pool-top before/after so the
+ * post-mortem shows which Stadium function freed the bank-resident
+ * memory without first stopping the voices.
+ *
+ * Hook fires at function entry (PC 0x80002838). At entry:
+ *   $a0 = arg (push/pop state's arg byte; 0 = unconditional, else
+ *               must match a tag in the saved state)
+ *   $ra = caller PC
+ * sMemPool fields read from rdram at vaddr 0x800A6070 + offsets:
+ *   +0x1C available, +0x28 listHeadL, +0x2C listHeadR, +0x30 mainState
+ * MainPoolState fields at *mainState:
+ *   +0x00 freeSpace, +0x04 listHeadL, +0x08 listHeadR, +0x0C prev
+ * gCurrentGameState lives at vaddr 0x80075668.
+ *
+ * Always-on; logs every pop. Output volume is bounded by the actual
+ * number of pops (not many). */
+void pkmnstadium_pool_pop_log(uint8_t* rdram,
+                              uint32_t arg,
+                              uint32_t caller_pc) {
+    uint32_t pool_paddr = 0x000A6070u;
+    uint32_t avail   = MEM_LOAD_BE32(rdram, pool_paddr + 0x1C);
+    uint32_t headL   = MEM_LOAD_BE32(rdram, pool_paddr + 0x28);
+    uint32_t headR   = MEM_LOAD_BE32(rdram, pool_paddr + 0x2C);
+    uint32_t state_p = MEM_LOAD_BE32(rdram, pool_paddr + 0x30);
+    uint32_t game_state = MEM_LOAD_BE32(rdram, 0x00075668u);
+
+    uint32_t s_free = 0, s_lL = 0, s_lR = 0;
+    if (state_p >= 0x80000000u && state_p < 0x80800000u) {
+        uint32_t sp = state_p & 0x1FFFFFFFu;
+        s_free = MEM_LOAD_BE32(rdram, sp + 0x00);
+        s_lL   = MEM_LOAD_BE32(rdram, sp + 0x04);
+        s_lR   = MEM_LOAD_BE32(rdram, sp + 0x08);
+    }
+    fprintf(stderr,
+        "[pool-pop] arg=0x%X caller=0x%08X gs=0x%08X avail=0x%X "
+        "live(L=0x%08X R=0x%08X) pop_to(state=0x%08X free=0x%X "
+        "L=0x%08X R=0x%08X)\n",
+        arg, caller_pc, game_state, avail,
+        headL, headR, state_p, s_free, s_lL, s_lR);
+    fflush(stderr);
+}
+
 /* n_alFxPull / n_alMainBusPull diagnostic ring for the quick-battle
  * NULL+0xBC crash 2026-05-03. The crash is a write through $v0=0xB8
  * inside n_alMainBusPull right after `jalr $t9` to the bus filter
@@ -414,6 +713,208 @@ void pkmnstadium_mbp_dispatch_ret(uint32_t v0) {
     }
 }
 
+/* n_alMainBusPull entry/exit probes — recursion-depth tracker.
+ *
+ * The dispatch site at 0x80050CF4 always shows t9=0x800500C0 (= n_alMainBusPull
+ * itself) per the mbp_disp ring. So this is a recursive-descent dispatcher.
+ * At seq 3436 it returned v0=0xB8, which can only be a recursive frame's
+ * end-state. We need to see HOW DEEP the recursion goes and WHAT each frame
+ * returns to triangulate which frame produces the bogus pointer first.
+ *
+ * Entry probe stamps (depth, a0, a1) and increments depth.
+ * Exit probe stamps (depth, v0_out, s0_out) and decrements depth.
+ * Both stamp the same seq counter so we can correlate back to mbp_disp seq.
+ */
+struct mbp_chain_ev {
+    uint32_t depth_in;       /* depth at entry (1 = outermost) */
+    uint32_t a0_in;
+    uint32_t a1_in;
+    uint32_t v0_in;          /* $v0 inherited from caller */
+    uint32_t depth_out;      /* depth at exit (matches entry depth) */
+    uint32_t v0_out;
+    uint32_t s0_out;
+    uint32_t kind;           /* 0 = entry, 1 = exit */
+};
+#define MBP_CHAIN_RING_CAP 256
+static volatile struct mbp_chain_ev s_mbp_chain_ring[MBP_CHAIN_RING_CAP];
+static volatile uint64_t s_mbp_chain_seq = 0;
+static __thread int s_mbp_depth = 0;
+static __thread int s_mbp_chain_logged_bad = 0;
+
+void pkmnstadium_mbp_entry(uint32_t a0, uint32_t a1, uint32_t v0) {
+    s_mbp_depth++;
+    uint64_t s = s_mbp_chain_seq++;
+    uint32_t idx = s % MBP_CHAIN_RING_CAP;
+    s_mbp_chain_ring[idx].kind = 0;
+    s_mbp_chain_ring[idx].depth_in = (uint32_t)s_mbp_depth;
+    s_mbp_chain_ring[idx].a0_in = a0;
+    s_mbp_chain_ring[idx].a1_in = a1;
+    s_mbp_chain_ring[idx].v0_in = v0;
+    s_mbp_chain_ring[idx].depth_out = 0;
+    s_mbp_chain_ring[idx].v0_out = 0;
+    s_mbp_chain_ring[idx].s0_out = 0;
+}
+
+void pkmnstadium_mbp_exit(uint32_t v0, uint32_t s0) {
+    uint64_t s = s_mbp_chain_seq++;
+    uint32_t idx = s % MBP_CHAIN_RING_CAP;
+    s_mbp_chain_ring[idx].kind = 1;
+    s_mbp_chain_ring[idx].depth_in = 0;
+    s_mbp_chain_ring[idx].a0_in = 0;
+    s_mbp_chain_ring[idx].a1_in = 0;
+    s_mbp_chain_ring[idx].v0_in = 0;
+    s_mbp_chain_ring[idx].depth_out = (uint32_t)s_mbp_depth;
+    s_mbp_chain_ring[idx].v0_out = v0;
+    s_mbp_chain_ring[idx].s0_out = s0;
+    if ((v0 < 0x80000000u || v0 >= 0x80800000u) && !s_mbp_chain_logged_bad) {
+        s_mbp_chain_logged_bad = 1;
+        fprintf(stderr,
+            "[mbp_chain] BAD exit v0=0x%08X s0=0x%08X depth=%d seq=%llu\n",
+            v0, s0, s_mbp_depth, (unsigned long long)s);
+        fflush(stderr);
+    }
+    s_mbp_depth--;
+    if (s_mbp_depth < 0) s_mbp_depth = 0;
+}
+
+uint64_t pkmnstadium_mbp_chain_seq(void) { return s_mbp_chain_seq; }
+uint32_t pkmnstadium_mbp_chain_cap(void) { return MBP_CHAIN_RING_CAP; }
+void pkmnstadium_mbp_chain_get(uint32_t i, uint32_t* kind,
+                               uint32_t* depth_in, uint32_t* a0, uint32_t* a1,
+                               uint32_t* v0_in, uint32_t* depth_out,
+                               uint32_t* v0_out, uint32_t* s0_out) {
+    uint32_t idx = i % MBP_CHAIN_RING_CAP;
+    *kind = s_mbp_chain_ring[idx].kind;
+    *depth_in = s_mbp_chain_ring[idx].depth_in;
+    *a0 = s_mbp_chain_ring[idx].a0_in;
+    *a1 = s_mbp_chain_ring[idx].a1_in;
+    *v0_in = s_mbp_chain_ring[idx].v0_in;
+    *depth_out = s_mbp_chain_ring[idx].depth_out;
+    *v0_out = s_mbp_chain_ring[idx].v0_out;
+    *s0_out = s_mbp_chain_ring[idx].s0_out;
+}
+
+/* G_DL CALL target snapshot rings — distinguish wrong-pointer (A) vs
+ * submit-too-early race (B) for the white-screen RT64 freeze.
+ *
+ * SUBMIT ring: filled by pokestadium_gdl_submit_snapshot, called once
+ *   per top-level DL submission (from RT64Context::send_dl) for each
+ *   G_DL push=1 (CALL) target found while walking the top-level DL.
+ *   Captures (submit_seq, target_vaddr, head_bytes[16]) — what the
+ *   target buffer looks like AT SUBMIT TIME.
+ *
+ * WALK ring: filled by pokestadium_gdl_walk_snapshot, called from
+ *   RT64::Interpreter::processDisplayLists at the moment of each
+ *   G_DL push=1 walk. Captures the same target's head bytes AS THE
+ *   INTERPRETER SEES THEM.
+ *
+ * Post-mortem comparison: if submit_bytes == walk_bytes for a given
+ * (submit_seq, target_vaddr) pair AND those bytes don't look like a
+ * sane DL, that's hypothesis A (wrong-pointer / Stadium emitted G_DL
+ * pointing into a non-DL buffer). If submit_bytes != walk_bytes,
+ * Stadium overwrote the buffer between submit and walk — hypothesis B
+ * (submit-too-early race).
+ */
+struct gdl_snap_ev {
+    uint64_t submit_seq;     /* Stadium send_dl_gfx counter at submit time */
+    uint32_t target_vaddr;   /* the G_DL target (kseg0 vaddr from w1) */
+    uint32_t parent_vaddr;   /* the G_DL cmd's own vaddr (where it lives) */
+    uint8_t  head[16];       /* first 16 bytes at target */
+};
+#define GDL_SNAP_RING_CAP 1024
+static volatile struct gdl_snap_ev s_gdl_submit_ring[GDL_SNAP_RING_CAP];
+static volatile uint64_t s_gdl_submit_seq = 0;
+static volatile struct gdl_snap_ev s_gdl_walk_ring[GDL_SNAP_RING_CAP];
+static volatile uint64_t s_gdl_walk_seq = 0;
+
+/* Walk a top-level DL starting at `dl_vaddr` (kseg0). For each G_DL
+ * with push=1 (CALL), snapshot the first 16 bytes at the target.
+ * Stops on G_ENDDL or after MAX_CMDS. `rdram` is the host base ptr
+ * to RDRAM (from RT64Context::send_dl: app->core.RDRAM).
+ *
+ * `submit_seq` is provided by the caller (= Stadium's send_dl_gfx
+ * counter) so submit and walk events can be correlated.
+ */
+void pkmnstadium_gdl_submit_snapshot(uint8_t* rdram, uint32_t dl_vaddr,
+                                     uint64_t submit_seq) {
+    if (rdram == NULL) return;
+    uint32_t dl_off = dl_vaddr & 0x7FFFFF;
+    enum { MAX_CMDS = 8192 };
+    for (uint32_t i = 0; i < MAX_CMDS; i++) {
+        uint32_t off = dl_off + i * 8;
+        if (off + 8 > 0x800000) break;
+        /* Big-endian read of w0,w1 from RDRAM. */
+        uint32_t w0 = ((uint32_t)rdram[off]   << 24) |
+                      ((uint32_t)rdram[off+1] << 16) |
+                      ((uint32_t)rdram[off+2] << 8)  |
+                      ((uint32_t)rdram[off+3]);
+        uint32_t w1 = ((uint32_t)rdram[off+4] << 24) |
+                      ((uint32_t)rdram[off+5] << 16) |
+                      ((uint32_t)rdram[off+6] << 8)  |
+                      ((uint32_t)rdram[off+7]);
+        uint8_t op = (w0 >> 24) & 0xFF;
+        if (op == 0xDF) break;  /* G_ENDDL */
+        if (op == 0xDE) {
+            uint8_t push = (w0 >> 16) & 0xFF;
+            if (push == 1) {
+                /* CALL — snapshot target's first 16 bytes. */
+                uint32_t tgt_off = w1 & 0x7FFFFF;
+                if (tgt_off + 16 <= 0x800000) {
+                    uint64_t s = s_gdl_submit_seq++;
+                    uint32_t idx = s % GDL_SNAP_RING_CAP;
+                    s_gdl_submit_ring[idx].submit_seq = submit_seq;
+                    s_gdl_submit_ring[idx].target_vaddr = w1;
+                    s_gdl_submit_ring[idx].parent_vaddr = 0x80000000u | off;
+                    for (int k = 0; k < 16; k++) {
+                        s_gdl_submit_ring[idx].head[k] = rdram[tgt_off + k];
+                    }
+                }
+            }
+            /* push=0 BRANCH — don't follow (would diverge); just continue. */
+        }
+    }
+}
+
+/* Snapshot taken from RT64::Interpreter when it walks a G_DL push=1.
+ * `head_ptr` is host-side ptr to the target's first byte.
+ */
+void pkmnstadium_gdl_walk_snapshot(uint32_t target_vaddr,
+                                   uint32_t parent_vaddr,
+                                   const uint8_t* head_ptr,
+                                   uint64_t submit_seq) {
+    if (head_ptr == NULL) return;
+    uint64_t s = s_gdl_walk_seq++;
+    uint32_t idx = s % GDL_SNAP_RING_CAP;
+    s_gdl_walk_ring[idx].submit_seq = submit_seq;
+    s_gdl_walk_ring[idx].target_vaddr = target_vaddr;
+    s_gdl_walk_ring[idx].parent_vaddr = parent_vaddr;
+    for (int k = 0; k < 16; k++) {
+        s_gdl_walk_ring[idx].head[k] = head_ptr[k];
+    }
+}
+
+uint64_t pkmnstadium_gdl_submit_seq(void) { return s_gdl_submit_seq; }
+uint64_t pkmnstadium_gdl_walk_seq(void)   { return s_gdl_walk_seq; }
+uint32_t pkmnstadium_gdl_ring_cap(void)   { return GDL_SNAP_RING_CAP; }
+void pkmnstadium_gdl_submit_get(uint32_t i, uint64_t* submit_seq,
+                                uint32_t* target_vaddr, uint32_t* parent_vaddr,
+                                uint8_t out_head[16]) {
+    uint32_t idx = i % GDL_SNAP_RING_CAP;
+    *submit_seq = s_gdl_submit_ring[idx].submit_seq;
+    *target_vaddr = s_gdl_submit_ring[idx].target_vaddr;
+    *parent_vaddr = s_gdl_submit_ring[idx].parent_vaddr;
+    for (int k = 0; k < 16; k++) out_head[k] = s_gdl_submit_ring[idx].head[k];
+}
+void pkmnstadium_gdl_walk_get(uint32_t i, uint64_t* submit_seq,
+                              uint32_t* target_vaddr, uint32_t* parent_vaddr,
+                              uint8_t out_head[16]) {
+    uint32_t idx = i % GDL_SNAP_RING_CAP;
+    *submit_seq = s_gdl_walk_ring[idx].submit_seq;
+    *target_vaddr = s_gdl_walk_ring[idx].target_vaddr;
+    *parent_vaddr = s_gdl_walk_ring[idx].parent_vaddr;
+    for (int k = 0; k < 16; k++) out_head[k] = s_gdl_walk_ring[idx].head[k];
+}
+
 /* Public getters so post_mortem can serialize the rings as JSON. */
 uint64_t pkmnstadium_afx_in_seq(void)   { return s_afx_in_seq; }
 uint64_t pkmnstadium_afx_out_seq(void)  { return s_afx_out_seq; }
@@ -508,12 +1009,6 @@ void pkmnstadium_force_expansion_ram(uint8_t* rdram) {
  * (size, result) plus the running sMemPool.available so we can
  * see when/why the pool exhausts. sMemPool is the Stadium static
  * MainPool struct at 0x800A6070, with available field at +0x1C. */
-
-#define MEM_LOAD_BE32(rdram, paddr) (\
-    ((uint32_t)(rdram)[((paddr) + 0) ^ 3] << 24) | \
-    ((uint32_t)(rdram)[((paddr) + 1) ^ 3] << 16) | \
-    ((uint32_t)(rdram)[((paddr) + 2) ^ 3] <<  8) | \
-    ((uint32_t)(rdram)[((paddr) + 3) ^ 3]))
 
 static __thread uint32_t s_pool_size_stack[16];
 static __thread int s_pool_sp = 0;
@@ -1425,6 +1920,85 @@ void pkmnstadium_audio_stop_voices(uint8_t* rdram) {
             "until the next sequence-load reassigns them\n",
             count, arr_vaddr);
         fflush(stderr);
+    }
+
+    /* Stadium-side stop above is necessary but not sufficient: the
+     * libnaudio synth maintains its OWN voice pool (N_PVoice array)
+     * via n_syn->auxBus->sources. Even after Stadium stops feeding
+     * the high-level voice, those low-level N_PVoices keep getting
+     * pulled by n_alAuxBusPull → n_alEnvmixerPull → n_alAdpcmPull
+     * because their em_motion is still AL_PLAYING. n_alAdpcmPull
+     * then reads f->dc_table and friends from soon-to-be-popped
+     * pool memory, computes overflow nOver of ~3.7B samples, emits
+     * a CLEARBUFF cmd whose count wraps DMEM and zeroes the dispatch
+     * table — the post-title audio bug 2026-05-06.
+     *
+     * Walk libnaudio's voice pool and force em_motion=AL_STOPPED so
+     * n_alEnvmixerPull's "if (em_motion != AL_PLAYING) return" gate
+     * kicks them out before any wavetable deref.
+     *
+     * Field offsets (verified against recompiled n_alAuxBusPull and
+     * the N_PVoice struct in n_synthInternals.h):
+     *   n_syn at vaddr 0x80078584 (pointer-to-struct, NOT inline)
+     *     +0x34 auxBus*
+     *   N_ALAuxBus
+     *     +0x14 sourceCount (s32)
+     *     +0x1C sources (N_PVoice**)
+     *   N_PVoice
+     *     +0x84 em_motion (s32; 0 = AL_STOPPED, 1 = AL_PLAYING)
+     */
+    {
+        uint32_t n_syn_var_paddr = 0x00078584u;
+        uint32_t n_syn_vaddr = MEM_LOAD_BE32(rdram, n_syn_var_paddr);
+        if (n_syn_vaddr < 0x80000000u || n_syn_vaddr >= 0x80800000u) {
+            fprintf(stderr,
+                "[audio-stop] n_syn pointer not in RDRAM (0x%08X), "
+                "libnaudio voices not stopped\n", n_syn_vaddr);
+            fflush(stderr);
+            return;
+        }
+        uint32_t n_syn_paddr = n_syn_vaddr & 0x1FFFFFFFu;
+        uint32_t auxBus_vaddr = MEM_LOAD_BE32(rdram, n_syn_paddr + 0x34);
+        if (auxBus_vaddr < 0x80000000u || auxBus_vaddr >= 0x80800000u) {
+            fprintf(stderr,
+                "[audio-stop] auxBus ptr not in RDRAM (0x%08X), skipped\n",
+                auxBus_vaddr);
+            fflush(stderr);
+            return;
+        }
+        uint32_t auxBus_paddr = auxBus_vaddr & 0x1FFFFFFFu;
+        uint32_t source_count = MEM_LOAD_BE32(rdram, auxBus_paddr + 0x14);
+        uint32_t sources_vaddr = MEM_LOAD_BE32(rdram, auxBus_paddr + 0x1C);
+        if (source_count == 0 || source_count > 64 ||
+            sources_vaddr < 0x80000000u || sources_vaddr >= 0x80800000u) {
+            fprintf(stderr,
+                "[audio-stop] auxBus sourceCount=%u sources=0x%08X "
+                "(skipping libnaudio stop)\n",
+                source_count, sources_vaddr);
+            fflush(stderr);
+            return;
+        }
+        uint32_t sources_paddr = sources_vaddr & 0x1FFFFFFFu;
+        uint32_t stopped = 0;
+        for (uint32_t i = 0; i < source_count; i++) {
+            uint32_t pvoice_vaddr = MEM_LOAD_BE32(rdram, sources_paddr + i*4);
+            if (pvoice_vaddr < 0x80000000u || pvoice_vaddr >= 0x80800000u) continue;
+            uint32_t pvoice_paddr = pvoice_vaddr & 0x1FFFFFFFu;
+            /* Write 0 (AL_STOPPED) to em_motion at +0x84. */
+            for (int b = 0; b < 4; b++) {
+                rdram[(pvoice_paddr + 0x84 + b) ^ 3] = 0;
+            }
+            stopped++;
+        }
+        static int s_lib_logged = 0;
+        if (!s_lib_logged) {
+            s_lib_logged = 1;
+            fprintf(stderr,
+                "[audio-stop] libnaudio: zeroed em_motion on %u of %u "
+                "N_PVoice(s) via n_syn->auxBus->sources at 0x%08X\n",
+                stopped, source_count, sources_vaddr);
+            fflush(stderr);
+        }
     }
 }
 

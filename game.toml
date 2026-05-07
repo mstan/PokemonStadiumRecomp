@@ -2904,6 +2904,47 @@ func = "n_alLoadParam"
 before_vram = 0x8004FAE4
 text = "pkmnstadium_audio_voice_check(ctx->r7, ctx->r2, ctx->r3);"
 
+# n_alAdpcmPull aClearBuffer-overflow probe (post-title audio bug
+# 2026-05-06). Fires at the START of the inlined `aClearBuffer(...)`
+# block at PC 0x8004F908, just before the `lh $t7, 0($t3)` that
+# loads *outp. At this point:
+#   $s0 (r16) = filter (N_PVoice*)
+#   $s2 (r18) = nOver
+#   $v1 (r3)  = startZero
+#   $t3 (r11) = outp pointer
+# When nOver > 0x400 (impossibly big), dump the voice descriptor +
+# wave table fields. Captures the FIRST runaway voice we see — once
+# dumped, hook is silent for the rest of the run.
+[[patches.hook]]
+func = "n_alAdpcmPull"
+before_vram = 0x8004F908
+text = "pkmnstadium_adpcm_overflow_dump(rdram, ctx->r16, ctx->r18, ctx->r3, ctx->r11);"
+
+# n_alLoadParam(SET_WAVETABLE) entry probe — captures (filter, paramID,
+# param) for every call. When paramID == 5 (SET_WAVETABLE) AND the
+# pointed-to memory's first 4 bytes don't look like a plausible base
+# pointer, log to stderr. The post-title audio bug 2026-05-06 traced
+# to a voice with dc_table.base = 0x810B810B (repeating data bytes),
+# which means the SET_WAVETABLE caller passed a non-wavetable pointer.
+# This probe identifies the FIRST bogus call so we can trace upstream.
+[[patches.hook]]
+func = "n_alLoadParam"
+before_vram = 0x8004F95C
+text = "pkmnstadium_set_wavetable_probe(rdram, ctx->r4, ctx->r5, ctx->r6);"
+
+# main_pool_pop_state caller probe — track who frees memory in the
+# pool. The post-title audio UAF (2026-05-06) traced to a 1 MiB
+# alloc at 0x8018A1B0 that overlaps wavetable structs voices still
+# point at; the bump-allocator can only land there if a pop ran in
+# between. This probe logs every pop's caller PC + gCurrentGameState
+# + pool-top before/after so the post-mortem identifies which Stadium
+# function popped the bank-resident memory without first stopping
+# the voices.
+[[patches.hook]]
+func = "main_pool_pop_state"
+before_vram = 0x80002838
+text = "pkmnstadium_pool_pop_log(rdram, ctx->r4, ctx->r31);"
+
 # n_alFxPull / n_alMainBusPull triangulation for the quick-battle
 # audio cmd-buffer NULL+0xBC crash 2026-05-03. The crash is in
 # n_alMainBusPull (funcs_19.c:4796) at `sw $s7, 0x4($v0)` where
@@ -2940,6 +2981,21 @@ text = "pkmnstadium_mbp_dispatch(ctx->r24, ctx->r25);"
 func = "n_alMainBusPull"
 before_vram = 0x80050CFC   # right at after_0: label, $v0=handler return
 text = "pkmnstadium_mbp_dispatch_ret(ctx->r2);"
+
+# n_alMainBusPull entry/exit recursion-depth probes.
+# At seq 3436 the dispatch (recursive call) returned v0=0xB8 — a value
+# only constructible by a recursive frame's pointer arithmetic ($s0 = $v0 + 0x10
+# at line 4813). To find which frame first produces a bogus pointer, we need
+# to see entry/exit of EVERY frame with depth + return values.
+[[patches.hook]]
+func = "n_alMainBusPull"
+before_vram = 0x80050CA0   # entry: addiu $sp,$sp,-0x40 (function prolog start)
+text = "pkmnstadium_mbp_entry(ctx->r4, ctx->r5, ctx->r2);"
+
+[[patches.hook]]
+func = "n_alMainBusPull"
+before_vram = 0x80050F14   # exit: jr $ra (after $v0 = $s0 set at 0x80050EEC)
+text = "pkmnstadium_mbp_exit(ctx->r2, ctx->r16);"
 
 # func_80019D18 lookup diagnostic — capture (input_idx, return_v0)
 # pairs to identify which idx Stadium asks for that misses. The

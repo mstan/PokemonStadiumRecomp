@@ -122,25 +122,38 @@ void aspmain_pre_task(uint8_t* rdram,
         data_ptr,
         chunk - 1);
 
-    // Seed registers as if the dead-code init function had run:
-    //   $29 = 0x2B0    (commands DMEM ptr)
-    //   $30 = chunk    (chunk byte count remaining; dispatch uses
-    //                   `bgtz $30` to decide if the current DMEM
-    //                   chunk has more commands or needs refresh)
-    //   $27 = data_size - chunk  (DRAM bytes remaining)
-    //   $28 = data_ptr + chunk   (next DRAM read addr)
+    // Seed r28/r27 with the OSTask's data_ptr/data_size as-is
+    // (NOT advanced past the preloaded chunk).
     //
-    // Note: aspMain's entry path also reads r28/r27 from DMEM
-    // OSTask fields at PC 0x1004/0x1008, so it'll OVERWRITE our
-    // r28/r27 seeds. That's fine — the original boot path's
-    // r28=data_ptr, r27=data_size leads to the L_106C refresh
-    // path picking up where we left off (it advances r28 by chunk
-    // size in jal-L_1120 calls, decrements r27, etc.). The KEY
-    // seeds the boot path doesn't overwrite are r29 and r30.
+    // Why not "data_ptr + chunk" / "data_size - chunk"? Earlier this
+    // hook seeded those advanced values to compensate for having just
+    // DMA'd the first chunk into DMEM[0x2B0] manually. That assumed
+    // dispatch would start consuming commands from the preloaded DMEM
+    // immediately. But that's not what aspMain does: from L_108C it
+    // reaches L_10AC and unconditionally calls L_1120 (the DMA-pump),
+    // which DMAs `chunk` bytes from DRAM[r28..r28+chunk] into
+    // DMEM[0x2B0..]. With the advanced r28, L_1120 was loading
+    // CHUNK 2 over our preloaded CHUNK 1 — silently skipping the
+    // first ~40 audio commands every task. Voice setup commands live
+    // in that first batch; missing them produces audible static and
+    // buzzing as voices get mixed before they're configured.
+    //
+    // With r28=data_ptr / r27=data_size, L_1120 DMAs chunk 1 itself
+    // (over our identical preload — redundant but harmless), then
+    // dispatch processes chunk 1 in order. r28/r27 then evolve
+    // through the dispatch loop's per-command increment + L_10EC's
+    // tail-DMA refresh exactly as the microcode designers intended.
+    //
+    // Other seeds below (r29, r30, dma_*, r3, r31) are all
+    // overwritten by L_1120 / L_114C / L_1138 before they're
+    // consumed, so they're effectively no-ops, but keeping them
+    // matches the prior boot-residue model in case the hook gets
+    // entered via an entry point that bypasses L_108C..L_10AC in
+    // some future variant.
     ctx->r29 = kAudioCommandsDmemOffset;
     ctx->r30 = static_cast<int32_t>(chunk);
-    ctx->r27 = data_size - chunk;
-    ctx->r28 = data_ptr + chunk;
+    ctx->r27 = data_size;
+    ctx->r28 = data_ptr;
 
     // Seed DMA-engine residue + r3 + r31 to match what real rspboot
     // leaves behind, per Ares oracle measurement at first L_10EC of
@@ -182,6 +195,29 @@ void aspmain_pre_task(uint8_t* rdram,
         ucode_name ? ucode_name : "?",
         data_ptr, data_size, chunk,
         kAudioCommandsDmemOffset, chunk);
+
+    // Diagnostic: dump opcodes of chunk 0 so we can correlate
+    // command stream with audio symptoms across scene transitions.
+    // Each cmd is 8 bytes; opcode = (cmd_word_0 >> 24) & 0xFF.
+    // Print up to 40 cmds (one full chunk).
+    {
+        uint32_t n_cmds = (data_size > 320) ? 40 : (data_size / 8);
+        char ops[256];
+        char* p = ops;
+        for (uint32_t i = 0; i < n_cmds && (p - ops) < 240; i++) {
+            // Read big-endian 32-bit word at rdram[data_ptr + i*8].
+            // RDRAM is host-byte-order; aspMain reads via XOR-3.
+            uint32_t addr = data_ptr + i * 8;
+            uint32_t off  = addr & 0xFFFFFF;  // mask to RDRAM range
+            uint8_t b0 = rdram[off ^ 3];
+            uint8_t b1 = rdram[(off + 1) ^ 3];
+            uint8_t b2 = rdram[(off + 2) ^ 3];
+            uint8_t b3 = rdram[(off + 3) ^ 3];
+            (void)b1; (void)b2; (void)b3;
+            p += snprintf(p, ops + sizeof(ops) - p, "%02X ", b0);
+        }
+        fprintf(stderr, "[aspmain_chunk0] ops: %s\n", ops);
+    }
     fflush(stderr);
 }
 
