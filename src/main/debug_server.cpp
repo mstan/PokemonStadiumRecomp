@@ -711,6 +711,47 @@ static std::string handle_command(const std::string& line) {
                R"(,"n":)" + std::to_string(n) +
                R"(,"hex":")" + hex + R"("})";
     }
+    // NOTE: rdram_scan_u32 added 2026-05-08 — needs rebuild before use.
+    if (cmd == "rdram_scan_u32") {
+        // Host-side scan of all rdram for occurrences of a specific 4-byte
+        // big-endian-from-N64-perspective value. Args: {"value": <u32>,
+        // "limit": <max_hits>}. Returns list of vaddrs where the value is
+        // stored. Useful for finding stale-pointer holders: if a DL target
+        // is wrong at runtime, find every rdram word that equals that
+        // target value — the holder is one of them.
+        uint32_t want = get_uint(line, "value", 0);
+        int limit = get_int(line, "limit", 64);
+        if (limit < 1) limit = 1;
+        if (limit > 1024) limit = 1024;
+
+        uint8_t* rdram = recomp_runtime_get_rdram();
+        if (rdram == nullptr) {
+            return R"({"ok":false,"error":"rdram not yet captured"})";
+        }
+        constexpr uint32_t kRdramSize = 8u * 1024u * 1024u;
+        // Stride 4 — only word-aligned hits matter for pointer-storage.
+        std::string out = R"({"ok":true,"value":)" + std::to_string(want) +
+                          R"(,"hits":[)";
+        int hits = 0;
+        for (uint32_t paddr = 0; paddr + 4 <= kRdramSize && hits < limit; paddr += 4) {
+            // XOR-3 byte addressing: read 4 bytes BE from N64's perspective.
+            uint8_t b3 = rdram[(paddr + 0) ^ 3];
+            uint8_t b2 = rdram[(paddr + 1) ^ 3];
+            uint8_t b1 = rdram[(paddr + 2) ^ 3];
+            uint8_t b0 = rdram[(paddr + 3) ^ 3];
+            uint32_t v = ((uint32_t)b3 << 24) | ((uint32_t)b2 << 16) |
+                         ((uint32_t)b1 << 8) | (uint32_t)b0;
+            if (v == want) {
+                if (hits) out += ",";
+                out += std::to_string(0x80000000u + paddr);
+                hits++;
+            }
+        }
+        out += R"(],"truncated":)";
+        out += (hits >= limit) ? "true" : "false";
+        out += "}";
+        return out;
+    }
     // ---------------- Ares oracle bridge -----------------------------------
     // The ares-bridge library is linked into the runner. These commands
     // expose the oracle to external diff harnesses (tools/diff_aspmain.py).

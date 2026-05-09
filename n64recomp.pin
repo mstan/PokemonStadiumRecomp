@@ -7,18 +7,12 @@
 #   branch = <ref>   default origin/main, used when sha is unset
 #   sha    = <sha>   exact pin, takes precedence over branch when set
 
-# ── Active development on the integration branch ──────────────────
-# While we're co-developing N64Recomp's Ares-oracle / overlay work
-# alongside the Pokemon Stadium port, track the branch tip rather
-# than pinning a specific SHA. Each new commit on
-# `pokestadium-integration` is auto-accepted as the expected SHA
-# at CMake configure time.
-branch = pokestadium-integration
-
-# Once the integration branch stabilizes (PR merged, or work
-# concludes), switch this back to an explicit `sha = <40-char>`
-# pin so consumers don't drift unintentionally.
-#
-# Last known good SHA at branch creation:
-#   81213c1831fab2521a6a5459c67b63437d67e253
-#   "Update to fmt-12.1.0 to fix build issue with clang-21"
+# ── Pinned to mstan/N64Recomp dev ─────────────────────────────────
+# Active development happens on the `dev` branch of mstan/N64Recomp.
+# Each stable point gets pinned by SHA so PSR builds are reproducible.
+# To roll forward to a newer engine commit: bump the sha below.
+# To track the dev tip during active iteration: comment out the sha
+# line and set `branch = dev` instead.
+sha = 5b7c6a68ae358d3d04bf54e51659c53c3a95db14
+# "recompilation: exclude section-base refs from reloc remap"
+# (fixes attract softlock — over-aggressive remap from 6e9b34e)
