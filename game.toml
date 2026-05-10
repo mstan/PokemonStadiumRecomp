@@ -1997,6 +1997,7 @@ size = 0x90   # 0x800005C0 - 0x80000530
 [patches]
 ignored = [
     "osSetTime",
+    # PSR_TEMP_PATCH: free-battle-modal-softlock — see TEMP_PATCHES.md
     # Stadium-specific Option B fix for the cooperative-scheduler
     # deadlock: func_8000771C is a tight predicate-only busy-wait
     # (`while (func_80001C90() == 0) {}`) that blocks the game thread
@@ -2014,6 +2015,19 @@ ignored = [
     # See memory: project_free_battle_modal_softlock_2026_05_08.
     "func_8000771C",
 ]
+
+# PSR_TEMP_PATCH: petit-cup-softlock — see TEMP_PATCHES.md
+# Same cooperative-scheduler busy-wait family as func_8000771C, but
+# inlined inside func_80003680 (JPEG decoder) so a whole-function
+# replacement isn't tractable. Hook fires before the BEQ at vram
+# 0x80003778 (the loop's back-edge test); helper yields with a
+# priority drop when the predicate ($v0/ctx->r2) is still 0.
+# See memory: project_petit_cup_softlock_optionB_2026_05_09.
+[[patches.hook]]
+func = "func_80003680"
+before_vram = 0x80003778
+text = "pkmnstadium_petit_cup_yield(rdram, ctx);"
+
 [[input.manual_funcs]]
 # proutSprintf — libultra static helper used by sprintf as the
 # putput callback to _Printf. Declared `static` in pret's

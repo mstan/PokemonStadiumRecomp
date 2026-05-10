@@ -2193,6 +2193,8 @@ uint32_t pkmnstadium_trace_capacity(void) {
 }
 
 /* ====================================================================
+ * PSR_TEMP_PATCH: free-battle-modal-softlock — see TEMP_PATCHES.md
+ *
  * Stadium-specific Option B fix for func_8000771C cooperative-scheduler
  * deadlock. See game.toml [patches].ignored entry for full context.
  *
@@ -2271,5 +2273,51 @@ void func_8000771C(uint8_t* rdram, recomp_context* ctx) {
         yield_self_1ms(rdram);
     }
 
+    osSetThreadPri(rdram, 0, saved_pri);
+}
+
+/* ====================================================================
+ * PSR_TEMP_PATCH: petit-cup-softlock — see TEMP_PATCHES.md
+ *
+ * Stadium-specific Option B fix for the cooperative-scheduler deadlock
+ * inside func_80003680 (JPEG decoder). After several pages of work
+ * loading quantization/Huffman tables and pixel buffers, func_80003680
+ * busy-waits on the same predicate as func_8000771C:
+ *
+ *     L_80003770:
+ *         func_80001C90();          // 0x80003770 jal 0x80001C90
+ *         if (v0 == 0) goto L_80003770;  // 0x80003778 beq $v0,$0,L
+ *
+ * The loop is INLINED inside func_80003680 (not wrappable like
+ * func_8000771C). Replacing the whole 200+-line JPEG function in
+ * extras.c is brittle, so we attach a [[patches.hook]] hook in
+ * game.toml that fires before the BEQ at vram 0x80003778 and runs
+ * this helper. The helper inspects ctx->r2 (the func_80001C90 return
+ * in $v0); if non-zero, we're about to exit the loop and the helper
+ * is a no-op. If zero, we're about to loop back — we drop priority
+ * below the audio scheduler (priority 3), yield_self_1ms (drains
+ * externals + swaps to highest-pri queued), then restore priority.
+ *
+ * Reproduced symptom (pre-fix): selecting Petit Cup at Free Battle's
+ * cup-confirm screen freezes Game_Thread inside this loop; thread
+ * dump shows pkmnstadium_trace_entry → func_80001C90 → func_80003680
+ * → func_80003C80 → func_80003DC4 (Stadium asset loader chain).
+ *
+ * Same proper-fix layer as func_8000771C: a host-monitor "no context-
+ * switch in N seconds" flag in N64ModernRuntime/ultramodern would
+ * obsolete both per-site patches in one move.
+ * See memory: project_petit_cup_softlock_optionB_2026_05_09.
+ * ==================================================================== */
+
+void pkmnstadium_petit_cup_yield(uint8_t* rdram, recomp_context* ctx) {
+    /* func_80001C90 just ran; ctx->r2 holds the predicate result.
+     * Non-zero → loop will exit on the BEQ; nothing to do. */
+    if (ctx->r2 != 0) return;
+
+    /* Loop will continue. Drop priority below the audio scheduler so
+     * yield_self_1ms's check_running_queue actually swaps. */
+    int32_t saved_pri = osGetThreadPri(rdram, 0 /* PTR(OSThread) NULL = self */);
+    osSetThreadPri(rdram, 0, 1);
+    yield_self_1ms(rdram);
     osSetThreadPri(rdram, 0, saved_pri);
 }
