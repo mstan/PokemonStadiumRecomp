@@ -18,6 +18,12 @@ Built on top of [N64Recomp](https://github.com/N64Recomp/N64Recomp).
 > corrupted cursor on a few menu screens, gridline patterns through
 > certain HUD elements).
 >
+> **First launch:** the runner pops a file picker. Point it at your
+> own legal Pokémon Stadium (US v1.0) ROM (`.z64` / `.n64` / `.v64`).
+> The path is remembered (`rom.cfg` next to the exe) so later
+> launches go straight into the game. CLI arg `argv[1]` is also
+> honored for scripted runs.
+>
 > **Transfer Pak is not supported** at this time. Game Pak Check
 > will report Game Pak slots as empty; everything that doesn't
 > require a connected Game Boy cart works normally.

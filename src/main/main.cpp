@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -33,6 +34,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <commdlg.h>
 #include <dbghelp.h>
 // Avoid Windows.h macro pollution clobbering identifiers in
 // librecomp/ultramodern headers below.
@@ -642,8 +644,6 @@ static std::string get_game_thread_name(const OSThread* t) {
 gpr get_entrypoint_address();
 
 int main(int argc, char** argv) {
-    (void)argc; (void)argv;
-
     // Crash-localization breadcrumbs — flushed immediately so a silent
     // exit reveals exactly how far we got.
     std::fprintf(stderr, "[PSR] main() entered\n"); std::fflush(stderr);
@@ -785,19 +785,127 @@ int main(int argc, char** argv) {
     // Validate + load the ROM before recomp::start. select_rom verifies
     // the hash matches our registered GameEntry and stashes it as the
     // active ROM so start_game can find it.
+    //
+    // Resolution order:
+    //   1. argv[1] (if not a flag) — backwards-compatible CLI override.
+    //   2. <exe_dir>/rom.cfg — last-used path from a prior successful pick.
+    //   3. legacy "baserom.z64" next to the exe (or parent dir, dev layout).
+    //   4. Win32 file-picker dialog. Loop until a valid ROM is chosen or
+    //      the user cancels (which exits the runner).
     {
         std::u8string game_id = game.game_id;
-        std::filesystem::path rom_path = std::filesystem::current_path() / "baserom.z64";
-        // baserom.z64 lives at PROJECT root, not build/. Walk up if needed.
-        if (!std::filesystem::exists(rom_path)) {
-            rom_path = std::filesystem::current_path().parent_path() / "baserom.z64";
+
+#ifdef _WIN32
+        char exe_path_buf[MAX_PATH] = {0};
+        GetModuleFileNameA(NULL, exe_path_buf, MAX_PATH);
+        std::filesystem::path exe_dir = std::filesystem::path(exe_path_buf).parent_path();
+#else
+        std::filesystem::path exe_dir = std::filesystem::current_path();
+#endif
+        std::filesystem::path cfg_path = exe_dir / "rom.cfg";
+
+        auto read_rom_cfg = [&]() -> std::filesystem::path {
+            std::ifstream f(cfg_path);
+            if (!f) return {};
+            std::string line;
+            if (!std::getline(f, line)) return {};
+            return line;
+        };
+        auto write_rom_cfg = [&](const std::filesystem::path& p) {
+            std::ofstream f(cfg_path, std::ios::trunc);
+            if (f) f << p.string() << "\n";
+        };
+        auto show_picker = [&](std::filesystem::path& out) -> bool {
+#ifdef _WIN32
+            char picked[MAX_PATH] = {0};
+            OPENFILENAMEA ofn{};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner   = NULL;
+            ofn.lpstrFilter = "N64 ROM (*.z64;*.n64;*.v64)\0*.z64;*.n64;*.v64\0All Files (*.*)\0*.*\0";
+            ofn.lpstrFile   = picked;
+            ofn.nMaxFile    = MAX_PATH;
+            ofn.lpstrTitle  = "Select Pokemon Stadium (US v1.0) ROM";
+            ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+            if (!GetOpenFileNameA(&ofn)) return false;
+            out = picked;
+            return true;
+#else
+            std::fprintf(stderr, "[PSR] no file picker on this platform; pass ROM path on the command line.\n");
+            return false;
+#endif
+        };
+
+        // 1. argv[1] override (CLI). Validated but never persisted to rom.cfg.
+        std::filesystem::path rom_path;
+        bool cli_override = false;
+        if (argc >= 2 && argv[1] && argv[1][0] != '-') {
+            rom_path = argv[1];
+            cli_override = true;
         }
-        std::fprintf(stderr, "[PSR] selecting ROM: %s\n", rom_path.string().c_str()); std::fflush(stderr);
-        auto err = recomp::select_rom(rom_path, game_id);
-        if (err != recomp::RomValidationError::Good) {
-            std::fprintf(stderr, "[PSR] select_rom error: %d\n", (int)err); std::fflush(stderr);
-        } else {
-            std::fprintf(stderr, "[PSR] select_rom OK\n"); std::fflush(stderr);
+
+        // 2. rom.cfg from a prior successful pick.
+        if (rom_path.empty()) {
+            auto saved = read_rom_cfg();
+            if (!saved.empty() && std::filesystem::exists(saved)) {
+                rom_path = saved;
+            }
+        }
+
+        // 3. Legacy "baserom.z64" next to exe or one dir up.
+        if (rom_path.empty()) {
+            auto legacy = exe_dir / "baserom.z64";
+            if (!std::filesystem::exists(legacy)) {
+                legacy = exe_dir.parent_path() / "baserom.z64";
+            }
+            if (std::filesystem::exists(legacy)) rom_path = legacy;
+        }
+
+        // 4. Loop: validate the candidate; if it fails, show a message and
+        //    re-open the picker. Exit if the user cancels the picker.
+        while (true) {
+            if (!rom_path.empty() && std::filesystem::exists(rom_path)) {
+                std::fprintf(stderr, "[PSR] selecting ROM: %s\n", rom_path.string().c_str());
+                std::fflush(stderr);
+                auto err = recomp::select_rom(rom_path, game_id);
+                if (err == recomp::RomValidationError::Good) {
+                    std::fprintf(stderr, "[PSR] select_rom OK\n"); std::fflush(stderr);
+                    if (!cli_override) write_rom_cfg(rom_path);
+                    break;
+                }
+                // Validation failed — describe to the user and re-pick.
+                const char* err_name = "";
+                switch (err) {
+                    case recomp::RomValidationError::FailedToOpen:    err_name = "could not open file"; break;
+                    case recomp::RomValidationError::NotARom:         err_name = "not a recognizable N64 ROM"; break;
+                    case recomp::RomValidationError::IncorrectRom:    err_name = "wrong game"; break;
+                    case recomp::RomValidationError::NotYet:          err_name = "not yet supported"; break;
+                    case recomp::RomValidationError::IncorrectVersion:err_name = "wrong region/revision (need US v1.0)"; break;
+                    default:                                          err_name = "validation error"; break;
+                }
+                std::fprintf(stderr, "[PSR] select_rom error: %d (%s)\n", (int)err, err_name); std::fflush(stderr);
+#ifdef _WIN32
+                std::string msg = "The selected ROM did not validate (" + std::string(err_name) + ").\n\n"
+                                  "Path: " + rom_path.string() + "\n\n"
+                                  "Required: Pokemon Stadium (US v1.0)\n"
+                                  "Required MD5: ed1378bc12115f71209a77844965ba50\n\n"
+                                  "Please select the correct ROM.";
+                MessageBoxA(NULL, msg.c_str(), "PokemonStadiumRecomp — wrong ROM", MB_ICONWARNING | MB_OK);
+#endif
+                rom_path.clear();
+            }
+
+            // No valid candidate — pick interactively.
+            if (!show_picker(rom_path)) {
+#ifdef _WIN32
+                MessageBoxA(NULL,
+                    "No ROM selected — exiting.\n\n"
+                    "PokemonStadiumRecomp needs a legal copy of Pokemon Stadium (US v1.0) "
+                    "to run. Launch the runner again and pick the .z64 file when prompted.",
+                    "PokemonStadiumRecomp", MB_ICONINFORMATION | MB_OK);
+#endif
+                std::fprintf(stderr, "[PSR] no ROM selected — exiting\n"); std::fflush(stderr);
+                return 1;
+            }
         }
     }
 

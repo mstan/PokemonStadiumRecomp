@@ -144,7 +144,7 @@ if (WIN32)
             $<TARGET_FILE_DIR:PokemonStadiumRecomp>
     )
 
-    target_link_libraries(PokemonStadiumRecomp PRIVATE SDL2 SDL2main Winmm.lib dbghelp.lib)
+    target_link_libraries(PokemonStadiumRecomp PRIVATE SDL2 SDL2main Winmm.lib dbghelp.lib comdlg32.lib)
 endif()
 
 target_link_libraries(PokemonStadiumRecomp PRIVATE
