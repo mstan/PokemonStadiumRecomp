@@ -3,6 +3,13 @@
 Static recompilation of **Pokémon Stadium (US v1.0)** to native PC.
 Built on top of [N64Recomp](https://github.com/N64Recomp/N64Recomp).
 
+> **Part of the [SS Anne](https://github.com/ss-anne) project** —
+> the flagship port of the SS Anne ecosystem. The supporting forks
+> ([N64Recomp](https://github.com/ss-anne/N64Recomp),
+> [N64ModernRuntime](https://github.com/ss-anne/N64ModernRuntime),
+> [rt64](https://github.com/ss-anne/rt64)) carry Stadium-specific
+> changes against their respective upstreams.
+
 > **Status: Playable end-to-end (with known visible bugs).** Quick
 > Battle, Free Battle, Stadium cups, and Gym Leader Castle have all
 > been validated through a complete round. Audio plays at 50% by
