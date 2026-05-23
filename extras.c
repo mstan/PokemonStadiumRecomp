@@ -2318,3 +2318,123 @@ void pkmnstadium_petit_cup_yield(uint8_t* rdram, recomp_context* ctx) {
     yield_self_1ms(rdram);
     osSetThreadPri(rdram, 0, saved_pri);
 }
+
+/* Fragment 57's Game Pak Check UI uses several large texture panels
+ * split into adjacent Vtx quads. RT64 can expose the shared edges as
+ * one-pixel lines, so overlap internal tile edges by one screen pixel.
+ */
+#define FRAG57_SECTION_INDEX 239
+#define FRAG57_VTX_SIZE 0x40u
+
+static inline uint32_t pkmnstadium_frag57_addr(uint32_t offset) {
+    uint32_t base = (uint32_t)section_addresses[FRAG57_SECTION_INDEX];
+    if (base == 0) return 0;
+    return base + offset;
+}
+
+static inline int16_t pkmnstadium_vtx_x(uint8_t* rdram, uint32_t vtx_addr, int idx) {
+    return MEM_H(0, vtx_addr + (uint32_t)idx * 0x10u);
+}
+
+static inline int16_t pkmnstadium_vtx_y(uint8_t* rdram, uint32_t vtx_addr, int idx) {
+    return MEM_H(2, vtx_addr + (uint32_t)idx * 0x10u);
+}
+
+static inline void pkmnstadium_set_vtx_x(uint8_t* rdram, uint32_t vtx_addr, int idx, int16_t value) {
+    MEM_H(0, vtx_addr + (uint32_t)idx * 0x10u) = value;
+}
+
+static inline void pkmnstadium_set_vtx_y(uint8_t* rdram, uint32_t vtx_addr, int idx, int16_t value) {
+    MEM_H(2, vtx_addr + (uint32_t)idx * 0x10u) = value;
+}
+
+static void pkmnstadium_overlap_vtx_tile(uint8_t* rdram, uint32_t vtx_addr, int overlap_left, int overlap_top) {
+    if (overlap_left) {
+        int16_t x = pkmnstadium_vtx_x(rdram, vtx_addr, 0);
+        pkmnstadium_set_vtx_x(rdram, vtx_addr, 0, x - 1);
+        pkmnstadium_set_vtx_x(rdram, vtx_addr, 1, x - 1);
+    }
+
+    if (overlap_top) {
+        int16_t y = pkmnstadium_vtx_y(rdram, vtx_addr, 0);
+        pkmnstadium_set_vtx_y(rdram, vtx_addr, 0, y + 1);
+        pkmnstadium_set_vtx_y(rdram, vtx_addr, 3, y + 1);
+    }
+}
+
+static void pkmnstadium_overlap_vtx_grid_row_major(uint8_t* rdram, uint32_t start, int rows, int cols) {
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++) {
+            uint32_t vtx_addr = pkmnstadium_frag57_addr(start + (uint32_t)(row * cols + col) * FRAG57_VTX_SIZE);
+            pkmnstadium_overlap_vtx_tile(rdram, vtx_addr, col > 0, row > 0);
+        }
+    }
+}
+
+static void pkmnstadium_overlap_vtx_grid_col_major(uint8_t* rdram, uint32_t start, int rows, int cols) {
+    for (int col = 0; col < cols; col++) {
+        for (int row = 0; row < rows; row++) {
+            uint32_t vtx_addr = pkmnstadium_frag57_addr(start + (uint32_t)(col * rows + row) * FRAG57_VTX_SIZE);
+            pkmnstadium_overlap_vtx_tile(rdram, vtx_addr, col > 0, row > 0);
+        }
+    }
+}
+
+void pkmnstadium_patch_fragment57_ui_seams(uint8_t* rdram) {
+    uint32_t sentinel = pkmnstadium_frag57_addr(0x7048);
+    if (sentinel == 0 || pkmnstadium_vtx_y(rdram, sentinel, 0) != -16) {
+        return;
+    }
+
+    /* Four controller-port cards and the OK box are vertical strips. */
+    pkmnstadium_overlap_vtx_grid_col_major(rdram, 0x7008, 13, 1);
+    pkmnstadium_overlap_vtx_grid_col_major(rdram, 0x8680, 3, 1);
+
+    /* Warning/header panel: two rows by fourteen columns. */
+    pkmnstadium_overlap_vtx_grid_row_major(rdram, 0x7748, 2, 14);
+
+    /* Other fragment 57 registration/info panels use two-column grids
+     * with column-major Vtx storage; patch them while the fragment is hot.
+     */
+    pkmnstadium_overlap_vtx_grid_col_major(rdram, 0x8870, 8, 2);
+    pkmnstadium_overlap_vtx_grid_col_major(rdram, 0x9140, 4, 2);
+    pkmnstadium_overlap_vtx_grid_col_major(rdram, 0x95D0, 5, 2);
+    pkmnstadium_overlap_vtx_grid_col_major(rdram, 0x9B70, 3, 2);
+}
+
+static void pkmnstadium_append_display_list(uint8_t* rdram, uint32_t display_list_addr) {
+    uint32_t dl = MEM_W(0, 0x800A7420u);
+    MEM_W(0, 0x800A7420u) = dl + 8;
+    MEM_W(0, dl) = 0xDE000000u;
+    MEM_W(4, dl) = display_list_addr;
+}
+
+static void pkmnstadium_append_env_color(uint8_t* rdram, uint8_t alpha) {
+    uint32_t dl = MEM_W(0, 0x800A7420u);
+    MEM_W(0, 0x800A7420u) = dl + 8;
+    MEM_W(0, dl) = 0xFB000000u;
+    MEM_W(4, dl) = 0xFFFFFF00u | alpha;
+}
+
+/* Fragment 57 draws a decorative five-strip overlay behind selected
+ * Game Pak status text. On RT64 that layer leaks stale/yellow TMEM
+ * rows across the card. The card background is already drawn just
+ * before this function and the real text is drawn after it, so omit
+ * the overlay instead of trying to preserve a broken transparent layer.
+ */
+void func_82D022E8(uint8_t* rdram, recomp_context* ctx) {
+    uint8_t alpha = (uint8_t)(ctx->r4 & 0xFF);
+    gpr saved_sp = ctx->r29;
+    gpr saved_ra = ctx->r31;
+    gpr saved_s0 = ctx->r16;
+
+    ctx->r29 = ADD32(ctx->r29, -0x30);
+
+    pkmnstadium_append_display_list(rdram, 0x8006F518u);
+    pkmnstadium_append_env_color(rdram, alpha);
+    pkmnstadium_append_display_list(rdram, 0x8006F630u);
+
+    ctx->r16 = saved_s0;
+    ctx->r31 = saved_ra;
+    ctx->r29 = saved_sp;
+}
