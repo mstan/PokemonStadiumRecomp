@@ -48,7 +48,7 @@ static void unhandled_abort(const char *kind, uint32_t pc, const char *detail) {
     /* Persistent-file copy: stderr in headless runs gets buffered and
      * the abort() can wipe it before the parent process reads. The
      * file is the source of truth for post-mortem inspection. */
-    FILE *f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    FILE *f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
     if (f) {
         fprintf(f,
             "\n=== N64Recomp UNHANDLED %s ===\n"
@@ -131,7 +131,7 @@ void recomp_unhandled_instruction(uint8_t *rdram, recomp_context *ctx,
 
 #define UNIMPL_LIBULTRA(name)                                                  \
     void name##_recomp(uint8_t *rdram, recomp_context *ctx) {                  \
-        FILE *f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a"); \
+        FILE *f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a"); \
         if (f) {                                                               \
             fprintf(f, "\n=== UNIMPLEMENTED LIBULTRA: %s ===\n", #name);       \
             fclose(f);                                                         \
@@ -147,13 +147,10 @@ void recomp_unhandled_instruction(uint8_t *rdram, recomp_context *ctx,
 
 // osEPiWriteIo is implemented in librecomp/src/pi.cpp.
 // osPfsIsPlug is implemented in librecomp/src/pak.cpp.
-UNIMPL_LIBULTRA(__osContRamWrite)
-UNIMPL_LIBULTRA(__osContRamRead)
 UNIMPL_LIBULTRA(osLeoDiskInit)
 UNIMPL_LIBULTRA(__osSetSR)
 UNIMPL_LIBULTRA(__osSetCause)
 UNIMPL_LIBULTRA(__osSetCount)
-UNIMPL_LIBULTRA(__osPfsGetStatus)
 UNIMPL_LIBULTRA(__osSetCompare)
 UNIMPL_LIBULTRA(osDpGetCounters)
 UNIMPL_LIBULTRA(rmonPrintf)

@@ -24,9 +24,12 @@ Built on top of [N64Recomp](https://github.com/N64Recomp/N64Recomp).
 > launches go straight into the game. CLI arg `argv[1]` is also
 > honored for scripted runs.
 >
-> **Transfer Pak is not supported** at this time. Game Pak Check
-> will report Game Pak slots as empty; everything that doesn't
-> require a connected Game Boy cart works normally.
+> **Transfer Pak is supported** via a built-in Game Boy cart
+> emulator (ROM-only / MBC1 / MBC3 / MBC5, with battery RAM saves).
+> Point at your own legal GB/GBC ROM via `transfer_pak.cfg` — see
+> the [Transfer Pak](#transfer-pak) section below. GB Tower (the
+> embedded full GB emulator for free-play GB games inside Stadium)
+> remains out of scope.
 
 ## ROM
 
@@ -94,6 +97,34 @@ make init     # extracts assets from the staged baserom
 make          # rebuilds an identical pokestadium-us.z64 from sources
 ```
 
+## Transfer Pak
+
+Stadium reads your Pokémon party out of a Game Boy cart through the
+N64 Transfer Pak accessory. This runtime ships a hardware-level
+emulator of that accessory plus the Game Boy cart it bridges to, so
+the in-game Game Pak Check menu sees the configured ROM/save as if
+a real cart were plugged into a Transfer Pak in port 1.
+
+**Supported cart types:** ROM-only, MBC1, MBC3, MBC5 (covers Pokémon
+Red / Blue / Yellow / Gold / Silver / Crystal). Battery-backed SRAM
+is persisted to disk on every write.
+
+**Configuration.** Drop a `transfer_pak.cfg` next to the exe:
+
+```ini
+# Paths are relative to this file (or absolute).
+p1_rom=pokemon-yellow.gbc
+p1_save=pokemon-yellow.sav
+```
+
+Keys are `pN_rom` / `pN_save` for ports 1–4. Environment variables
+`PSR_TRANSFER_PAK_P{1..4}_ROM` and `..._SAVE` override the config
+file. Set `PSR_TRANSFER_PAK_DEBUG=1` for verbose bus-level tracing
+(off by default).
+
+`transfer_pak.cfg` and `*.gb` / `*.gbc` are gitignored — bring your
+own legal dumps.
+
 ## Pipeline overview
 
 ```
@@ -133,13 +164,14 @@ needed and the project doesn't ship that tooling.
 
 ## Out of scope (first pass)
 
-**GB Tower / Game Boy emulation.** Pokémon Stadium contains an
-embedded Game Boy emulator for Transfer Pak games (Pokemon R/B/Y).
-The GB-related code lives partly in the resident `text` segment
+**GB Tower** — the embedded Game Boy emulator that lets Stadium
+play full GB cartridges directly on the N64 (distinct from the
+Transfer Pak cart-bridge, which **is** supported — see above). The
+GB-emulator code lives partly in the resident `text` segment
 (symbols `gb_tower`, `gb_mbc`, "load gb emulator" near
-`0xB230`/`0xE1C0`/`0xE570`) and partly in the `gb_tower_roms`
-tail segment. For the first playable build the GB Tower entry
-points will be **stubbed**, not ported — see `ISSUES.md`.
+`0xB230`/`0xE1C0`/`0xE570`) and partly in the `gb_tower_roms` tail
+segment. GB Tower entry points are **stubbed**, not ported — see
+`ISSUES.md`.
 
 ## Oracle (Ares) — TODO
 

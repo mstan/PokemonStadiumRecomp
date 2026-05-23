@@ -58,6 +58,7 @@
 #include <librecomp/ultra_trace.hpp>
 #include <librecomp/audio_uaf_protect.hpp>
 #include "ares_worker.h"
+#include "transfer_pak.h"
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
@@ -65,7 +66,7 @@ namespace pokestadium { void register_overlays(); }
 namespace pokestadium::rsp { void register_pre_task_hooks(); }
 
 // RSP microcode entry points provided by RSPRecomp output (Zelda's
-// built aspMain.cpp + njpgdspMain.cpp at F:/Projects/Zelda64Recomp/rsp,
+// built aspMain.cpp + njpgdspMain.cpp at F:/Projects/n64recomp/Zelda64Recomp/rsp,
 // referenced by CMakeLists). These implement the libultra standard
 // audio/JPEG microcodes that ship with Pokemon Stadium-era N64 games.
 extern RspUcodeFunc aspMain;
@@ -520,11 +521,24 @@ static ultramodern::input::connected_device_info_t get_connected_device_info(int
     // the same get_n64_input return surface, so the game is told
     // "yes, there's a controller in port 1" regardless of which
     // input device the user is actually using.
+    const bool has_transfer_pak = pkmnstadium::transfer_pak::has_transfer_pak(controller_num);
     ultramodern::input::connected_device_info_t info{};
-    info.connected_device = (controller_num == 0)
+    info.connected_device = (controller_num == 0 || has_transfer_pak)
         ? ultramodern::input::Device::Controller
         : ultramodern::input::Device::None;
-    info.connected_pak = ultramodern::input::Pak::None;
+    // Stadium identifies the *kind* of pak by reading its bus
+    // signature (handled in transfer_pak.cpp's read/write shims for
+    // __osContRamRead / __osContRamWrite); connected_pak is consumed
+    // here only as a "something is plugged in" presence bit.
+    //
+    // ultramodern's Pak enum only has {None, RumblePak} -- there is no
+    // first-class TransferPak value -- so we report RumblePak as the
+    // presence stand-in. Stadium's own pak-type discrimination happens
+    // over the bus, so it should see "Transfer Pak" despite the label.
+    // If ultramodern ever grows Pak::TransferPak, switch to that.
+    info.connected_pak = has_transfer_pak
+        ? ultramodern::input::Pak::RumblePak
+        : ultramodern::input::Pak::None;
     return info;
 }
 
@@ -546,7 +560,7 @@ static LONG WINAPI psr_crash_filter(EXCEPTION_POINTERS* info) {
     // last_run_report.json.
     psr_post_mortem_dump("seh", info);
 
-    FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
     if (f) {
         fprintf(f, "\n=== UNHANDLED EXCEPTION ===\n");
         fprintf(f, "  code:    0x%08lX\n", info->ExceptionRecord->ExceptionCode);
@@ -622,7 +636,7 @@ static void error_message_box(const char* msg) {
     // ultramodern::error_handling::quick_exit() terminates the process,
     // and stderr buffering can swallow the message in headless runs.
     // Write a known file path so post-mortem inspection is easy.
-    FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
     if (f) {
         fprintf(f, "[PSR ERROR] %s\n", msg);
         fclose(f);
@@ -723,6 +737,7 @@ int main(int argc, char** argv) {
 
     recomp::Version project_version{0, 1, 0, ""};
     recomp::register_config_path(std::filesystem::current_path());
+    pkmnstadium::transfer_pak::initialize();
 
     recomp::GameEntry game{};
     game.rom_hash               = 0x6E46EACF8F27011DULL;  // XXH3_64bits of baserom.z64 (US v1.0)
