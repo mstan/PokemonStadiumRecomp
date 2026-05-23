@@ -2348,17 +2348,23 @@ static inline void pkmnstadium_set_vtx_y(uint8_t* rdram, uint32_t vtx_addr, int 
     MEM_H(2, vtx_addr + (uint32_t)idx * 0x10u) = value;
 }
 
+/* Live-test 2026-05-23: at the user's render scale +1 still showed
+ * residual yellow row-seam dashes on every Game Pak Check card and
+ * on the main-menu icon panels. +2 cleared them; bumped here.
+ */
+#define FRAG57_SEAM_OVERLAP 2
+
 static void pkmnstadium_overlap_vtx_tile(uint8_t* rdram, uint32_t vtx_addr, int overlap_left, int overlap_top) {
     if (overlap_left) {
         int16_t x = pkmnstadium_vtx_x(rdram, vtx_addr, 0);
-        pkmnstadium_set_vtx_x(rdram, vtx_addr, 0, x - 1);
-        pkmnstadium_set_vtx_x(rdram, vtx_addr, 1, x - 1);
+        pkmnstadium_set_vtx_x(rdram, vtx_addr, 0, x - FRAG57_SEAM_OVERLAP);
+        pkmnstadium_set_vtx_x(rdram, vtx_addr, 1, x - FRAG57_SEAM_OVERLAP);
     }
 
     if (overlap_top) {
         int16_t y = pkmnstadium_vtx_y(rdram, vtx_addr, 0);
-        pkmnstadium_set_vtx_y(rdram, vtx_addr, 0, y + 1);
-        pkmnstadium_set_vtx_y(rdram, vtx_addr, 3, y + 1);
+        pkmnstadium_set_vtx_y(rdram, vtx_addr, 0, y + FRAG57_SEAM_OVERLAP);
+        pkmnstadium_set_vtx_y(rdram, vtx_addr, 3, y + FRAG57_SEAM_OVERLAP);
     }
 }
 

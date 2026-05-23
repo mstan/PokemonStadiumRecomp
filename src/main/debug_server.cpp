@@ -724,6 +724,46 @@ static std::string handle_command(const std::string& line) {
                R"(,"n":)" + std::to_string(n) +
                R"(,"hex":")" + hex + R"("})";
     }
+    if (cmd == "rdram_poke") {
+        // Write N bytes to rdram at a virtual address. Companion to
+        // rdram_peek. Used to live-test runtime patches (e.g. mutate
+        // Vtx coords on a running build to check whether a proposed
+        // seam-overlap fix actually clears a visual artifact, before
+        // committing the patch to extras.c + game.toml).
+        //
+        // Args: {"addr": <vaddr>, "hex": "<hex_bytes>"}
+        //   addr: K0/K1 vaddr; physical also accepted.
+        //   hex:  even-length hex string, 1..256 bytes (matches
+        //         the encoding rdram_peek returns).
+        //
+        // Uses the same XOR-3 byte addressing as rdram_peek so the
+        // bytes round-trip identically.
+        uint32_t addr = get_uint(line, "addr", 0);
+        std::string hex = get_str(line, "hex");
+        if (hex.size() < 2 || (hex.size() & 1)) {
+            return R"({"ok":false,"error":"hex must be even-length, >=2 chars"})";
+        }
+        size_t n = hex.size() / 2;
+        if (n > 256) {
+            return R"({"ok":false,"error":"hex >256 bytes"})";
+        }
+        uint32_t paddr = addr & 0x1FFFFFFFu;
+        constexpr uint32_t kRdramSize = 8u * 1024u * 1024u;
+        if (paddr + (uint32_t)n > kRdramSize) {
+            return R"({"ok":false,"error":"oob"})";
+        }
+        uint8_t* rdram = recomp_runtime_get_rdram();
+        if (rdram == nullptr) {
+            return R"({"ok":false,"error":"rdram not yet captured"})";
+        }
+        for (size_t i = 0; i < n; i++) {
+            char hb[3] = { hex[i*2], hex[i*2+1], 0 };
+            uint8_t b = (uint8_t)std::strtoul(hb, nullptr, 16);
+            rdram[(paddr + (uint32_t)i) ^ 3] = b;
+        }
+        return R"({"ok":true,"addr":)" + std::to_string(addr) +
+               R"(,"n":)" + std::to_string(n) + R"(})";
+    }
     // NOTE: rdram_scan_u32 added 2026-05-08 — needs rebuild before use.
     if (cmd == "rdram_scan_u32") {
         // Host-side scan of all rdram for occurrences of a specific 4-byte
