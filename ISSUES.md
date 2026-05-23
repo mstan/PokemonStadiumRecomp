@@ -25,16 +25,27 @@ visible imperfections remain:
       a few entries — that hard crash is now fixed (n64recomp
       MEM_W mask 2026-05-10) but the visual glitch remains.
 
-- [ ] **Line patterns through HUD elements across menus.**
-      Persistent on Game Pak Check screen (yellow gridlines through
-      blue Game-Pak panels and the red WARNING banner; not just
-      background bleed-through — confirmed something is hidden
-      behind Player 2 panel). Intermittent on rental-pokemon select
-      borders. Lives below user-config (filtering / upscale2D /
-      threePointFiltering all tested no-op). Native 240p doesn't
-      fix it (`PSR_RT64_RES_MULT=1` ruled out high-res rasterizer).
-      Investigation paused 2026-05-10; diagnostic infra committed
-      on `dev/sprite-corruption-menu-borders`.
+- [x] **Line patterns through HUD elements across menus.** ~~Fixed
+      2026-05-23 by bumping fragment-57 Vtx-grid seam overlap from
+      +1 (Codex's original) to +2 in `extras.c`
+      (`FRAG57_SEAM_OVERLAP` constant). Lines were caused by RT64
+      exposing single-pixel boundary rows between adjacent Vtx
+      quads in the same panel; +1 source-unit overlap wasn't enough
+      at the user's render scale, +2 fully clears.~~ Verified on
+      Game Pak Check (all 4 cards) and main-menu icon panels
+      (which reuse the same frag57 grid layout via different
+      MTX translations).
+
+- [ ] **POKéMON STADIUM panel bottom clip (main menu).** The
+      central icon's "POKéMON STADIUM" label band gets the
+      descenders cut off and the gap before the bottom corner
+      bracket is too small. Different bug class from the seam
+      issue — quad #7 of the 2×8 grid at frag57+0x8870 is
+      intentionally short (13 units tall vs 20 for the column),
+      and bumping seam overlap doesn't help. Likely Y-axis
+      scissor / projection clipping, or the label texture's t-coord
+      mapping extends past the quad's bottom. See
+      `NOTES_TO_CODEX.md` for the investigation path.
 
 - [ ] **Active per-site workarounds in `extras.c` / `game.toml`
       should migrate to proper runtime fixes.** Tracked in
