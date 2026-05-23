@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "ghidra_pokestadium": {
-      "type": "sse",
-      "url": "http://localhost:5555/sse"
-    }
-  }
-}

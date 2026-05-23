@@ -15,9 +15,9 @@ import yaml
 import re
 from pathlib import Path
 
-ROM = Path("F:/Projects/PokemonStadiumRecomp/baserom.z64")
-YAML = Path("F:/Projects/PokemonStadiumRecomp/disasm/yamls/us/rom.yaml")
-ASSETS = Path("F:/Projects/PokemonStadiumRecomp/disasm/assets/us/fragments")
+ROM = Path("F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64")
+YAML = Path("F:/Projects/n64recomp/PokemonStadiumRecomp/disasm/yamls/us/rom.yaml")
+ASSETS = Path("F:/Projects/n64recomp/PokemonStadiumRecomp/disasm/assets/us/fragments")
 
 PATTERN_BUCKET = 0x8FF00000
 PATTERN_BUCKET_MASK = 0xFFF00000

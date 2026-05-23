@@ -178,10 +178,10 @@ def find_label_entries(events: list[dict], target_pc: int,
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ares-port", type=int, default=4372)
-    ap.add_argument("--rom", default="F:/Projects/PokemonStadiumRecomp/baserom.z64")
+    ap.add_argument("--rom", default="F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64")
     ap.add_argument("--ares-frames", type=int, default=60)
     ap.add_argument("--oracle-server",
-                    default="F:/Projects/N64Recomp/build-aresbridge/"
+                    default="F:/Projects/n64recomp/N64Recomp/build-aresbridge/"
                             "ares-bridge/Release/ares_oracle_server.exe",
                     help="Path to ares_oracle_server.exe. Pass empty to "
                          "skip spawning (assume already running).")

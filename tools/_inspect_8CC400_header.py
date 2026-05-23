@@ -45,7 +45,7 @@ def yay0_decompress(data):
     return bytes(out[:decomp_size])
 
 
-with open("F:/Projects/PokemonStadiumRecomp/baserom.z64", "rb") as f:
+with open("F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64", "rb") as f:
     rom = f.read()
 
 body = yay0_decompress(rom[0x8CC418 : 0x8CC418 + 0x100000])

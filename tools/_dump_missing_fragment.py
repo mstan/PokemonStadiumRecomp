@@ -4,7 +4,7 @@ import sys
 
 ROM_OFFSET = 0x1206400
 
-with open('F:/Projects/PokemonStadiumRecomp/baserom.z64', 'rb') as f:
+with open('F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64', 'rb') as f:
     f.seek(ROM_OFFSET)
     data = f.read(0x20000)
 

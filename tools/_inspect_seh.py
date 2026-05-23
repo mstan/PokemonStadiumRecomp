@@ -1,6 +1,6 @@
 """Show SEH details + all PokemonStadium thread stacks."""
 import json
-d = json.load(open("F:/Projects/PokemonStadiumRecomp/build/last_run_report.json"))
+d = json.load(open("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_report.json"))
 print("reason:", d.get("reason"))
 print("seh:", json.dumps(d.get("seh"), indent=2))
 print()

@@ -9,7 +9,7 @@ no reloc entry."""
 import struct
 import re
 
-ROM = "F:/Projects/PokemonStadiumRecomp/baserom.z64"
+ROM = "F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64"
 FRAG62_ROM = 0x2EA8C0
 FRAG62_END = 0x378D00
 FRAG62_VRAM = 0x84300000

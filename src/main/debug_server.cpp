@@ -993,7 +993,7 @@ static std::string handle_command(const std::string& line) {
         // without any "arm + capture" timing dance. Used to capture
         // the DL feeding any visible frame (e.g. a sprite-corruption
         // repro screen) for offline GBI decoding.
-        std::string path = "F:/Projects/PokemonStadiumRecomp/build/last_run_dl.bin";
+        std::string path = "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_dl.bin";
         std::string p = get_str(line, "path");
         if (!p.empty()) path = p;
         uint32_t addr = 0, size = 0;
@@ -1006,7 +1006,7 @@ static std::string handle_command(const std::string& line) {
         return buf;
     }
     if (cmd == "tail_errlog") {
-        FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "rb");
+        FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "rb");
         if (!f) return R"({"ok":true,"errlog":""})";
         char chunk[4096]{};
         size_t n = fread(chunk, 1, sizeof(chunk) - 1, f);
@@ -1031,7 +1031,7 @@ static std::string handle_command(const std::string& line) {
         // diagnose deep stalls (e.g. attract demo blocked in an
         // OSMesgQueue wait) without having to instrument every libultra
         // primitive.
-        FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+        FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
         if (!f) return R"({"ok":false,"error":"could not open log"})";
         fprintf(f, "\n=== dump_threads ===\n");
 

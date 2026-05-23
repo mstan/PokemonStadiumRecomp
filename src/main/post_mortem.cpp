@@ -123,7 +123,7 @@ namespace pkmnstadium { namespace dbg {
 
 // Dedicated output path — single file, overwritten per dump.
 static const char* kReportPath =
-    "F:/Projects/PokemonStadiumRecomp/build/last_run_report.json";
+    "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_report.json";
 
 // Mutex so on-demand TCP dump and SEH/atexit dump can't race.
 static std::mutex g_dump_mutex;
@@ -860,5 +860,5 @@ extern "C" void psr_post_mortem_dump(const char* reason,
     // to parse the multi-MB main report). Empty if no input was driven.
     extern void psr_dump_input_history_json(const char* path);
     psr_dump_input_history_json(
-        "F:/Projects/PokemonStadiumRecomp/build/last_run_input_history.json");
+        "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_input_history.json");
 }

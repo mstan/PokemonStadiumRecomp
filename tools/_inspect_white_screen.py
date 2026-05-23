@@ -7,8 +7,8 @@ Surfaces:
 """
 import json, sys
 
-REPORT = sys.argv[1] if len(sys.argv) > 1 else "F:/Projects/PokemonStadiumRecomp/build/last_run_report.json"
-DL_BIN = sys.argv[2] if len(sys.argv) > 2 else "F:/Projects/PokemonStadiumRecomp/build/last_run_dl_whitescreen.bin"
+REPORT = sys.argv[1] if len(sys.argv) > 1 else "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_report.json"
+DL_BIN = sys.argv[2] if len(sys.argv) > 2 else "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_dl_whitescreen.bin"
 DL_START = 0x80209500
 
 with open(REPORT) as f:

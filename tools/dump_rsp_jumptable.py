@@ -1,6 +1,6 @@
 import struct, sys
 
-with open('F:/Projects/PokemonStadiumRecomp/baserom.z64', 'rb') as f:
+with open('F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64', 'rb') as f:
     f.seek(0x7F670)
     data = f.read(0x2B0)
 

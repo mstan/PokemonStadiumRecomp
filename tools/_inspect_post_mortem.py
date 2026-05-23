@@ -1,6 +1,6 @@
 """Inspect last_run_report.json — focus on threads, ring tails."""
 import json, sys
-report = json.loads(open("F:/Projects/PokemonStadiumRecomp/build/last_run_report.json").read())
+report = json.loads(open("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_report.json").read())
 
 print("=== STATUS ===")
 print(json.dumps(report.get("status",{}), indent=2))
@@ -26,7 +26,7 @@ for t in report.get("threads", []):
     frames = t.get("frames", [])
     print(f"\n--- tid={tid} name='{name}' frames={len(frames)} ---")
     for fr in frames:
-        f = fr.get("file","?").replace("F:\\Projects\\PokemonStadiumRecomp\\", "...\\")
+        f = fr.get("file","?").replace("F:\\Projects\\n64recomp\\PokemonStadiumRecomp\\", "...\\")
         print(f"  #{fr['i']:02} {fr['name']} ({f}:{fr['line']})")
 
 print()
