@@ -81,14 +81,14 @@ the per-site patch is currently active.
 
 | field | value |
 |---|---|
-| status | **active — undocumented, audit candidate** |
-| applied | pre-2026-05-23 (inherited; no commit comment) |
+| status | **active — classified 2026-05-23 as same family as `free-battle-modal-softlock` + `petit-cup-softlock`** |
+| applied | pre-2026-05-23 (inherited) |
 | sites  | `game.toml [[patches.hook]] func = "func_800484E0" before_vram = 0x8004856C  text = "ctx->r2 = 0;"` |
 | markers | `PSR_TEMP_PATCH: asset-pending-bypass` (TO ADD) |
-| repro | UNKNOWN — needs identification. Reverting this hook should expose a wait-loop hang at `func_8000D2B4`, per the TOML comment. Need to find the user-facing path that hits it. |
-| signal that the proper fix has shipped | TBD when proper-fix layer identified. |
-| memory note | none |
-| proper-fix layer | UNKNOWN — needs root-cause investigation before classification. Hypotheses: (a) another cooperative-scheduler busy-wait family (would fold into the `voluntary preemption` work that retires the softlock entries); (b) the pending counter is incremented on an async DMA path that completes too quickly on the recomp side, so the decrement happens before the increment from the caller's perspective. Investigate before the next layer-fix sweep — the one-line `ctx->r2 = 0` is too coarse for the long term. |
+| repro | Scene-cleanup paths that call `func_8000D2B4` (stop-audio + wait-for-asset-loads-to-drain). `func_8000D2B4` calls `func_800484E0` to get pending-count, then spins up to 1M iterations re-polling until pending hits 0, with `func_8004FD44` (forced audio cleanup) as the timeout backstop. The bypass forces pending=0 so the wait exits immediately. Without the bypass: long pause (several seconds wall-time at fast-forward, much longer otherwise) at any scene transition that hits this path, then potentially missing assets if the forced-cleanup fires before async loaders complete. |
+| signal that the proper fix has shipped | Same as the other two softlocks — when ultramodern grows voluntary preemption of stuck game threads, this hack retires together with them. |
+| memory note | (planned: extend `project_free_battle_modal_softlock_2026_05_08.md` to cover all three) |
+| proper-fix layer | **ultramodern voluntary preemption** — same as `free-battle-modal-softlock` and `petit-cup-softlock`. `func_800484E0` returns a non-zero pending count when async loaders haven't run yet; the spin polls expecting the count to drain. On a cooperative scheduler that doesn't preempt during the spin, the loaders never run → count never drains → wait runs to its 1M cap → forced cleanup. The viable shape per `project_free_battle_modal_softlock_2026_05_08.md` is a host-monitor "no context-switch in N seconds" flag set by ultramodern + a single atomic-load + branch in `trace_entry`. The 2026-05-09 attempt was reverted because per-call `trace_entry` overhead perturbed audio timing — the new shape avoids that overhead in the common case. **Three entries retire together** when this lands. |
 
 ## audio-uaf-fragment36-voice-stop
 
