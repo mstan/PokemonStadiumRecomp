@@ -31,18 +31,11 @@ the per-site patch is currently active.
 |---|---|
 | status | **retired** — superseded by the ultramodern voluntary-preemption mechanism (N64MR `b0364f2` host-monitor + yield flag; PSR `25d157c` wires `ultramodern_scheduler_tick` into `pkmnstadium_trace_entry`). The `func_80003680` JPEG-decoder inlined busy-wait (`while (func_80001C90() == 0) {}` at vram `0x80003770`/`0x80003778`) now drains naturally: when the busy-waiter has held the CPU >200 ms without a context switch, the host monitor flags a yield; the next `trace_entry` (from `func_80001C90`'s own re-entry inside the loop body) drains externals and swaps to the head of `running_queue`, letting the asset-loader / audio threads run and flip the predicate. No game-side priority manipulation needed. |
 
-## fragment57-vtx-seams
+## fragment57-vtx-seams (retired 2026-05-24)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | pre-2026-05-23 (inherited; FRAG57_SEAM_OVERLAP bumped 1→2 on 2026-05-23) |
-| sites  | `extras.c::pkmnstadium_patch_fragment57_ui_seams` + `pkmnstadium_overlap_vtx_tile` + `pkmnstadium_overlap_vtx_grid_*` + `#define FRAG57_SEAM_OVERLAP`; `game.toml [[patches.hook]] func = "func_82D01758" before_vram = 0x82D01758` |
-| markers | `PSR_TEMP_PATCH: fragment57-vtx-seams` (TO ADD at both sites) |
-| repro | Boot → past title → Game Pak Check. Pre-patch: RT64 exposes 1-pixel yellow seam dashes between adjacent Vtx quads in fragment 57's UI panels (controller-card grids, warning header, info panels). Same Vtx grids drive the Main Menu icons (Gallery, Battle Now, central STADIUM panel) via different MTX, so seams appear there too. |
-| signal that the proper fix has shipped | Game Pak Check cards and Main Menu icon panels render without row/column seam dashes at all render scales (including high-res) *with this hook reverted AND `FRAG57_SEAM_OVERLAP=0`*. |
-| memory note | `project_fragment57_shared_grids.md` |
-| proper-fix layer | **RT64** — shared-edge / sub-pixel handling for adjacent N64 Vtx quads at high render scale. Suspect: RT64 rasterizes at native resolution while the original geometry was hand-fitted for 320x240, so adjacent quads sharing a pixel boundary leave a sub-pixel gap. An edge-clamp or tile-merge pass in RT64 would obsolete every per-grid overlap workaround in this and other recompiled N64 games. Likely shares root cause with the unresolved **POKéMON STADIUM panel bottom clip** in ISSUES.md. |
+| status | **retired** — superseded by conservative rasterization on the N64 triangle PSO (`lib/rt64` `b60cf10` adds `RenderGraphicsPipelineDesc::conservativeRasterEnabled`, wired through the D3D12 backend; `RasterShader::createPipeline` opts in unconditionally). The `func_82D01758` hook + `pkmnstadium_patch_fragment57_ui_seams` + `pkmnstadium_overlap_vtx_*` helpers + `FRAG57_*` defines are all removed. With `D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON`, the rasterizer covers every pixel a triangle touches and the shared-edge tie-break that previously left dashed seams no longer applies. `RT64_CONSERVATIVE_RASTER=0` on the runner is a force-OFF escape hatch if a future workload regresses. Vulkan/Metal backends treat the flag as a no-op pending `VK_EXT_conservative_rasterization` / Metal plumbing — D3D12 is currently the only backend in regular use on this project. Verified 2026-05-24 against the seam-visible baseline: cards 2/3/4 and the WARNING banner render without seam dashes. The faint artifact remaining on card 1 is a different bug class (the still-active `fragment57-selected-card-overlay` replacement). |
 
 ## fragment57-selected-card-overlay
 

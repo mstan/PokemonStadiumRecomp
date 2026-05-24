@@ -2924,13 +2924,6 @@ func = "n_alLoadParam"
 before_vram = 0x8004FAE4
 text = "pkmnstadium_audio_voice_check(ctx->r7, ctx->r2, ctx->r3);"
 
-# Fragment 57's Game Pak Check panels are tiled into adjacent Vtx quads.
-# Overlap internal tile edges by one pixel so RT64 does not expose seams.
-[[patches.hook]]
-func = "func_82D01758"
-before_vram = 0x82D01758
-text = "pkmnstadium_patch_fragment57_ui_seams(rdram);"
-
 # n_alAdpcmPull aClearBuffer-overflow probe (post-title audio bug
 # 2026-05-06). Fires at the START of the inlined `aClearBuffer(...)`
 # block at PC 0x8004F908, just before the `lh $t7, 0($t3)` that
