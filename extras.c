@@ -1854,170 +1854,32 @@ void pkmnstadium_geo_render_call_log(uint32_t arg0_node, uint32_t arg1_seg,
     }
 }
 
-/* Stop all libnaudio voices by clearing each voice's unk_038
- * (sequence-stream pointer). func_8003AD58 (the per-voice synth)
- * skips voices with unk_038 == NULL, so this is sufficient to
- * prevent the synth from dereferencing the voices' unk_090 bank
- * pointer.
- *
- * Hooked at func_8004FF20 entry — fragment36 calls func_8004FF20
- * right before main_pool_pop_state('TITL'), which frees the 1 MiB
- * SoundBank buffer at fragment36.c:351. Without this, the synth
- * keeps voicing the freed bank across the state transition and
- * the audio thread crashes.
- *
- * Why not just call func_8004FCD8 (the libnaudio audio-stop)?
- * Because that's a recompiled function and hooks can't easily
- * cross-call recompiled funcs. Direct rdram writes do the same job.
- *
- * D_800FC7D0 (vaddr 0x800FC7D0) holds a pointer to the voice array;
- * D_800FC7CC (vaddr 0x800FC7CC) holds the voice count;
- * sizeof(unk_D_800FC7D0) = 0x150; unk_038 sits at offset 0x38.
- */
-void pkmnstadium_audio_stop_voices(uint8_t* rdram) {
-    uint32_t count_paddr = 0x000FC7CCu;
-    uint32_t count =
-        ((uint32_t)rdram[(count_paddr + 0) ^ 3] << 24) |
-        ((uint32_t)rdram[(count_paddr + 1) ^ 3] << 16) |
-        ((uint32_t)rdram[(count_paddr + 2) ^ 3] <<  8) |
-        ((uint32_t)rdram[(count_paddr + 3) ^ 3]);
-    uint32_t arr_ptr_paddr = 0x000FC7D0u;
-    uint32_t arr_vaddr =
-        ((uint32_t)rdram[(arr_ptr_paddr + 0) ^ 3] << 24) |
-        ((uint32_t)rdram[(arr_ptr_paddr + 1) ^ 3] << 16) |
-        ((uint32_t)rdram[(arr_ptr_paddr + 2) ^ 3] <<  8) |
-        ((uint32_t)rdram[(arr_ptr_paddr + 3) ^ 3]);
-    if (arr_vaddr == 0 || arr_vaddr < 0x80000000u || arr_vaddr >= 0x80800000u) {
-        fprintf(stderr,
-            "[audio-stop] D_800FC7D0 array ptr out of range (0x%08X), skipped\n",
-            arr_vaddr);
-        fflush(stderr);
-        return;
-    }
-    if (count == 0 || count > 256) {
-        fprintf(stderr,
-            "[audio-stop] D_800FC7CC voice count out of range (%u), skipped\n",
-            count);
-        fflush(stderr);
-        return;
-    }
-    uint32_t arr_paddr = arr_vaddr & 0x1FFFFFFFu;
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t voice_paddr = arr_paddr + i * 0x150u;
-        for (int b = 0; b < 4; b++) {
-            rdram[(voice_paddr + 0x38 + b) ^ 3] = 0;
-        }
-    }
-    static int s_logged = 0;
-    if (!s_logged) {
-        s_logged = 1;
-        fprintf(stderr,
-            "[audio-stop] cleared unk_038 for %u voice(s) at "
-            "0x%08X (size 0x150 each) — synth will skip these "
-            "until the next sequence-load reassigns them\n",
-            count, arr_vaddr);
-        fflush(stderr);
-    }
-
-    /* Stadium-side stop above is necessary but not sufficient: the
-     * libnaudio synth maintains its OWN voice pool (N_PVoice array)
-     * via n_syn->auxBus->sources. Even after Stadium stops feeding
-     * the high-level voice, those low-level N_PVoices keep getting
-     * pulled by n_alAuxBusPull → n_alEnvmixerPull → n_alAdpcmPull
-     * because their em_motion is still AL_PLAYING. n_alAdpcmPull
-     * then reads f->dc_table and friends from soon-to-be-popped
-     * pool memory, computes overflow nOver of ~3.7B samples, emits
-     * a CLEARBUFF cmd whose count wraps DMEM and zeroes the dispatch
-     * table — the post-title audio bug 2026-05-06.
-     *
-     * Walk libnaudio's voice pool and force em_motion=AL_STOPPED so
-     * n_alEnvmixerPull's "if (em_motion != AL_PLAYING) return" gate
-     * kicks them out before any wavetable deref.
-     *
-     * Field offsets (verified against recompiled n_alAuxBusPull and
-     * the N_PVoice struct in n_synthInternals.h):
-     *   n_syn at vaddr 0x80078584 (pointer-to-struct, NOT inline)
-     *     +0x34 auxBus*
-     *   N_ALAuxBus
-     *     +0x14 sourceCount (s32)
-     *     +0x1C sources (N_PVoice**)
-     *   N_PVoice
-     *     +0x84 em_motion (s32; 0 = AL_STOPPED, 1 = AL_PLAYING)
-     */
-    {
-        uint32_t n_syn_var_paddr = 0x00078584u;
-        uint32_t n_syn_vaddr = MEM_LOAD_BE32(rdram, n_syn_var_paddr);
-        if (n_syn_vaddr < 0x80000000u || n_syn_vaddr >= 0x80800000u) {
-            fprintf(stderr,
-                "[audio-stop] n_syn pointer not in RDRAM (0x%08X), "
-                "libnaudio voices not stopped\n", n_syn_vaddr);
-            fflush(stderr);
-            return;
-        }
-        uint32_t n_syn_paddr = n_syn_vaddr & 0x1FFFFFFFu;
-        uint32_t auxBus_vaddr = MEM_LOAD_BE32(rdram, n_syn_paddr + 0x34);
-        if (auxBus_vaddr < 0x80000000u || auxBus_vaddr >= 0x80800000u) {
-            fprintf(stderr,
-                "[audio-stop] auxBus ptr not in RDRAM (0x%08X), skipped\n",
-                auxBus_vaddr);
-            fflush(stderr);
-            return;
-        }
-        uint32_t auxBus_paddr = auxBus_vaddr & 0x1FFFFFFFu;
-        uint32_t source_count = MEM_LOAD_BE32(rdram, auxBus_paddr + 0x14);
-        uint32_t sources_vaddr = MEM_LOAD_BE32(rdram, auxBus_paddr + 0x1C);
-        if (source_count == 0 || source_count > 64 ||
-            sources_vaddr < 0x80000000u || sources_vaddr >= 0x80800000u) {
-            fprintf(stderr,
-                "[audio-stop] auxBus sourceCount=%u sources=0x%08X "
-                "(skipping libnaudio stop)\n",
-                source_count, sources_vaddr);
-            fflush(stderr);
-            return;
-        }
-        uint32_t sources_paddr = sources_vaddr & 0x1FFFFFFFu;
-        uint32_t stopped = 0;
-        for (uint32_t i = 0; i < source_count; i++) {
-            uint32_t pvoice_vaddr = MEM_LOAD_BE32(rdram, sources_paddr + i*4);
-            if (pvoice_vaddr < 0x80000000u || pvoice_vaddr >= 0x80800000u) continue;
-            uint32_t pvoice_paddr = pvoice_vaddr & 0x1FFFFFFFu;
-            /* Write 0 (AL_STOPPED) to em_motion at +0x84. */
-            for (int b = 0; b < 4; b++) {
-                rdram[(pvoice_paddr + 0x84 + b) ^ 3] = 0;
-            }
-            stopped++;
-        }
-        static int s_lib_logged = 0;
-        if (!s_lib_logged) {
-            s_lib_logged = 1;
-            fprintf(stderr,
-                "[audio-stop] libnaudio: zeroed em_motion on %u of %u "
-                "N_PVoice(s) via n_syn->auxBus->sources at 0x%08X\n",
-                stopped, source_count, sources_vaddr);
-            fflush(stderr);
-        }
-    }
-}
-
-/* Thin glue for the generic libnaudio voice UAF protector in librecomp.
+/* Thin glue for the generic voice-UAF protector in librecomp.
  *
  * Hooked at main_pool_pop_state entry. Reads sMemPool to compute the
- * about-to-be-freed range [saved.L, current.L), then forwards to
- * librecomp_audio_uaf_silence_voices_in_range which walks the libnaudio
- * voice array (registered at startup in main.cpp) and zeros em_motion
- * on any voice whose dc_table falls in the freed range.
+ * about-to-be-freed range [saved.L, current.L), then forwards to:
+ *   - librecomp_audio_uaf_silence_voices_in_range: libnaudio side
+ *     (walks N_ALSynth's pAllocList + pLameList, range-checks dc_table)
+ *   - librecomp_audio_uaf_silence_secondary_in_range: Stadium-side
+ *     (walks D_800FC7D0 array, chains through unk_090 -> +0x2C to
+ *      reach the wavetable-pointer-array base, range-checks it)
+ *
+ * Both layouts are registered at startup in src/main/main.cpp. This
+ * single hook covers any pool pop that would orphan an active voice's
+ * wavetable — at either the libnaudio level OR the Stadium-side synth
+ * level. Retires the prior per-scene func_8004FF20 hook (was:
+ * pkmnstadium_audio_stop_voices, deleted) which stopped Stadium voices
+ * unconditionally at one specific cleanup; the generic range-checked
+ * approach handles every pop, not just fragment36's.
  *
  * sMemPool layout (vaddr 0x800A6070, see pkmnstadium_pool_pop_log):
  *   +0x28 listHeadL (current bump pointer, low side)
  *   +0x30 mainState* (pointer to MainPoolState)
  * MainPoolState (whatever state_v points to):
- *   +0x04 listHeadL (saved low-side bump pointer to pop back to)
- *
- * Single hook subsumes per-scene voice-stop hooks (e.g. the post-title
- * fragment36 hook at func_8004FF20) for any pop that would orphan an
- * active voice's wavetable. Stays out of the way otherwise — silenced=0
- * is logged-quietly inside the librecomp helper. */
+ *   +0x04 listHeadL (saved low-side bump pointer to pop back to) */
 extern int librecomp_audio_uaf_silence_voices_in_range(
+    uint8_t* rdram, uint32_t start_vaddr, uint32_t end_vaddr);
+extern int librecomp_audio_uaf_silence_secondary_in_range(
     uint8_t* rdram, uint32_t start_vaddr, uint32_t end_vaddr);
 
 void pkmnstadium_pool_pop_silence_voices(uint8_t* rdram) {
@@ -2031,6 +1893,7 @@ void pkmnstadium_pool_pop_silence_voices(uint8_t* rdram) {
     if (saved_L < 0x80000000u || saved_L >= 0x80800000u) return;
     if (saved_L >= cur_L) return;  /* nothing to free */
     librecomp_audio_uaf_silence_voices_in_range(rdram, saved_L, cur_L);
+    librecomp_audio_uaf_silence_secondary_in_range(rdram, saved_L, cur_L);
 }
 
 /* miniEkansInitCam entry diagnostic.

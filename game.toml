@@ -3002,7 +3002,8 @@ text = "pkmnstadium_set_wavetable_probe(rdram, ctx->r4, ctx->r5, ctx->r6);"
 # generically in librecomp (audio_uaf_protect.cpp); the layout for finding
 # Stadium's voice array is registered at startup in src/main/main.cpp.
 # This single hook subsumes the prior per-scene fragment36 audio-stop
-# hook (func_8004FF20) and prevents the rental-pokemon UAF + AREA_SELECT
+# hook (func_8004FF20, deleted 2026-05-23 once SecondaryVoiceTableLayout
+# extension landed) and prevents the rental-pokemon UAF + AREA_SELECT
 # UAF + post-title UAF families generically.
 [[patches.hook]]
 func = "main_pool_pop_state"
@@ -3315,14 +3316,15 @@ func = "func_80010FDC"
 before_vram = 0x80010FDC   # entry
 text = "pkmnstadium_geo_render_call_log((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6);"
 
-# Re-enabled 2026-04-29 alongside Memmap_GetFragmentVaddr caller-
-# context override. Voice-stop is needed for audio UAF; the
-# override is the candidate fix for the AREA_SELECT regression
-# that voice-stop's pool-timing shift previously introduced.
-[[patches.hook]]
-func = "func_8004FF20"
-before_vram = 0x8004FF20
-text = "pkmnstadium_audio_stop_voices(rdram);"
+# Stadium-side audio-UAF voice silencing now lives in the generic
+# main_pool_pop_state hook (pkmnstadium_pool_pop_silence_voices),
+# which calls librecomp_audio_uaf_silence_secondary_in_range against
+# the D_800FC7D0 voice array registered from src/main/main.cpp.
+# Chain: voice+0x90 -> +0x2C reaches the wavetable-pointer-array base
+# (offset verified against audio_diag hook capture at PC 0x8003AF60).
+# The prior per-scene func_8004FF20 hook + pkmnstadium_audio_stop_voices
+# in extras.c were deleted on 2026-05-23 — generic range-checked path
+# covers every pool pop, not just fragment36 cleanup.
 
 # miniEkansInitCam entry diagnostic — auto-attract crashes in
 # miniUpdateCamera writing to D_87906054->unk_24.fovy (NULL+0x2C).

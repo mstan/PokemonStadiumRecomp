@@ -797,6 +797,33 @@ int main(int argc, char** argv) {
         librecomp::audio_uaf::register_voice_layout(layout);
     }
 
+    // Stadium-side secondary voice table — array-style high-level synth
+    // voices at D_800FC7D0 (count at 0x800FC7CC, array ptr at 0x800FC7D0).
+    // The wavetable-pointer-ARRAY base lives at voice.unk_090 + 0x2C
+    // (verified against the audio_diag hook capture: ctx->r11 = $t3 =
+    // MEM_W($s0, 0x2C) where $s0 = arg0->unk_090). For Stadium's UAF
+    // source (the 1 MiB SoundBank pool buffer freed at fragment36
+    // cleanup), the array base AND its wavetable entries all live in
+    // the same buffer, so range-checking the array base correctly
+    // catches the freed-bank case. Silence by zeroing voice.unk_038 —
+    // Stadium's func_8003AD58 skips voices whose unk_038 is null.
+    // Routing this through audio_uaf_protect retires the per-scene
+    // func_8004FF20 hook (was pkmnstadium_audio_stop_voices) and makes
+    // coverage range-checked + global across all pool pops.
+    {
+        librecomp::audio_uaf::SecondaryVoiceTableLayout sec{};
+        sec.count_vaddr           = 0x800FC7CCu;
+        sec.array_ptr_vaddr       = 0x800FC7D0u;
+        sec.voice_size            = 0x150u;
+        sec.max_voice_count       = 64u;
+        sec.chain_step_count      = 2u;
+        sec.chain_offsets[0]      = 0x90u;  // voice.unk_090 -> inner struct ptr
+        sec.chain_offsets[1]      = 0x2Cu;  // .unk_2C       -> wavetable-array base
+        sec.silence_field_offset  = 0x38u;  // voice.unk_038
+        sec.silence_value         = 0u;
+        librecomp::audio_uaf::register_secondary_voice_table(sec);
+    }
+
     // Validate + load the ROM before recomp::start. select_rom verifies
     // the hash matches our registered GameEntry and stashes it as the
     // active ROM so start_game can find it.
