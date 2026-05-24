@@ -19,18 +19,11 @@ the per-site patch is currently active.
 
 ---
 
-## free-battle-modal-softlock
+## free-battle-modal-softlock (retired 2026-05-24)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | 2026-05-08 (PSR commit `062cece`) |
-| sites  | `extras.c::func_8000771C`; `game.toml [patches].ignored = ["func_8000771C", …]` |
-| markers | `PSR_TEMP_PATCH: free-battle-modal-softlock` (both sites) |
-| repro | Title → Free Battle → 1P → Rule → Cup → confirm any cup. Pre-patch: hangs at the cup-confirm screen, never advances. |
-| signal that the proper fix has shipped | Free Battle Rule/Cup confirm advances cleanly *with both this entry and `petit-cup-softlock` reverted*. |
-| memory note | `project_free_battle_modal_softlock_2026_05_08.md` |
-| proper-fix layer | N64ModernRuntime/ultramodern: voluntary preemption of busy-waiting game threads. Stage 1 (per-call same-fn detector in `pkmnstadium_trace_entry`) was tried at 2026-05-09 and reverted (commits `5e91259`/`fe0d2fd` engine-fork; `646ba43`/this-revert PSR) — the per-call overhead in `trace_entry` perturbed audio-synth timing enough to flip a pre-existing audio UAF from rare to ~deterministic. The viable shape is a host-monitor "no context-switch in N seconds" flag set by ultramodern + a single atomic-load + branch in `trace_entry`; not yet implemented. |
+| status | **retired** — superseded by the ultramodern voluntary-preemption mechanism (N64MR `b0364f2` host-monitor + yield flag; PSR `25d157c` wires `ultramodern_scheduler_tick` into `pkmnstadium_trace_entry`). `func_8000771C` is no longer in `[patches.ignored]`; the native recompiled body (the tight `while (func_80001C90() == 0) {}` loop) now resolves naturally — each call to `func_80001C90` inside the loop body hits `trace_entry`, and once the busy-waiter has held the CPU >200 ms without a context switch the host monitor flags a yield, swapping to the audio scheduler so it can drain `external_messages` and post the DONE that flips `D_800846C0.queue.validCount`. No game-side priority manipulation, no hand-written wrapper. |
 
 ## petit-cup-softlock (retired 2026-05-24)
 

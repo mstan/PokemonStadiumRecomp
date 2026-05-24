@@ -1997,23 +1997,6 @@ size = 0x90   # 0x800005C0 - 0x80000530
 [patches]
 ignored = [
     "osSetTime",
-    # PSR_TEMP_PATCH: free-battle-modal-softlock — see TEMP_PATCHES.md
-    # Stadium-specific Option B fix for the cooperative-scheduler
-    # deadlock: func_8000771C is a tight predicate-only busy-wait
-    # (`while (func_80001C90() == 0) {}`) that blocks the game thread
-    # waiting on D_800846C0.queue.validCount > 0. ultramodern's
-    # cooperative scheduler can't preempt the busy-wait, so blocked
-    # game threads (e.g. the audio scheduler waiting on a DP-complete
-    # message in external_messages) can starve forever — Free Battle
-    # Rule/Cup confirm hangs at this point. We replace func_8000771C
-    # with a hand-written version in extras.c that yields between
-    # iterations (lowering thread priority + yield_self_1ms) so other
-    # game threads can run, drain external_messages, and eventually
-    # write the DONE that unblocks the predicate. The proper runtime
-    # fix lives in N64ModernRuntime/ultramodern (Option C in the
-    # backlog); this is the targeted Stadium-only stopgap.
-    # See memory: project_free_battle_modal_softlock_2026_05_08.
-    "func_8000771C",
     # Fragment 57's selected Game Pak message is five adjacent RGBA
     # strips; the native wrapper overlaps strip edges by one pixel.
     "func_82D022E8",
