@@ -32,18 +32,11 @@ the per-site patch is currently active.
 | memory note | `project_free_battle_modal_softlock_2026_05_08.md` |
 | proper-fix layer | N64ModernRuntime/ultramodern: voluntary preemption of busy-waiting game threads. Stage 1 (per-call same-fn detector in `pkmnstadium_trace_entry`) was tried at 2026-05-09 and reverted (commits `5e91259`/`fe0d2fd` engine-fork; `646ba43`/this-revert PSR) — the per-call overhead in `trace_entry` perturbed audio-synth timing enough to flip a pre-existing audio UAF from rare to ~deterministic. The viable shape is a host-monitor "no context-switch in N seconds" flag set by ultramodern + a single atomic-load + branch in `trace_entry`; not yet implemented. |
 
-## petit-cup-softlock
+## petit-cup-softlock (retired 2026-05-24)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | 2026-05-09 |
-| sites  | `extras.c::pkmnstadium_petit_cup_yield`; `game.toml [[patches.hook]] func = "func_80003680" before_vram = 0x80003778` |
-| markers | `PSR_TEMP_PATCH: petit-cup-softlock` (both sites) |
-| repro | Title → Free Battle → 1P → Rule → Cup → confirm **Petit Cup** specifically (other cups don't always trip this site). Pre-patch: hangs at the cup-confirm screen with `Game_Thread` spinning at `funcs_60.c:1008` inside `func_80003680`'s inlined `while (func_80001C90() == 0) {}` loop. |
-| signal that the proper fix has shipped | Petit Cup advances past cup-confirm cleanly *with both this entry and `free-battle-modal-softlock` reverted*. |
-| memory note | `project_petit_cup_softlock_optionB_2026_05_09.md` |
-| proper-fix layer | Same as `free-battle-modal-softlock` — both go away in one move when ultramodern grows voluntary-preemption-on-stuck-thread. |
+| status | **retired** — superseded by the ultramodern voluntary-preemption mechanism (N64MR `b0364f2` host-monitor + yield flag; PSR `25d157c` wires `ultramodern_scheduler_tick` into `pkmnstadium_trace_entry`). The `func_80003680` JPEG-decoder inlined busy-wait (`while (func_80001C90() == 0) {}` at vram `0x80003770`/`0x80003778`) now drains naturally: when the busy-waiter has held the CPU >200 ms without a context switch, the host monitor flags a yield; the next `trace_entry` (from `func_80001C90`'s own re-entry inside the loop body) drains externals and swaps to the head of `running_queue`, letting the asset-loader / audio threads run and flip the predicate. No game-side priority manipulation needed. |
 
 ## fragment57-vtx-seams
 
