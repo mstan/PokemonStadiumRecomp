@@ -71,18 +71,11 @@ the per-site patch is currently active.
 | memory note | none (consider adding one) |
 | proper-fix layer | **RT64** (most likely) or **librecomp RDP cmd interpreter** — characterize what set-tile / load-tile / TEXRECT sequence the original 5-strip emit produces, find which step trips a stale-TMEM rendering. Possible alternative: SP precision in the s-coord delta for the narrow strips. Shares investigative neighborhood with `fragment57-vtx-seams` — both probably want one trip through RT64's UI-fastpath code. |
 
-## force-expansion-ram
+## force-expansion-ram (retired 2026-05-23)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | pre-2026-05-23 (inherited) |
-| sites  | `extras.c::pkmnstadium_force_expansion_ram`; `game.toml [[patches.hook]] func = "Util_InitMainPools" before_vram = 0x80002F58` |
-| markers | `PSR_TEMP_PATCH: force-expansion-ram` (TO ADD at both sites) |
-| repro | Boot without this patch. `Util_InitMainPools` reads `gExpansionRAMStart` (0 at boot, no writer anywhere in the binary) and takes the `POOL_END_4MB` path. The title-screen pokemon-models loader then hits an alloc failure because Stadium's working set on our runtime marginally exceeds the 3 MiB usable cap. With this patch, `gExpansionRAMStart=1` is forced into RDRAM at vaddr `0x80068B90` before the first read, activating the otherwise-dead `POOL_END_6MB` path (5 MiB usable). |
-| signal that the proper fix has shipped | Title screen loads cleanly *with this entry reverted*, on a runtime that reports `osMemSize > 0x600000`. |
-| memory note | none |
-| proper-fix layer | **N64ModernRuntime / librecomp**: a generic "claim expansion pak present" mechanism that maintains the global-equivalent for any game where the symbol exists. **Plus N64Recomp static-analysis pass**: identify globals that gate code paths AND have no writer in the recompiled binary AND would be set by silicon hardware-detect on real hardware; auto-patch at runtime init. Pattern likely affects multiple N64 titles that ship dead-code expansion-pak paths. Stadium-specific only by symbol name; the underlying mechanism is generic. |
+| status | **retired** — moved from a Util_InitMainPools hook to `GameEntry::on_init_callback` in `src/main/main.cpp`. No more Stadium-specific helper in `extras.c` or hook in `game.toml`; the write happens once at game init in the runner, which is the right layer for "missing-from-HLE hardware-detect side-effect" runtime facts. The deeper "N64Recomp static-analysis pass to identify dead-code expansion-pak gates" is still a future investment that would benefit other titles, but isn't required for Stadium. |
 
 ## asset-pending-bypass
 

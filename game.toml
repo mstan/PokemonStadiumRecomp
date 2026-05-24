@@ -3092,17 +3092,11 @@ text = "pkmnstadium_pers_exit(rdram, ctx->r2);"
 # main_pool_alloc diagnostic: log size + result + sMemPool.available
 # on every call, with full state on alloc-failure. sMemPool is the
 # static at 0x800A6070; availability sits at +0x1C = 0x800A608C.
-# Pre-Util_InitMainPools hook: set gExpansionRAMStart=1 so Stadium
-# takes the POOL_END_6MB path (5 MiB usable) instead of POOL_END_4MB
-# (3 MiB usable). The 6 MB path is dead code on real Stadium
-# (gExpansionRAMStart has no writer anywhere in the binary), but
-# Stadium's working set on our runtime is marginally larger than
-# the 3 MB cap, so the title-screen loader hits an alloc failure
-# without this. See extras.c's pkmnstadium_force_expansion_ram.
-[[patches.hook]]
-func = "Util_InitMainPools"
-before_vram = 0x80002F58   # first instr — runs BEFORE the gExpansionRAMStart load
-text = "pkmnstadium_force_expansion_ram(rdram);"
+# (Previously, a Pre-Util_InitMainPools hook also lived here that
+# forced gExpansionRAMStart=1. That moved to GameEntry::on_init_callback
+# in src/main/main.cpp on 2026-05-23 — runtime-init facts belong at
+# the game-init layer, not as a recompile-time hook on a specific MIPS
+# function. The TEMP_PATCHES.md 'force-expansion-ram' entry was retired.)
 
 [[patches.hook]]
 func = "main_pool_alloc"

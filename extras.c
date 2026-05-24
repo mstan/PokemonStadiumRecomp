@@ -956,51 +956,11 @@ void pkmnstadium_pers_enter(uint32_t a0, uint32_t a1) {
     s_pers_sp++;
 }
 
-/* Pre-Util_InitMainPools hook: activate Stadium's expansion-pak
- * code path so it allocates the 6 MiB main_pool instead of the
- * 4 MiB one. See game.toml's hook on Util_InitMainPools entry.
- *
- * Why this is needed:
- *   Util_InitMainPools chooses POOL_END_4MB unless BOTH
- *   gExpansionRAMStart > 0 AND osMemSize > 0x600000. Our runtime
- *   correctly reports osMemSize = 8 MiB, but `gExpansionRAMStart`
- *   is Stadium-specific (in BSS, init to 0) and has NO writer
- *   in the recompiled binary — the 6 MiB path is unreachable
- *   dead code on a freshly-booted Stadium image. Real hardware
- *   doesn't hit this because Stadium's working set fits in the
- *   4 MiB pool there; in our runtime, marginally larger
- *   allocations from extra recompiler overhead push us past
- *   the 3-MiB-usable cap and the title-screen pokemon_models
- *   loader hits an alloc failure.
- *
- * `gExpansionRAMStart` is at 0x80068B90. We set it to 1 BEFORE
- * Util_InitMainPools' first instruction reads it — that takes
- * Stadium down the 6 MiB code path that the original devs wrote
- * but evidently never tested.
- *
- * This is Stadium-specific by symbol name, but the pattern
- * applies to many N64 games: an expansion-pak global that
- * gates a larger memory region is sometimes left zeroed because
- * the original developer relied on a side effect that doesn't
- * carry over to the recomp environment.
- */
-void pkmnstadium_force_expansion_ram(uint8_t* rdram) {
-    /* gExpansionRAMStart at kseg0 0x80068B90 → physical 0x00068B90.
-     * MEM_LOAD_BE32 / store via XOR-3 byte order. */
-    uint32_t paddr = 0x00068B90u;
-    static int s_logged = 0;
-    if (!s_logged) {
-        s_logged = 1;
-        rdram[(paddr + 0) ^ 3] = 0;
-        rdram[(paddr + 1) ^ 3] = 0;
-        rdram[(paddr + 2) ^ 3] = 0;
-        rdram[(paddr + 3) ^ 3] = 1;
-        fprintf(stderr,
-            "[pool] forced gExpansionRAMStart=1 to activate "
-            "POOL_END_6MB path in Util_InitMainPools\n");
-        fflush(stderr);
-    }
-}
+/* DELETED 2026-05-23: pkmnstadium_force_expansion_ram was a hook on
+ * Util_InitMainPools entry that wrote gExpansionRAMStart=1 once before
+ * the global was read. Moved to src/main/main.cpp's GameEntry
+ * on_init_callback — runtime-init facts belong at the game-init layer,
+ * not as a recompile-time hook on a specific MIPS function. */
 
 /* main_pool_alloc(size, side) diagnostic. Logs every call's
  * (size, result) plus the running sMemPool.available so we can
