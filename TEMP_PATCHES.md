@@ -77,18 +77,11 @@ the per-site patch is currently active.
 |---|---|
 | status | **retired** — moved from a Util_InitMainPools hook to `GameEntry::on_init_callback` in `src/main/main.cpp`. No more Stadium-specific helper in `extras.c` or hook in `game.toml`; the write happens once at game init in the runner, which is the right layer for "missing-from-HLE hardware-detect side-effect" runtime facts. The deeper "N64Recomp static-analysis pass to identify dead-code expansion-pak gates" is still a future investment that would benefit other titles, but isn't required for Stadium. |
 
-## asset-pending-bypass
+## asset-pending-bypass (retired 2026-05-24)
 
 | field | value |
 |---|---|
-| status | **active — classified 2026-05-23 as same family as `free-battle-modal-softlock` + `petit-cup-softlock`** |
-| applied | pre-2026-05-23 (inherited) |
-| sites  | `game.toml [[patches.hook]] func = "func_800484E0" before_vram = 0x8004856C  text = "ctx->r2 = 0;"` |
-| markers | `PSR_TEMP_PATCH: asset-pending-bypass` (TO ADD) |
-| repro | Scene-cleanup paths that call `func_8000D2B4` (stop-audio + wait-for-asset-loads-to-drain). `func_8000D2B4` calls `func_800484E0` to get pending-count, then spins up to 1M iterations re-polling until pending hits 0, with `func_8004FD44` (forced audio cleanup) as the timeout backstop. The bypass forces pending=0 so the wait exits immediately. Without the bypass: long pause (several seconds wall-time at fast-forward, much longer otherwise) at any scene transition that hits this path, then potentially missing assets if the forced-cleanup fires before async loaders complete. |
-| signal that the proper fix has shipped | Same as the other two softlocks — when ultramodern grows voluntary preemption of stuck game threads, this hack retires together with them. |
-| memory note | (planned: extend `project_free_battle_modal_softlock_2026_05_08.md` to cover all three) |
-| proper-fix layer | **ultramodern voluntary preemption** — same as `free-battle-modal-softlock` and `petit-cup-softlock`. `func_800484E0` returns a non-zero pending count when async loaders haven't run yet; the spin polls expecting the count to drain. On a cooperative scheduler that doesn't preempt during the spin, the loaders never run → count never drains → wait runs to its 1M cap → forced cleanup. The viable shape per `project_free_battle_modal_softlock_2026_05_08.md` is a host-monitor "no context-switch in N seconds" flag set by ultramodern + a single atomic-load + branch in `trace_entry`. The 2026-05-09 attempt was reverted because per-call `trace_entry` overhead perturbed audio timing — the new shape avoids that overhead in the common case. **Three entries retire together** when this lands. |
+| status | **retired** — superseded by the ultramodern voluntary-preemption mechanism (N64MR `b0364f2` host-monitor + yield flag; PSR `25d157c` wires `ultramodern_scheduler_tick` into `pkmnstadium_trace_entry`). The `func_800484E0` hook + `ctx->r2 = 0` bypass is removed from `game.toml`; the spin in `func_8000D2B4` now drains naturally because the host monitor forces a yield once the busy-waiter has held the CPU >200 ms without a context switch, giving async loaders a chance to flip the pending count. |
 
 ## audio-uaf-fragment36-voice-stop (retired 2026-05-23)
 

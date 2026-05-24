@@ -3162,20 +3162,6 @@ text = "pkmnstadium_frag36_exit(ctx->r2);"
 # [[patches.hook]] func = "func_82100B1C" before_vram = 0x82100B58
 #   text = "ctx->r2 = 1;"
 
-# PSR_TEMP_PATCH: asset-pending-bypass — see TEMP_PATCHES.md
-# Force func_800484E0 (asset-loader pending count) to always return 0,
-# bypassing the wait loop in func_8000D2B4 (stop-audio + drain-pending).
-# Same cooperative-scheduler busy-wait family as free-battle-modal-softlock
-# and petit-cup-softlock — the spin polls a counter that only decrements
-# when async loaders complete, but cooperative scheduling doesn't preempt
-# during the spin, so the counter never drains until the 1M-iter cap fires
-# a forced-cleanup. All three entries retire together when ultramodern
-# grows voluntary preemption of stuck game threads.
-[[patches.hook]]
-func = "func_800484E0"
-before_vram = 0x8004856C   # before jr $ra (delay slot is just sp adjust)
-text = "ctx->r2 = 0;"
-
 # Audio voice-table NULL-deref diagnostic — capture state right before
 # the crashing `lw $a0, 0x0($t4)` at 0x8003AF64. At hook position
 # 0x8003AF60 (the `addu $t4, $t3, $v0` that computes the bad addr):
