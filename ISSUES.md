@@ -25,6 +25,28 @@ visible imperfections remain:
       a few entries — that hard crash is now fixed (n64recomp
       MEM_W mask 2026-05-10) but the visual glitch remains.
 
+      *2026-05-23 update — the corruption is intermittent and
+      affects different sprites on different visits, not just the
+      cursor. Across three captures of the Gym Leader Castle
+      screens:*
+      - *Visit A: cursor garbled (rainbow stripes where the hand
+        should be), top-left pokeball icon ALSO garbled.*
+      - *Visit B: cursor garbled (different garbled pattern), top
+        pokeball icon renders CORRECTLY.*
+      - *Register Pokémon submenu: cursor renders cleanly as a
+        hand, BUT the top-corner pokeball icon is replaced with a
+        wholly-wrong brick/woven texture — different texture got
+        blitted into TMEM where the pokeball should be.*
+
+      *Different sprites corrupting on different visits strengthens
+      the "allocator UAF / TMEM stale-state" hypothesis — the
+      corruption isn't tied to a specific sprite, it's whichever
+      sprite happens to inherit freed allocator slots / stale TMEM.
+      Likely shares a layer with the attract-demo softlock
+      (memory `project_attract_softlock_2026_05_23.md`) and the
+      STADIUM panel bottom clip — all three smell like RT64 +
+      memory-state issues that the Ares oracle could disambiguate.*
+
 - [x] **Line patterns through HUD elements across menus.** ~~Fixed
       2026-05-23 by bumping fragment-57 Vtx-grid seam overlap from
       +1 (Codex's original) to +2 in `extras.c`
@@ -53,6 +75,23 @@ visible imperfections remain:
       entries (`free-battle-modal-softlock`, `petit-cup-softlock`),
       both expected to be retired together when N64ModernRuntime /
       ultramodern grows voluntary preemption of stuck game threads.
+
+- [x] **Attract-demo white-screen softlock.** ~~Fixed 2026-05-23
+      in RT64 (`hle: harden interpreter against malformed G_DL +
+      step watchdog`, `lib/rt64` commit `b5d5980`). Root cause:
+      Stadium's attract-demo path emits a G_DL CALL into a buffer
+      at `0x80208F18` that contains compressed audio/image bytes,
+      not a DL. The 76th byte happens to be `0xDE` (G_DL opcode);
+      RT64's interpreter treats it as a real G_DL, resolves the
+      garbage w1 to a host pointer past 8 MiB RDRAM, and walks
+      unbounded host memory forever. RT64 now rejects malformed
+      G_DLs (pad bits non-zero) and OOB targets, plus a 16M
+      step-watchdog as a backstop. The underlying Stadium-side
+      UAF/race (emitting a CALL to memory that's been repurposed)
+      still exists but no longer softlocks the renderer — the
+      bad task completes with whatever was drawn before the bad
+      command, dp_complete fires, game continues.~~ Memory note:
+      `project_attract_softlock_2026_05_23.md`.
 
 ### Next-step gate: Ares oracle bridge
 

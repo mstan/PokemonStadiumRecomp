@@ -176,6 +176,11 @@ extern "C" uint64_t ultramodern_submit_audio_count(void);
 extern "C" uint64_t ultramodern_submit_other_count(void);
 extern "C" uint64_t ultramodern_sp_complete_count(void);
 extern "C" uint64_t ultramodern_dp_complete_count(void);
+extern "C" void ultramodern_get_current_dl_state(
+    uint64_t* entry_seq, uint64_t* exit_seq,
+    uint64_t* entry_ms,  uint64_t* exit_ms,
+    uint32_t* data_ptr,  uint32_t* data_size,
+    uint32_t* ucode_ptr);
 extern "C" void recomp_sp_task_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_sp_task_event_size(void);
@@ -306,6 +311,35 @@ static std::string handle_command(const std::string& line) {
             (unsigned long long)ultramodern_sp_complete_count(),
             (unsigned long long)ultramodern_dp_complete_count()
         );
+        return buf;
+    }
+    if (cmd == "current_dl") {
+        // Returns the in-flight gfx DL state. When entry_seq > exit_seq,
+        // the gfx event thread is currently inside renderer_context->send_dl
+        // and the data_ptr/data_size identify exactly which DL is in flight.
+        // For a stuck send_dl, entry_seq > exit_seq AND (now - entry_ms) is
+        // large — that's the hanging DL, and its raw bytes are at
+        // [data_ptr, data_ptr+data_size) in rdram for offline analysis.
+        uint64_t entry_seq = 0, exit_seq = 0, entry_ms = 0, exit_ms = 0;
+        uint32_t data_ptr = 0, data_size = 0, ucode_ptr = 0;
+        ultramodern_get_current_dl_state(&entry_seq, &exit_seq,
+                                         &entry_ms, &exit_ms,
+                                         &data_ptr, &data_size, &ucode_ptr);
+        using namespace std::chrono;
+        uint64_t now_ms = duration_cast<milliseconds>(
+            steady_clock::now().time_since_epoch()).count();
+        bool in_flight = entry_seq > exit_seq;
+        uint64_t elapsed_ms = in_flight ? (now_ms - entry_ms) : (exit_ms - entry_ms);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"in_flight\":%s,\"entry_seq\":%llu,\"exit_seq\":%llu,"
+            "\"entry_ms\":%llu,\"exit_ms\":%llu,\"now_ms\":%llu,\"elapsed_ms\":%llu,"
+            "\"data_ptr\":%u,\"data_size\":%u,\"ucode_ptr\":%u}",
+            in_flight ? "true" : "false",
+            (unsigned long long)entry_seq, (unsigned long long)exit_seq,
+            (unsigned long long)entry_ms,  (unsigned long long)exit_ms,
+            (unsigned long long)now_ms,    (unsigned long long)elapsed_ms,
+            (unsigned)data_ptr, (unsigned)data_size, (unsigned)ucode_ptr);
         return buf;
     }
     if (cmd == "set_button") {
