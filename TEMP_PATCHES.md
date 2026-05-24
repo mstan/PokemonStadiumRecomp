@@ -103,18 +103,11 @@ the per-site patch is currently active.
 | memory note | TODO |
 | proper-fix layer | **Extend `librecomp::audio_uaf_protect`** (user's own code — `Copyright 2026 Matthew Stanley`, mstan fork; `lib/N64ModernRuntime/librecomp/src/audio_uaf_protect.cpp`). Add a `SecondaryVoiceTableLayout` registration that describes array-style voice tables with a wavetable-pointer chain to range-check (vs the existing intrusive-ALLink-list walker). Register Stadium's layout from `src/main/main.cpp` at startup. **Lessons from the 2026-05-23 attempt** (rolled back; left as design notes for the next try): (1) The wavetable-pointer-ARRAY base lives at voice.unk_090 + **0x2C**, not 0x28. The first attempt used 0x28 and silenced legitimate voices on every pool pop (audio went totally silent). (2) A 2-step static-offset chain reaching the array base is INSUFFICIENT — the actual wavetable pointer requires a 4-level chain through `v1_index*4` stored at `voice+0xC2`. Reaching it needs an **indexed-deref chain step** extension to `SecondaryVoiceTableLayout` (offset + index-source-offset + index-size + stride). (3) Even with the correct array-base chain, removing the per-scene hook entirely reintroduces issues — the per-scene unconditional silence catches voices whose wavetable pointer is in the freed range but whose array base is NOT, a gap the conservative array-base check misses. Proper fix sequence: (a) add indexed-deref step support, (b) register the full 4-level Stadium chain ending at the wavetable pointer, (c) verify the per-scene hook can be removed without regression, (d) delete the per-scene hook and function. **Estimated effort: 1-2 focused sessions** once the chain language extension is designed. |
 
-## memmap-get-fragment-data-context
+## memmap-get-fragment-data-context (retired 2026-05-23)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | pre-2026-05-23 (inherited) |
-| sites  | `extras.c::pkmnstadium_memmap_get_enter` + `pkmnstadium_memmap_get_exit`; `game.toml [[patches.hook]] func = "Memmap_GetFragmentVaddr"` entry + exit |
-| markers | `PSR_TEMP_PATCH: memmap-get-fragment-data-context` (TO ADD at all four sites) |
-| repro | Pattern-bucket fragment vaddr lookups (any input in `0x8FF00000` range). Without this hook, Stadium's single-pointer-per-id table `gFragments[id]` is ambiguous when multiple variants are concurrently host-resident, so lookups silently return whichever variant was registered most recently, producing geo-layout walks into wrong data. Crash signature: `process_geo_layout` walking an uninitialized buffer that came out of an ambiguous pattern-bucket fragment lookup. |
-| signal that the proper fix has shipped | All pattern-bucket fragment lookups resolve correctly *with this hook reverted* AND the underlying disambiguation mechanism active in N64Recomp/librecomp. |
-| memory note | none |
-| proper-fix layer | **N64Recomp helper API** — promote the data-context-driven resolution pattern to a library facility. Most of the logic is already generic: `recomp_resolve_via_data_context`, `recomp_addr_in_loaded_variant`, `recomp_resolve_synthetic_fragment` all live in N64Recomp. The Stadium-specific surface is just the bridge from `Memmap_GetFragmentVaddr`'s symbol to those APIs; exposing a one-line wrapper would let extras.c-equivalents in other games invoke the same logic. The bridge itself is small enough that staying in `extras.c` is also defensible — choice is between "ship as N64Recomp idiom" vs "leave as documented per-game bridge." |
+| status | **retired** — orchestration logic (TLS-stack input save + 3-step resolve combining `recomp_resolve_synthetic_fragment` + `recomp_addr_in_loaded_variant` + `recomp_resolve_via_data_context`) promoted to librecomp as `librecomp_fragment_input_push` / `librecomp_fragment_resolve_exit`. Stadium's `game.toml` hooks now call those librecomp helpers directly; the per-game `pkmnstadium_memmap_get_enter` / `pkmnstadium_memmap_get_exit` were deleted from `extras.c`. Pattern is reusable by any game with variant-aware fragment buckets. See `lib/N64ModernRuntime/librecomp/src/overlays.cpp`. |
 
 ---
 

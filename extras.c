@@ -1313,72 +1313,14 @@ void pkmnstadium_cri_exit(uint32_t cur_buttondown_via_cont0_word, uint32_t butto
  * fragment buckets (single-variant) get the game's native answer
  * untouched.
  */
-extern int32_t recomp_resolve_via_data_context(uint32_t link_vaddr,
-                                                  uint32_t data_ctx_addr);
-extern int recomp_addr_in_loaded_variant(uint32_t bucket, uint32_t addr);
-extern int32_t recomp_resolve_synthetic_fragment(uint32_t addr);
-
-static __thread uint32_t s_memmap_get_input_stack[16];
-static __thread int s_memmap_get_sp = 0;
-
-void pkmnstadium_memmap_get_enter(uint32_t input) {
-    if (s_memmap_get_sp < 16) s_memmap_get_input_stack[s_memmap_get_sp] = input;
-    s_memmap_get_sp++;
-}
-
-uint32_t pkmnstadium_memmap_get_exit(uint32_t game_result, uint32_t data_ctx) {
-    s_memmap_get_sp--;
-    int idx = (s_memmap_get_sp >= 0 && s_memmap_get_sp < 16) ? s_memmap_get_sp : 0;
-    uint32_t input = s_memmap_get_input_stack[idx];
-
-    /* Path 2 synthetic resolver (highest priority). If the input is in
-     * the per-variant synthetic-vram pool (0xA0000000..0xC0000000), it
-     * was emitted by a recompiled pattern variant whose section.ram_addr
-     * we assigned a unique synthetic identity. Resolve via the parallel
-     * recomp_synthetic_fragments[] table, bypassing the game's native
-     * gFragments[id] entirely. The native game path returned the input
-     * unchanged here (game_result == input) because the input is outside
-     * the 0x81000000..0x90000000 range the game recognizes — we just
-     * substitute our resolution.
-     *
-     * recomp_resolve_synthetic_fragment aborts deterministically if the
-     * slot is empty. Returning 0 here means "addr wasn't in the
-     * synthetic pool", in which case we fall through to the existing
-     * 0x8FF00000-bucket data-context logic. */
-    {
-        int32_t synth = recomp_resolve_synthetic_fragment(input);
-        if (synth != 0) {
-            return (uint32_t)synth;
-        }
-    }
-
-    /* Bounded scope: only the known-ambiguous 0x8FF00000 bucket. */
-    if ((input & 0xFFF00000u) != 0x8FF00000u) return game_result;
-    if (input < 0x81000000u || input >= 0x90000000u) return game_result;
-
-    /* Step 1: trust the game's answer when it lands inside a registered
-     * variant of this bucket. */
-    if (recomp_addr_in_loaded_variant(input & 0xFFF00000u, game_result)) {
-        return game_result;
-    }
-
-    /* Step 2: data-context resolution. Walker's current data pointer
-     * lives in the variant currently being walked. */
-    int32_t resolved = recomp_resolve_via_data_context(input, data_ctx);
-
-    static volatile int s_n_logged = 0;
-    int log_idx = __atomic_fetch_add(&s_n_logged, 1, __ATOMIC_RELAXED);
-    if (log_idx < 16) {
-        fprintf(stderr,
-            "[memmap-ctx] in=0x%08X game-result=0x%08X "
-            "data-ctx=0x%08X resolved=0x%08X\n",
-            input, game_result, data_ctx, (uint32_t)resolved);
-        fflush(stderr);
-    }
-
-    if (resolved != 0) return (uint32_t)resolved;
-    return game_result;
-}
+/* DELETED 2026-05-23: pkmnstadium_memmap_get_enter / pkmnstadium_memmap_get_exit
+ * were Stadium-specific bridges from Memmap_GetFragmentVaddr to the
+ * data-context resolution helpers in librecomp. Their orchestration
+ * logic (TLS-stack input save at entry + 3-step resolve at exit) was
+ * promoted to librecomp on 2026-05-23 as librecomp_fragment_input_push
+ * / librecomp_fragment_resolve_exit — the game.toml hooks now call
+ * those directly. Pattern is generic across any game with pattern-bucket
+ * fragments; see lib/N64ModernRuntime/librecomp/src/overlays.cpp. */
 
 /* Segment-map setter/clear diagnostic.
  *

@@ -3194,7 +3194,7 @@ text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (u
 [[patches.hook]]
 func = "Memmap_GetFragmentVaddr"
 before_vram = 0x800020E0   # entry — save input arg
-text = "pkmnstadium_memmap_get_enter((uint32_t)ctx->r4);"
+text = "librecomp_fragment_input_push((uint32_t)ctx->r4);"
 
 [[patches.hook]]
 func = "Memmap_GetFragmentVaddr"
@@ -3202,7 +3202,7 @@ before_vram = 0x80002140   # exit — override before delay-slot
 # MEM_W macro expects a sign-extended gpr value as the address.
 # The literal 0x800ABE00 is unsigned and would wrap; cast to int32_t
 # first so the high bit triggers sign-extension to 0xFFFFFFFF800ABE00.
-text = "ctx->r4 = pkmnstadium_memmap_get_exit((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x800ABE00));"
+text = "ctx->r4 = librecomp_fragment_resolve_exit((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x800ABE00));"
 
 # Segment-map setter/clear hooks — capture every gSegments[id]
 # write so we can answer "is segment 6 ever mapped before attract,
