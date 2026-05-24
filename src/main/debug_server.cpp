@@ -188,6 +188,9 @@ extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 extern "C" int psr_dump_current_dl(const char* path,
                                    uint32_t* out_addr,
                                    uint32_t* out_size);
+extern "C" uint64_t rt64_vtx_ring_write_idx(void);
+extern "C" uint32_t rt64_vtx_ring_capacity(void);
+extern "C" int rt64_vtx_ring_read(uint64_t seq, uint64_t* out_seq, float out_floats[9]);
 // Defined in lib/rt64/src/hle/rt64_rsp.cpp under #if RT64_PSR_DEBUG_HOOKS.
 // We always link against rt64.lib so the symbol is present whenever
 // RT64_PSR_DEBUG_HOOKS=1 in the rt64 build (default in PSR's CMake).
@@ -341,6 +344,62 @@ static std::string handle_command(const std::string& line) {
             (unsigned long long)now_ms,    (unsigned long long)elapsed_ms,
             (unsigned)data_ptr, (unsigned)data_size, (unsigned)ucode_ptr);
         return buf;
+    }
+    if (cmd == "vtx_ring") {
+        // Always-on triangle vertex ring (RT64 hle/rt64_vtx_ring). Each
+        // entry is one drawIndexedTri call's 3 post-MVP, post-divide,
+        // viewport-scaled screen-space positions — the same posScreen
+        // values the renderer's drawRect logic reads. Used to answer
+        // "do adjacent quads at the same world position produce
+        // identical screen-space coords?" without RenderDoc.
+        //
+        // Args:
+        //   "count"      — how many entries to return (default 32)
+        //   "start_seq"  — starting sequence (default = write_idx - count + 1)
+        //
+        // Disable the writer entirely with RT64_VTX_RING_DISABLE=1.
+        uint64_t write_idx = rt64_vtx_ring_write_idx();
+        uint32_t capacity = rt64_vtx_ring_capacity();
+        int count = get_int(line, "count", 32);
+        if (count < 1) count = 1;
+        if (count > 512) count = 512;
+        int64_t start_seq_arg = (int64_t)get_int(line, "start_seq", -1);
+        uint64_t start_seq;
+        if (start_seq_arg < 0) {
+            start_seq = (write_idx > (uint64_t)count) ? (write_idx - count + 1) : 1;
+        } else {
+            start_seq = (uint64_t)start_seq_arg;
+        }
+        std::string out;
+        char hdr[256];
+        std::snprintf(hdr, sizeof(hdr),
+            "{\"ok\":true,\"write_idx\":%llu,\"capacity\":%u,\"start_seq\":%llu,\"entries\":[",
+            (unsigned long long)write_idx, (unsigned)capacity,
+            (unsigned long long)start_seq);
+        out = hdr;
+        bool first = true;
+        for (int i = 0; i < count; i++) {
+            uint64_t seq = start_seq + (uint64_t)i;
+            if (seq > write_idx) break;
+            uint64_t got_seq = 0;
+            float fs[9] = {0};
+            if (!rt64_vtx_ring_read(seq, &got_seq, fs)) continue;
+            if (!first) out += ",";
+            first = false;
+            char buf[384];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,"
+                "\"v0\":[%.6f,%.6f,%.6f],"
+                "\"v1\":[%.6f,%.6f,%.6f],"
+                "\"v2\":[%.6f,%.6f,%.6f]}",
+                (unsigned long long)got_seq,
+                fs[0], fs[1], fs[2],
+                fs[3], fs[4], fs[5],
+                fs[6], fs[7], fs[8]);
+            out += buf;
+        }
+        out += "]}";
+        return out;
     }
     if (cmd == "set_button") {
         auto name = get_str(line, "name");
