@@ -71,10 +71,35 @@ visible imperfections remain:
 
 - [ ] **Active per-site workarounds in `extras.c` / `game.toml`
       should migrate to proper runtime fixes.** Tracked in
-      [`TEMP_PATCHES.md`](TEMP_PATCHES.md) — currently 2 active
-      entries (`free-battle-modal-softlock`, `petit-cup-softlock`),
-      both expected to be retired together when N64ModernRuntime /
-      ultramodern grows voluntary preemption of stuck game threads.
+      [`TEMP_PATCHES.md`](TEMP_PATCHES.md). Status as of 2026-05-23:
+      - **6 active entries** (down from 8 — `audio-uaf-fragment36-
+        voice-stop` and `force-expansion-ram` retired this session
+        by moving to their proper layers).
+      - `free-battle-modal-softlock` + `petit-cup-softlock` →
+        ultramodern voluntary preemption (multi-day work, retires
+        both together).
+      - `fragment57-vtx-seams` + `fragment57-selected-card-overlay`
+        → RT64 sub-pixel / TMEM edge handling (likely retires the
+        STADIUM panel bottom clip AND the cursor UAF too — same
+        RT64 family).
+      - `asset-pending-bypass` → undocumented, needs investigation
+        before classification.
+      - `memmap-get-fragment-data-context` → small N64Recomp helper
+        promotion (session-sized, ~2h).
+
+- [ ] **Latent Stadium-side gfx pool UAF / race** (newly named
+      2026-05-23 — RT64 fix masks the symptom). The attract-demo
+      softlock root-cause was Stadium emitting a `G_DL CALL` into
+      memory at `0x80208F18` that holds compressed audio/image
+      bytes instead of DL commands. The RT64 fix prevents the
+      renderer from softlocking on garbage data, but Stadium's
+      pool/allocator is still emitting CALLs to wrong addresses.
+      Likely the same family as the prior audio UAF (where freed
+      wavetables get repurposed). Symptom may be invisible if no
+      one walks the garbage area as a DL anymore, but a future
+      bug could surface from the same broken pool management.
+      Proper investigation requires the Ares oracle bridge to
+      diff RDRAM at the moment Stadium emits the bad CALL.
 
 - [x] **Attract-demo white-screen softlock.** ~~Fixed 2026-05-23
       in RT64 (`hle: harden interpreter against malformed G_DL +
