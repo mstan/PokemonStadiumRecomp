@@ -2003,6 +2003,14 @@ static inline void pkmnstadium_set_vtx_y(uint8_t* rdram, uint32_t vtx_addr, int 
 /* Live-test 2026-05-23: at the user's render scale +1 still showed
  * residual yellow row-seam dashes on every Game Pak Check card and
  * on the main-menu icon panels. +2 cleared them; bumped here.
+ *
+ * 2026-05-24 update: tried zeroing rasterParams.halfPixelOffset
+ * (RT64_DISABLE_HALF_PIXEL env-var A/B at rt64_framebuffer_renderer.cpp).
+ * Negative result — halfPixelOffset MITIGATES the seam, doesn't cause
+ * it. With it disabled the dashed seam lines become solid yellow.
+ * Hypothesis A rejected; moving to instrumentation-driven investigation.
+ * Restored OVERLAP=2 here in the meantime so the visible bug stays
+ * masked while the proper RT64 fix is designed.
  */
 #define FRAG57_SEAM_OVERLAP 2
 
