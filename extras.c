@@ -230,6 +230,13 @@ static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
 };
 static volatile uint64_t k_interesting_counts[INTERESTING_FN_COUNT];
 
+/* Voluntary-preemption fast-path entry. Declared here so we don't need
+ * to pull in C++ headers from a C TU. Defined in
+ * lib/N64ModernRuntime/ultramodern/src/scheduler_tick.cpp. Hot path is
+ * one relaxed atomic load + branch; returns immediately when no yield
+ * is pending. See scheduler_tick.hpp for the design rationale. */
+extern void ultramodern_scheduler_tick(void);
+
 void pkmnstadium_trace_entry(const char *func) {
     uint64_t idx = __atomic_fetch_add(&trace_ring_write_idx, 1, __ATOMIC_RELAXED);
     trace_ring[idx & (TRACE_RING_CAP - 1)] = func;
@@ -243,6 +250,16 @@ void pkmnstadium_trace_entry(const char *func) {
             break;
         }
     }
+
+    /* Voluntary-preemption check. Almost always returns immediately
+     * after a single relaxed atomic load. Fires the slow path only
+     * when the ultramodern host monitor has decided the current game
+     * thread has been running for >200ms without a context switch —
+     * at which point we drain pending external messages and yield to
+     * any queued thread, letting predicate-flipping threads make
+     * progress. Retires the free-battle-modal, petit-cup, and
+     * asset-pending-bypass per-site hacks. */
+    ultramodern_scheduler_tick();
 }
 
 /* Public accessor used by debug_server's "interesting_fns" command. */

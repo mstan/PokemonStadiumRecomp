@@ -51,6 +51,7 @@
 #include "recomp.h"
 #include <librecomp/game.hpp>
 #include <ultramodern/ultramodern.hpp>
+#include <ultramodern/scheduler_tick.hpp>
 #include <ultramodern/error_handling.hpp>
 
 #include "pokestadium_render.h"
@@ -717,6 +718,28 @@ int main(int argc, char** argv) {
                  std::getenv("PSR_TURBO") ? std::getenv("PSR_TURBO") : "(unset)",
                  turbo_default ? "ON" : "off");
     std::fflush(stderr);
+
+    // PSR_DISABLE_VOLUNTARY_PREEMPTION env var: short-circuit ultramodern's
+    // host-monitored "no context-switch in N seconds" yield mechanism.
+    // The mechanism replaces three per-site Stadium hacks
+    // (free-battle-modal-softlock, petit-cup-softlock, asset-pending-bypass)
+    // with a generic cooperative-scheduler preemption that fires when a
+    // game thread monopolizes the CPU. If audio synth timing regresses
+    // (prior 2026-05-09 attempt flipped a pre-existing UAF — that UAF
+    // has since been fixed by SecondaryVoiceTableLayout, but this gate
+    // gives us a quick rollback if a new regression surfaces).
+    {
+        const char* dis_env = std::getenv("PSR_DISABLE_VOLUNTARY_PREEMPTION");
+        bool enabled = true;
+        if (dis_env && dis_env[0] != '\0' && dis_env[0] != '0') {
+            enabled = false;
+        }
+        ultramodern_voluntary_preemption_set_enabled(enabled ? 1 : 0);
+        std::fprintf(stderr,
+            "[PSR] voluntary preemption %s (set PSR_DISABLE_VOLUNTARY_PREEMPTION=1 to disable)\n",
+            enabled ? "ENABLED" : "DISABLED");
+        std::fflush(stderr);
+    }
 
     SDL_InitSubSystem(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
     std::fprintf(stderr, "[PSR] SDL audio/controller init OK\n"); std::fflush(stderr);
