@@ -47,6 +47,15 @@ visible imperfections remain:
       STADIUM panel bottom clip — all three smell like RT64 +
       memory-state issues that the Ares oracle could disambiguate.*
 
+      *2026-05-23 second update — the `memmap-get-fragment-data-context`
+      hack retirement (PSR `9bf003c` + lib/N64ModernRuntime `3ed8bfd`)
+      DID NOT resolve this bug, despite a speculative claim in that
+      commit message. Cursor + icon corruption verified still present
+      after the fix shipped. The hack retirement was a clean library-
+      API promotion only — no functional behavior change at the
+      Stadium-side resolver path. Cursor UAF remains outstanding;
+      the proper-fix layer hypothesis (RT64 + memory-state) stands.*
+
 - [x] **Line patterns through HUD elements across menus.** ~~Fixed
       2026-05-23 by bumping fragment-57 Vtx-grid seam overlap from
       +1 (Codex's original) to +2 in `extras.c`
