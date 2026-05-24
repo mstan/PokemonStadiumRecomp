@@ -76,8 +76,12 @@ std::atomic<uint16_t> g_buttons_override{0};
 std::atomic<int>      g_stick_x_override{0};  // -128..127
 std::atomic<int>      g_stick_y_override{0};
 
-// Default 0 (muted) — see header comment for rationale.
-std::atomic<float>    g_audio_volume{0.0f};
+// Default 1.0 (full volume). The previous default of 0 (muted) was meant
+// to prevent harness/test relaunches from blasting boot audio in a loop,
+// but in practice it just made every manual relaunch silent and required
+// a separate set_volume call. Set PSR_VOLUME=0 env var (or use TCP
+// set_volume) to mute for automated runs.
+std::atomic<float>    g_audio_volume{1.0f};
 
 std::atomic<uint64_t> g_send_dl_count{0};
 std::atomic<uint64_t> g_update_screen_count{0};
