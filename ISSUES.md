@@ -59,13 +59,29 @@ visible imperfections remain:
 - [x] **Line patterns through HUD elements across menus.** ~~Fixed
       2026-05-23 by bumping fragment-57 Vtx-grid seam overlap from
       +1 (Codex's original) to +2 in `extras.c`
-      (`FRAG57_SEAM_OVERLAP` constant). Lines were caused by RT64
-      exposing single-pixel boundary rows between adjacent Vtx
-      quads in the same panel; +1 source-unit overlap wasn't enough
-      at the user's render scale, +2 fully clears.~~ Verified on
-      Game Pak Check (all 4 cards) and main-menu icon panels
-      (which reuse the same frag57 grid layout via different
-      MTX translations).
+      (`FRAG57_SEAM_OVERLAP` constant).~~ Properly retired
+      2026-05-24 via conservative rasterization on RT64's N64 triangle
+      PSO (lib/rt64 `b60cf10` + PSR `fde67c7`) — the renderer covers
+      every pixel any triangle touches, eliminating the shared-edge
+      tie-break that left dashed seams. The OVERLAP=2 hack + helper
+      functions deleted; native geometry renders cleanly at every
+      render scale. Verified on Game Pak Check (cards 2/3/4 + WARNING
+      banner) and Main Menu icon panels (which reuse the same frag57
+      grid layout via different MTX translations).
+
+- [ ] **Faint horizontal residual streaks on the SELECTED Game Pak
+      card's 5-strip overlay** (post fragment57-selected-card-overlay
+      retirement, 2026-05-24). Card 1 at Game Pak Check now correctly
+      shows the controller-icon graphic (previously hidden by the hack)
+      but the 5-strip RGBA decoration behind the text shows faint
+      horizontal yellow lines along strip boundaries. Conservative
+      rasterization (which fixed the row-divider seam class) is
+      neutral on this artifact — verified by A/B with
+      `RT64_CONSERVATIVE_RASTER=0`. Likely a different bug class:
+      TMEM row sampling at strip boundaries, narrow-strip s-coord
+      precision, or texture-wrap-at-edge. Investigation deferred;
+      not a regression from the prior state (the hack was net-negative,
+      it omitted the controller icon entirely).
 
 - [ ] **POKéMON STADIUM panel bottom clip (main menu).** The
       central icon's "POKéMON STADIUM" label band gets the
@@ -78,23 +94,24 @@ visible imperfections remain:
       mapping extends past the quad's bottom. See
       `NOTES_TO_CODEX.md` for the investigation path.
 
-- [ ] **Active per-site workarounds in `extras.c` / `game.toml`
-      should migrate to proper runtime fixes.** Tracked in
-      [`TEMP_PATCHES.md`](TEMP_PATCHES.md). Status as of 2026-05-23:
-      - **6 active entries** (down from 8 — `audio-uaf-fragment36-
-        voice-stop` and `force-expansion-ram` retired this session
-        by moving to their proper layers).
-      - `free-battle-modal-softlock` + `petit-cup-softlock` →
-        ultramodern voluntary preemption (multi-day work, retires
-        both together).
-      - `fragment57-vtx-seams` + `fragment57-selected-card-overlay`
-        → RT64 sub-pixel / TMEM edge handling (likely retires the
-        STADIUM panel bottom clip AND the cursor UAF too — same
-        RT64 family).
-      - `asset-pending-bypass` → undocumented, needs investigation
-        before classification.
-      - `memmap-get-fragment-data-context` → small N64Recomp helper
-        promotion (session-sized, ~2h).
+- [x] **Active per-site workarounds in `extras.c` / `game.toml`
+      should migrate to proper runtime fixes.** ~~Tracked in
+      [`TEMP_PATCHES.md`](TEMP_PATCHES.md).~~ As of 2026-05-24,
+      **all 8 active entries retired**:
+      - `free-battle-modal-softlock` + `petit-cup-softlock` +
+        `asset-pending-bypass` → ultramodern voluntary preemption
+        (N64MR `b0364f2` host-monitor + yield flag).
+      - `fragment57-vtx-seams` → conservative rasterization on the
+        RT64 N64 triangle PSO (lib/rt64 `b60cf10`).
+      - `fragment57-selected-card-overlay` → un-ignored, native code
+        emits the controller icon correctly (residual strip-overlay
+        artifact tracked above as a separate visible bug).
+      - `audio-uaf-fragment36-voice-stop` → librecomp
+        `SecondaryVoiceTableLayout` (PSR `cefd9f6`).
+      - `force-expansion-ram` → `GameEntry::on_init_callback`
+        (PSR `43a2519`).
+      - `memmap-get-fragment-data-context` → librecomp helper API
+        (PSR `9bf003c` + N64MR `3ed8bfd`).
 
 - [ ] **Latent Stadium-side gfx pool UAF / race** (newly named
       2026-05-23 — RT64 fix masks the symptom). The attract-demo

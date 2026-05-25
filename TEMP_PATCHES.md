@@ -37,18 +37,11 @@ the per-site patch is currently active.
 |---|---|
 | status | **retired** — superseded by conservative rasterization on the N64 triangle PSO (`lib/rt64` `b60cf10` adds `RenderGraphicsPipelineDesc::conservativeRasterEnabled`, wired through the D3D12 backend; `RasterShader::createPipeline` opts in unconditionally). The `func_82D01758` hook + `pkmnstadium_patch_fragment57_ui_seams` + `pkmnstadium_overlap_vtx_*` helpers + `FRAG57_*` defines are all removed. With `D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON`, the rasterizer covers every pixel a triangle touches and the shared-edge tie-break that previously left dashed seams no longer applies. `RT64_CONSERVATIVE_RASTER=0` on the runner is a force-OFF escape hatch if a future workload regresses. Vulkan/Metal backends treat the flag as a no-op pending `VK_EXT_conservative_rasterization` / Metal plumbing — D3D12 is currently the only backend in regular use on this project. Verified 2026-05-24 against the seam-visible baseline: cards 2/3/4 and the WARNING banner render without seam dashes. The faint artifact remaining on card 1 is a different bug class (the still-active `fragment57-selected-card-overlay` replacement). |
 
-## fragment57-selected-card-overlay
+## fragment57-selected-card-overlay (retired 2026-05-24)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | pre-2026-05-23 (inherited) |
-| sites  | `extras.c::func_82D022E8` (replacement); `game.toml [patches].ignored = ["func_82D022E8", …]` |
-| markers | `PSR_TEMP_PATCH: fragment57-selected-card-overlay` (TO ADD at both sites) |
-| repro | Game Pak Check → cursor over a card with a real cartridge loaded → select it. Pre-patch: the native `func_82D022E8` emits a 5-strip RGBA overlay layer that should render as near-transparent decoration over the selected card's status text. On RT64, this overlay leaks stale/yellow TMEM rows across the card. The replacement omits the overlay entirely (card background draws before; real text draws after, both unaffected). |
-| signal that the proper fix has shipped | Selected cards on Game Pak Check render the 5-strip overlay cleanly (no stale TMEM leakage) *with this entry reverted (un-ignore the function, delete `extras.c::func_82D022E8`)*. |
-| memory note | none (consider adding one) |
-| proper-fix layer | **RT64** (most likely) or **librecomp RDP cmd interpreter** — characterize what set-tile / load-tile / TEXRECT sequence the original 5-strip emit produces, find which step trips a stale-TMEM rendering. Possible alternative: SP precision in the s-coord delta for the narrow strips. Shares investigative neighborhood with `fragment57-vtx-seams` — both probably want one trip through RT64's UI-fastpath code. |
+| status | **retired** — `func_82D022E8` removed from `[patches.ignored]`; the extras.c replacement + its `pkmnstadium_append_display_list` / `pkmnstadium_append_env_color` helpers deleted. The native 5-strip RGBA overlay now emits via the recompiled body. The original hack was always net-negative — it omitted the **controller-icon graphic** that indicates the selected card, on top of suppressing the TMEM-row leakage; users lost a critical UI cue. With the hack retired, the controller icon renders correctly on the selected card. Lib/rt64 conservative rasterization (b60cf10) does not address the residual yellow streaks in the 5-strip overlay — that's a different bug class (likely TMEM row sampling at strip boundaries, not the rasterizer edge-rule class). Tracked in `ISSUES.md` as the strip-overlay TMEM residual; investigation deferred. Verified 2026-05-24 with screenshot: card 1 shows the controller icon, faint horizontal residuals on the strip-overlay rows only on the selected card; cards 2/3/4 + WARNING banner unaffected. |
 
 ## force-expansion-ram (retired 2026-05-23)
 

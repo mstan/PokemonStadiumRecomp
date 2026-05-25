@@ -1971,39 +1971,3 @@ uint32_t pkmnstadium_trace_capacity(void) {
     return TRACE_RING_CAP;
 }
 
-static void pkmnstadium_append_display_list(uint8_t* rdram, uint32_t display_list_addr) {
-    uint32_t dl = MEM_W(0, 0x800A7420u);
-    MEM_W(0, 0x800A7420u) = dl + 8;
-    MEM_W(0, dl) = 0xDE000000u;
-    MEM_W(4, dl) = display_list_addr;
-}
-
-static void pkmnstadium_append_env_color(uint8_t* rdram, uint8_t alpha) {
-    uint32_t dl = MEM_W(0, 0x800A7420u);
-    MEM_W(0, 0x800A7420u) = dl + 8;
-    MEM_W(0, dl) = 0xFB000000u;
-    MEM_W(4, dl) = 0xFFFFFF00u | alpha;
-}
-
-/* Fragment 57 draws a decorative five-strip overlay behind selected
- * Game Pak status text. On RT64 that layer leaks stale/yellow TMEM
- * rows across the card. The card background is already drawn just
- * before this function and the real text is drawn after it, so omit
- * the overlay instead of trying to preserve a broken transparent layer.
- */
-void func_82D022E8(uint8_t* rdram, recomp_context* ctx) {
-    uint8_t alpha = (uint8_t)(ctx->r4 & 0xFF);
-    gpr saved_sp = ctx->r29;
-    gpr saved_ra = ctx->r31;
-    gpr saved_s0 = ctx->r16;
-
-    ctx->r29 = ADD32(ctx->r29, -0x30);
-
-    pkmnstadium_append_display_list(rdram, 0x8006F518u);
-    pkmnstadium_append_env_color(rdram, alpha);
-    pkmnstadium_append_display_list(rdram, 0x8006F630u);
-
-    ctx->r16 = saved_s0;
-    ctx->r31 = saved_ra;
-    ctx->r29 = saved_sp;
-}

@@ -1997,9 +1997,6 @@ size = 0x90   # 0x800005C0 - 0x80000530
 [patches]
 ignored = [
     "osSetTime",
-    # Fragment 57's selected Game Pak message is five adjacent RGBA
-    # strips; the native wrapper overlaps strip edges by one pixel.
-    "func_82D022E8",
 ]
 
 [[input.manual_funcs]]
