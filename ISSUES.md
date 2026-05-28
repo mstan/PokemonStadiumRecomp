@@ -7,7 +7,17 @@ a new work session.
 
 The base game runs end-to-end (Quick Battle, Free Battle, Stadium
 cups, Gym Leader Castle have been validated) but the following
-visible imperfections remain:
+visible imperfections remain.
+
+**Priority order (user-set 2026-05-28):**
+1. **Cursor / icon sprite corruption** — HIGHEST. Fix this next.
+2. Diagonal line across the screen at transitions.
+3. POKéMON STADIUM panel bottom clip.
+4. Selected Game Pak card strip-overlay residual.
+5. GB Tower "start GB game" crash — deep-dive, currently unreproducible
+   (no GB cart simulated); higher than the latent gfx UAF, lower than
+   the visible bugs above.
+6. Latent Stadium-side gfx pool UAF / race — lowest (masked by RT64).
 
 - [x] **Small clicking sound between audio chunks** during music
       sequences. **FIXED 2026-05-28** (runtime fork `N64ModernRuntime`,
@@ -20,9 +30,12 @@ visible imperfections remain:
       [Audio → Music-rate periodic tick](#audio) below.
 
 - [ ] **Visually corrupted "hand" pointer / cursor sprite** on
-      certain menus (e.g. Gym Leader Castle Registration's
-      "Register Pokémon" entry — sparkly/glittery sprite where a
-      clean icon should be). Pattern: pointer texture renders with
+      certain menus. **★ HIGHEST PRIORITY (user-set 2026-05-28) — fix
+      this next.** Re-confirmed 2026-05-28: on the Gym Leader Castle
+      Registration screen the icon left of "Register Pokémon" renders
+      as a sparkly/glittery garbled block where a clean icon should be
+      (screenshot captured this session).
+      Pattern: pointer texture renders with
       garbled bytes that worsen across repeated entries to the same
       screen, suggesting an accumulating-stale-state UAF in the
       cursor/icon allocator. Same screen used to soft-lock after
@@ -97,6 +110,38 @@ visible imperfections remain:
       scissor / projection clipping, or the label texture's t-coord
       mapping extends past the quad's bottom. See
       `NOTES_TO_CODEX.md` for the investigation path.
+
+- [ ] **Diagonal line across the entire screen at transitions**
+      (reported + screenshotted 2026-05-28). A thin straight line runs
+      roughly corner-to-corner across the whole frame. Subtle and
+      usually only visible during screen transitions/fades, but present.
+      Observed both over a 3D model scene (Rhydon close-up) and over the
+      main mini-game select screen — i.e. it's not tied to specific
+      content, it's a full-frame overlay artifact.
+
+      *Hypothesis:* the fullscreen transition/fade quad is drawn as two
+      triangles, and a hairline gap along their shared diagonal
+      (hypotenuse) edge shows the background through it — the same
+      shared-edge tie-break seam CLASS that conservative rasterization
+      fixed for the fragment-57 HUD grids (lib/rt64 `b60cf10`), but on
+      the fullscreen transition quad, which evidently isn't covered by
+      that fix (different PSO / coverage path, or a screen-space-aligned
+      diagonal). Next step: identify the transition-quad draw in RT64
+      and check whether conservative raster applies to its PSO; if the
+      seam is the cause, extend coverage there. Low severity (subtle,
+      transition-only) but a real renderer artifact.
+
+- [ ] **GB Tower "start GB game" crash** (reported 2026-05-28; deep-dive,
+      currently UNREPRODUCIBLE). Attempting to start a Game Boy game
+      from within the embedded Game Boy Tower crashes. Cannot reproduce
+      right now because no GB cartridge is being simulated into the
+      Tower yet. Note: GB Tower is documented as **out of scope** in
+      `CLAUDE.md` decision #4 (the plan was to stub its entry points,
+      not port the embedded GB emulator) — this item revisits that as a
+      future deep-dive, NOT current scope. Priority: above the latent
+      gfx pool UAF below, but below the visible rendering bugs above.
+      When picked up, first establish a reproduction (simulate/load a GB
+      cart into the Tower path) before diagnosing.
 
 - [x] **Active per-site workarounds in `extras.c` / `game.toml`
       should migrate to proper runtime fixes.** ~~Tracked in
