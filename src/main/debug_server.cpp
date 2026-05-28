@@ -184,6 +184,15 @@ extern "C" void ultramodern_get_current_dl_state(
 extern "C" void recomp_sp_task_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_sp_task_event_size(void);
+extern "C" void recomp_voice_events_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_voice_event_size(void);
+extern "C" void recomp_adpcm_decode_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_adpcm_decode_event_size(void);
+extern "C" void recomp_audio_queue_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_audio_queue_event_size(void);
 extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 extern "C" int psr_dump_current_dl(const char* path,
                                    uint32_t* out_addr,
@@ -674,6 +683,172 @@ static std::string handle_command(const std::string& line) {
                 type_name(e.task_type), e.task_ptr, e.mips_ra,
                 e.ucode, e.data_ptr, e.data_size,
                 e.output_buff, e.output_buff_size, e.task_flags);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "voice_events_recent") {
+        // Returns the last N libnaudio voice events (key-on / key-off /
+        // sample-change) from the always-on ring in librecomp's
+        // audio_uaf_protect.cpp. Used to correlate the music-rate
+        // periodic click against voice-start cadence and to inspect the
+        // ADPCM predictor carry / dc_first flag at each key-on.
+        //
+        // Mirror of voice_ring::VoiceEvent — kept in lockstep and
+        // validated via recomp_voice_event_size().
+        struct VoiceEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint64_t pass;
+            uint32_t voice_ptr;
+            uint32_t kind;
+            uint32_t em_motion;
+            uint32_t prev_motion;
+            uint32_t dc_table;
+            uint32_t prev_table;
+            uint32_t dc_sample;
+            uint32_t dc_first;
+            int32_t  dc_lastsam;
+            uint32_t dc_state;
+            int16_t  carry0;
+            int16_t  carry1;
+            uint32_t wt_base;
+            uint32_t wt_len;
+            uint32_t wt_type;
+            uint32_t loop_start;
+            uint32_t loop_end;
+            uint32_t loop_count;
+        };
+        if (recomp_voice_event_size() != sizeof(VoiceEvent)) {
+            return R"({"ok":false,"error":"voice event size mismatch"})";
+        }
+        int n = get_int(line, "n", 128);
+        if (n < 1) n = 1;
+        if (n > 16384) n = 16384;
+        std::vector<VoiceEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_voice_events_recent_copy(buf.data(), buf.size(), &got, &widx);
+        auto kind_name = [](uint32_t k) -> const char* {
+            switch (k) {
+                case 0: return "attack";
+                case 1: return "key_off";
+                case 2: return "realloc";
+                default: return "?";
+            }
+        };
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[640];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"pass\":%llu,\"voice\":%u,"
+                "\"kind\":\"%s\",\"em_motion\":%u,\"prev_motion\":%u,"
+                "\"dc_table\":%u,\"prev_table\":%u,\"dc_sample\":%u,"
+                "\"dc_first\":%u,\"dc_lastsam\":%d,\"dc_state\":%u,"
+                "\"carry0\":%d,\"carry1\":%d,\"wt_base\":%u,\"wt_len\":%u,"
+                "\"wt_type\":%u,\"loop_start\":%u,\"loop_end\":%u,"
+                "\"loop_count\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                (unsigned long long)e.pass, e.voice_ptr,
+                kind_name(e.kind), e.em_motion, e.prev_motion,
+                e.dc_table, e.prev_table, e.dc_sample,
+                e.dc_first, (int)e.dc_lastsam, e.dc_state,
+                (int)e.carry0, (int)e.carry1, e.wt_base, e.wt_len,
+                e.wt_type, e.loop_start, e.loop_end, e.loop_count);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "adpcm_decode_recent") {
+        // Returns the last N ADPCM-decode commands parsed from the audio
+        // command list in librecomp's audio_uaf_protect.cpp. This is the
+        // ground-truth A_INIT decision per decode (the task-time voice
+        // ring cannot see it). `suspect`=1 marks a CONTINUE decode onto a
+        // book that changed vs the prior decode on the same state buffer
+        // — i.e. stale predictor loaded for a new sample (click site).
+        struct AdpcmEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint64_t frame;
+            uint32_t state;
+            uint32_t book;
+            uint32_t prev_book;
+            uint32_t flags;
+            uint32_t init;
+            uint32_t count;
+            uint32_t suspect;
+        };
+        if (recomp_adpcm_decode_event_size() != sizeof(AdpcmEvent)) {
+            return R"({"ok":false,"error":"adpcm event size mismatch"})";
+        }
+        int n = get_int(line, "n", 256);
+        if (n < 1) n = 1;
+        if (n > 16384) n = 16384;
+        std::vector<AdpcmEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_adpcm_decode_recent_copy(buf.data(), buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[384];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"frame\":%llu,\"state\":%u,"
+                "\"book\":%u,\"prev_book\":%u,\"flags\":%u,\"init\":%u,"
+                "\"count\":%u,\"suspect\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                (unsigned long long)e.frame, e.state, e.book, e.prev_book,
+                e.flags, e.init, e.count, e.suspect);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "audio_queue_recent") {
+        // Returns the last N host-side queue_samples() events from the
+        // always-on ring in main.cpp. `decimated`=1 means skip_factor
+        // sample-dropping fired (a click candidate). `queued_us` is the
+        // SDL queue depth; decimation triggers above ~100000us.
+        struct AudioQueueEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint32_t sample_count;
+            uint32_t sample_rate;
+            uint32_t queued_us;
+            uint32_t skip_factor;
+            uint32_t bytes_queued;
+            uint32_t decimated;
+        };
+        if (recomp_audio_queue_event_size() != sizeof(AudioQueueEvent)) {
+            return R"({"ok":false,"error":"audio queue event size mismatch"})";
+        }
+        int n = get_int(line, "n", 256);
+        if (n < 1) n = 1;
+        if (n > 8192) n = 8192;
+        std::vector<AudioQueueEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_audio_queue_recent_copy(buf.data(), buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[320];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"sample_count\":%u,"
+                "\"sample_rate\":%u,\"queued_us\":%u,\"skip_factor\":%u,"
+                "\"bytes_queued\":%u,\"decimated\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                e.sample_count, e.sample_rate, e.queued_us, e.skip_factor,
+                e.bytes_queued, e.decimated);
             out += b;
         }
         out += "]}";

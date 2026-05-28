@@ -9,10 +9,14 @@ The base game runs end-to-end (Quick Battle, Free Battle, Stadium
 cups, Gym Leader Castle have been validated) but the following
 visible imperfections remain:
 
-- [ ] **Small clicking sound between audio chunks** during music
-      sequences. Tempo-tracking, only on music (not SFX, not
-      announcer / dialog). Sub-catastrophic DSP fidelity issue;
-      detailed hypothesis + diagnostic next-steps recorded under
+- [x] **Small clicking sound between audio chunks** during music
+      sequences. **FIXED 2026-05-28** (runtime fork `N64ModernRuntime`,
+      `librecomp/src/ai.cpp` — AI_LEN_REG emulation). Root cause was
+      a forked-runtime bug: the Audio Interface length register was
+      never emulated (always read 0), so the game's hardware audio
+      pacing was dead and it over-produced audio; the host
+      `skip_factor` decimation drained the surplus by dropping samples
+      → ~4 clicks/s. Full post-mortem under
       [Audio → Music-rate periodic tick](#audio) below.
 
 - [ ] **Visually corrupted "hand" pointer / cursor sprite** on
@@ -256,34 +260,88 @@ playable.
 
 ## Audio
 
-- [ ] **Music-rate periodic tick.** After the post-title audio UAF
-      fix landed (2026-05-06), a subtle periodic tick remains during
-      music playback. User reports it tracks the music tempo (not
-      sound effects, not announcer/dialog), suggesting either a
-      sequence-tick-rate or chunk-DMA-boundary artifact. Diagnostic
-      rings are quiet (no `[adpcm-overflow]`, no `[dispatch-corrupt]`,
-      no `[aspMain]` unknown-dispatch) — this is a sub-catastrophic
-      DSP-level fidelity issue, not the same UAF family.
+- [x] **Music-rate periodic tick — FIXED 2026-05-28.** Forked-runtime
+      bug: the N64 Audio Interface length register (`AI_LEN_REG`) was
+      never emulated, killing the game's hardware audio-pacing feedback
+      loop, causing audio over-production that the host sample-decimation
+      drained audibly (~4 clicks/s). Fixed by emulating the register in
+      `lib/N64ModernRuntime/librecomp/src/ai.cpp`.
 
-      Hypotheses, in priority order:
-      1. **aspMain chunk-N DMA boundary.** The pre-task hook now
-         correctly handles chunk 0; chunk-N transitions (each subsequent
-         0x140-byte fill from DRAM into DMEM[0x2B0]) have not been
-         instrumented. An off-by-one at a chunk boundary would
-         manifest as a click roughly every (chunk_count × frame_rate),
-         which fits "music-rate" if the audio task processes
-         multiple chunks per frame.
-      2. **Voice re-allocation glitch.** When Stadium starts a new
-         voice in a new scene, there may be a brief moment where
-         `dc_table` is set but `dc_state` (per-voice ADPCM
-         decompressor state) hasn't been initialized. The first
-         ADPCM block plays from uninitialized state and clicks
-         before settling.
+      **POST-MORTEM (the full chain).**
 
-      Next steps: instrument chunk-N DMA boundaries (extend the
-      `[aspmain_chunk0]` ring to cover later chunks), correlate
-      tick frequency with `n_alAudioFrame` cmd buffer size +
-      chunk count.
+      1. *Symptom.* Rhythmic ~4/s click during all music (never SFX or
+         speech), "at the boundary of audio packets," present in
+         real-time playback. Mis-described early on as tempo-tracking;
+         it is actually a near-constant rate that is merely more audible
+         over busy passages.
+
+      2. *Mechanism (proximate).* `src/main/main.cpp` `queue_samples()`
+         has a `skip_factor` valve: when the SDL output queue exceeds
+         100ms it decimates the chunk (keeps every `1<<skip_factor`-th
+         sample). Dropping samples mid-waveform = a discontinuity =
+         click. Confirmed via an always-on host-queue ring
+         (`audio_queue_recent`): in real-time the queue sat at 90-105ms,
+         straddling the 100ms threshold, and ~81/1200 chunks were
+         decimated ≈ 4.0/s.
+
+      3. *Why the queue was full (root cause).* The game (standard
+         libultra audio manager, `disasm/src/3D140.c` `func_8003CADC`)
+         paces generation by reading `HW_REG(AI_LEN_REG)` — the bytes
+         still pending playback — and emitting a SHORT frame
+         (`minFrameSize`) when the buffer is full, a full frame
+         (`frameSize`) when low. But the runtime maps the MMIO region to
+         zero pages (`librecomp/addresses.hpp`), so `AI_LEN_REG` ALWAYS
+         read 0. `samplesLeft >= 0x1A9` was never true → the game ALWAYS
+         emitted full frames → it generated 60×552 = 33120 frames/s vs
+         32000 consumed (~3.5% over) with ZERO back-pressure.
+
+      4. *Decisive experiment.* Added `PSR_AUDIO_NO_DECIMATE=1`. With
+         decimation off the clicks vanished but the SDL queue grew
+         perfectly linearly, unbounded — 85ms → 3.14s and climbing
+         (~50ms/s). Linear unbounded growth = fixed over-production with
+         no feedback (NOT a mistuned threshold), proving the decimation
+         was load-bearing and the real defect was upstream pacing.
+
+      5. *Rejected hypotheses (all instrumented, runtime-side,
+         hook-free).* Stale ADPCM predictor carry / voice-reuse: an
+         ADPCM-decode command-list scan (`adpcm_decode_recent`) showed
+         SUSPECT=0 — the predictor is reset (A_INIT) on every sample
+         change. Voice-event and SP-task rings corroborated: note
+         attacks ~15-23/s, chunk rate fixed 60/s. The decoder path was
+         provably clean; the bug was never voice-side.
+
+      6. *Fix.* Emulate `AI_LEN_REG` in `lib/N64ModernRuntime/librecomp/
+         src/ai.cpp`: after each `osAiSetNextBuffer` (and in
+         `osAiGetLength`), publish the live remaining-byte count
+         (`ultramodern::get_remaining_audio_bytes()`) into the register
+         via `MEM_W` at the same host address the game's `HW_REG` read
+         resolves to (kseg1 `0xA4500004`). This restores the game's own
+         hardware-designed feedback loop. **Generic across every
+         libultra audio game** — not Stadium-specific.
+
+      7. *Verification.* Real-time, post-fix: chunk rate dropped
+         60/s → 57.4/s (the game now inserts short frames, matching the
+         32000/552 ≈ 58/s hardware rate); queue depth fell from ~100ms
+         to a bounded ~0-35ms (avg ~16ms, the game's ~13ms target);
+         **decimation count = 0** over 26s; user confirmed no clicks by
+         ear. The `skip_factor` decimation remains in place as a dormant
+         runaway safety net (never fires under normal pacing).
+
+      **Lesson / class of bug.** Unemulated MMIO registers that default
+      to 0 can silently disable a game's hardware feedback loops, with
+      effects that surface far downstream (here, an audio artifact 3
+      layers away in the host output path). The fix belongs in the
+      runtime fork and benefits all future games.
+
+      **Diagnostic instrumentation added (kept; always-on, env-gated,
+      no game.toml hooks):** `voice_events_recent`, `adpcm_decode_recent`
+      (librecomp `audio_uaf_protect.cpp`), `audio_queue_recent`
+      (`main.cpp`); env gates `PSR_DISABLE_VOICE_RING`,
+      `PSR_DISABLE_AUDIO_QUEUE_RING`, `PSR_AUDIO_NO_DECIMATE`; readers
+      `tools/_voice_events.py`, `_adpcm_decode.py`, `_sp_audio.py`,
+      `_audio_queue.py`. Full trail in memory
+      `project_music_click_hypothesis_2026_05_28.md` +
+      `reference_npvoice_offsets.md`.
 
 - [ ] **Pre-decompressed ROM build step.** Backlog architectural
       cleanup: replace runtime `[[input.decompressed_section]]`
