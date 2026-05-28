@@ -200,6 +200,14 @@ extern "C" int psr_dump_current_dl(const char* path,
 extern "C" uint64_t rt64_vtx_ring_write_idx(void);
 extern "C" uint32_t rt64_vtx_ring_capacity(void);
 extern "C" int rt64_vtx_ring_read(uint64_t seq, uint64_t* out_seq, float out_floats[9]);
+extern "C" uint64_t rt64_tmem_ring_write_idx(void);
+extern "C" uint32_t rt64_tmem_ring_capacity(void);
+extern "C" int rt64_tmem_ring_read(uint64_t seq, uint64_t* out_seq,
+                                   uint32_t out_u32[12], uint64_t* out_hash);
+extern "C" uint64_t rt64_sprite_ring_write_idx(void);
+extern "C" uint32_t rt64_sprite_ring_capacity(void);
+extern "C" int rt64_sprite_ring_read(uint64_t seq, uint64_t* out_seq,
+                                     int32_t out_i32[4], uint32_t out_u32[2]);
 // Defined in lib/rt64/src/hle/rt64_rsp.cpp under #if RT64_PSR_DEBUG_HOOKS.
 // We always link against rt64.lib so the symbol is present whenever
 // RT64_PSR_DEBUG_HOOKS=1 in the rt64 build (default in PSR's CMake).
@@ -405,6 +413,104 @@ static std::string handle_command(const std::string& line) {
                 fs[0], fs[1], fs[2],
                 fs[3], fs[4], fs[5],
                 fs[6], fs[7], fs[8]);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "tmem_ring") {
+        // Always-on TMEM-load ring (RT64 hle/rt64_tmem_ring). Each entry
+        // is one RDP texture-load (loadTile/loadBlock/loadTLUT) at the
+        // moment RT64 fills TMEM from RDRAM: tile fmt/siz, TMEM dest,
+        // source RDRAM addr+span, SETTIMG base, dims, and a content hash
+        // of the loaded bytes. Used to diagnose the menu cursor/icon
+        // sprite corruption (stale TMEM / freed texture source).
+        //   "count"     — entries to return (default 64)
+        //   "start_seq" — starting sequence (default = write_idx-count+1)
+        // Disable the writer with RT64_TMEM_RING_DISABLE=1.
+        uint64_t write_idx = rt64_tmem_ring_write_idx();
+        uint32_t capacity = rt64_tmem_ring_capacity();
+        int count = get_int(line, "count", 64);
+        if (count < 1) count = 1;
+        if (count > 2048) count = 2048;
+        int64_t start_seq_arg = (int64_t)get_int(line, "start_seq", -1);
+        uint64_t start_seq;
+        if (start_seq_arg < 0) {
+            start_seq = (write_idx > (uint64_t)count) ? (write_idx - count + 1) : 1;
+        } else {
+            start_seq = (uint64_t)start_seq_arg;
+        }
+        const char* op_names[3] = {"tile", "block", "tlut"};
+        std::string out;
+        char hdr[256];
+        std::snprintf(hdr, sizeof(hdr),
+            "{\"ok\":true,\"write_idx\":%llu,\"capacity\":%u,\"start_seq\":%llu,\"entries\":[",
+            (unsigned long long)write_idx, (unsigned)capacity,
+            (unsigned long long)start_seq);
+        out = hdr;
+        bool first = true;
+        for (int i = 0; i < count; i++) {
+            uint64_t seq = start_seq + (uint64_t)i;
+            if (seq > write_idx) break;
+            uint64_t got_seq = 0, hash = 0;
+            uint32_t u[12] = {0};
+            if (!rt64_tmem_ring_read(seq, &got_seq, u, &hash)) continue;
+            if (!first) out += ",";
+            first = false;
+            const char* opn = (u[0] < 3) ? op_names[u[0]] : "?";
+            char buf[448];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"op\":\"%s\",\"fmt\":%u,\"siz\":%u,"
+                "\"tmem_addr\":%u,\"tmem_bytes\":%u,\"src_addr\":%u,"
+                "\"src_bytes\":%u,\"img_addr\":%u,\"width\":%u,\"rows\":%u,"
+                "\"words_per_row\":%u,\"hash\":\"%016llx\"}",
+                (unsigned long long)got_seq, opn, u[2], u[3], u[4], u[5],
+                u[6], u[7], u[8], u[9], u[10], u[11],
+                (unsigned long long)hash);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "sprite_ring") {
+        // Always-on sprite-draw ring (RT64 hle/rt64_tmem_ring). Each entry
+        // is one drawTexRect: on-screen rect + tile + the texture source
+        // RDRAM address. Map a corrupt on-screen sprite to its source by
+        // position (e.g. move the menu selection; the cursor's rect moves).
+        uint64_t write_idx = rt64_sprite_ring_write_idx();
+        uint32_t capacity = rt64_sprite_ring_capacity();
+        int count = get_int(line, "count", 128);
+        if (count < 1) count = 1;
+        if (count > 2048) count = 2048;
+        int64_t start_seq_arg = (int64_t)get_int(line, "start_seq", -1);
+        uint64_t start_seq;
+        if (start_seq_arg < 0) {
+            start_seq = (write_idx > (uint64_t)count) ? (write_idx - count + 1) : 1;
+        } else {
+            start_seq = (uint64_t)start_seq_arg;
+        }
+        std::string out;
+        char hdr[256];
+        std::snprintf(hdr, sizeof(hdr),
+            "{\"ok\":true,\"write_idx\":%llu,\"capacity\":%u,\"start_seq\":%llu,\"entries\":[",
+            (unsigned long long)write_idx, (unsigned)capacity,
+            (unsigned long long)start_seq);
+        out = hdr;
+        bool first = true;
+        for (int i = 0; i < count; i++) {
+            uint64_t seq = start_seq + (uint64_t)i;
+            if (seq > write_idx) break;
+            uint64_t got_seq = 0;
+            int32_t r[4] = {0};
+            uint32_t u[2] = {0};
+            if (!rt64_sprite_ring_read(seq, &got_seq, r, u)) continue;
+            if (!first) out += ",";
+            first = false;
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"ulx\":%d,\"uly\":%d,\"lrx\":%d,\"lry\":%d,"
+                "\"tile\":%u,\"src_addr\":%u}",
+                (unsigned long long)got_seq, r[0], r[1], r[2], r[3], u[0], u[1]);
             out += buf;
         }
         out += "]}";
