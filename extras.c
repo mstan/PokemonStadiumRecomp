@@ -33,6 +33,12 @@
  * hand-written recomp wrappers below. recomp.h is C-compatible. */
 #include "recomp.h"
 
+/* librecomp overlay-table maintenance. Releases the recompiler's
+ * section registration for a Stadium fragment id when the game clears
+ * it (Memmap_ClearFragmentMemmap), resetting section_addresses[] to the
+ * link literal. Defined in lib/N64ModernRuntime/librecomp/src/overlays.cpp. */
+extern void recomp_unregister_runtime_fragment(uint32_t id);
+
 /* Read a 32-bit big-endian value from rdram. rdram on the host
  * side stores BE words in word-swapped (per-byte XOR-3) order, so
  * to read the original big-endian word we recombine bytes via the
@@ -272,6 +278,281 @@ const char* pkmnstadium_interesting_fn_name(int idx) {
     return k_interesting_fns[idx];
 }
 int pkmnstadium_interesting_fn_total(void) { return INTERESTING_FN_COUNT; }
+
+/* ------------------------------------------------------------------ */
+/* Memmap segment/fragment binding ring.                              */
+/*                                                                    */
+/* Always-on ring capturing every mutation of gSegments[]/gFragments[]*/
+/* in memmap.c. Built to diagnose the menu cursor/icon corruption:    */
+/* RSP segment 1 resolves icon-texture loads into a STALE/wrong       */
+/* fragment's code section (e.g. fragment 31 "transfer pak checker"   */
+/* left bound after the Game Pak Check screen, while the Poke Cup      */
+/* Registration menu reads seg1+offset as a texture). Each entry       */
+/* records (seq, kind, id, vaddr, size, caller PC, gCurrentGameState) */
+/* so the post-mortem shows the exact bind timeline across a screen    */
+/* transition: which code bound segment N to what, and whether a menu  */
+/* re-bound it or inherited a previous screen's value.                */
+/*                                                                    */
+/* Hooked at the entry of the four memmap mutators via game.toml:     */
+/*   kind 0 = Memmap_SetSegmentMap(id, vaddr, size)                   */
+/*   kind 1 = Memmap_ClearSegmentMemmap(id)                           */
+/*   kind 2 = Memmap_SetFragmentMap(id, vaddr, size)                  */
+/*   kind 3 = Memmap_ClearFragmentMemmap(id)                          */
+/* gCurrentGameState lives at vaddr 0x80075668 (phys 0x00075668). */
+struct memmap_ev {
+    uint64_t seq;
+    uint32_t kind;
+    uint32_t id;
+    uint32_t vaddr;
+    uint32_t size;
+    uint32_t caller;
+    uint32_t game_state;
+};
+#define MEMMAP_RING_CAP 2048
+static volatile struct memmap_ev s_memmap_ring[MEMMAP_RING_CAP];
+static volatile uint64_t s_memmap_seq = 0;
+
+static void memmap_ring_push(uint32_t kind, uint32_t id, uint32_t vaddr,
+                             uint32_t size, uint32_t caller, uint32_t game_state) {
+    uint64_t s = __atomic_fetch_add(&s_memmap_seq, 1, __ATOMIC_RELAXED);
+    uint32_t i = (uint32_t)(s % MEMMAP_RING_CAP);
+    s_memmap_ring[i].seq = s;
+    s_memmap_ring[i].kind = kind;
+    s_memmap_ring[i].id = id;
+    s_memmap_ring[i].vaddr = vaddr;
+    s_memmap_ring[i].size = size;
+    s_memmap_ring[i].caller = caller;
+    s_memmap_ring[i].game_state = game_state;
+}
+
+/* Segment-map events (kind 0/1) are pushed from the existing
+ * pkmnstadium_segmap_set_enter / _clear_enter handlers below — they
+ * already receive game_state and now also caller — so we do NOT add a
+ * second hook on Memmap_SetSegmentMap/ClearSegmentMemmap (one already
+ * exists at the same vram and the recompiler rejects duplicates).
+ * Only the fragment-map mutators get fresh hooks; those handlers have
+ * rdram and read gCurrentGameState from it. */
+void pkmnstadium_memmap_set_fragment(uint8_t* rdram, uint32_t id, uint32_t vaddr,
+                                     uint32_t size, uint32_t caller) {
+    memmap_ring_push(2u, id, vaddr, size, caller, MEM_LOAD_BE32(rdram, 0x00075668u));
+}
+void pkmnstadium_memmap_clear_fragment(uint8_t* rdram, uint32_t id, uint32_t caller) {
+    memmap_ring_push(3u, id, 0u, 0u, caller, MEM_LOAD_BE32(rdram, 0x00075668u));
+    /* Functional fix (not just diagnostic): mirror the game's fragment
+     * clear into the recompiler's overlay table so RELOC_HI16/LO16 for
+     * this fragment's section fall back to the link literal once it is
+     * no longer resident. Without this the stale runtime base makes
+     * fragment-id-extraction math compute a wrong (negative) id that
+     * indexes gFragments[]/gSegments[] OOB — the menu cursor/icon
+     * corruption. See recomp::overlays::unregister_runtime_fragment. */
+    recomp_unregister_runtime_fragment(id);
+}
+
+uint64_t pkmnstadium_memmap_seq(void) {
+    return __atomic_load_n(&s_memmap_seq, __ATOMIC_RELAXED);
+}
+uint32_t pkmnstadium_memmap_cap(void) { return MEMMAP_RING_CAP; }
+void pkmnstadium_memmap_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                            uint32_t* id, uint32_t* vaddr, uint32_t* size,
+                            uint32_t* caller, uint32_t* gs) {
+    uint32_t idx = i % MEMMAP_RING_CAP;
+    *seq    = s_memmap_ring[idx].seq;
+    *kind   = s_memmap_ring[idx].kind;
+    *id     = s_memmap_ring[idx].id;
+    *vaddr  = s_memmap_ring[idx].vaddr;
+    *size   = s_memmap_ring[idx].size;
+    *caller = s_memmap_ring[idx].caller;
+    *gs     = s_memmap_ring[idx].game_state;
+}
+
+/* ------------------------------------------------------------------ */
+/* Archive-load + fragment-relocate ring (cursor/icon corruption root).*/
+/*                                                                    */
+/* The memmap ring (above) PROVED the corruption: an OOB               */
+/* Memmap_SetFragmentMap(id=-15) writes into gFragments[-15], which    */
+/* aliases &gSegments[1] (gFragments base 0x800A58F0 - 15*8 =          */
+/* 0x800A5878), resetting seg 1 from the icon texture bank to          */
+/* fragment-31 CODE; the cursor then samples MIPS code -> sparkle.     */
+/* The id traces back through func_800043BC(id, Fragment*) to          */
+/* func_8000484C's `func_800043BC(archive->unk_02, frag)` — i.e. the   */
+/* fragment id is BinArchive->unk_02 (the u16 at decompressed offset   */
+/* 0x02). On real HW the same gFragments[-15] aliasing exists, so the  */
+/* shipped game cannot legitimately pass -15; therefore EITHER unk_02  */
+/* is corrupt in our build (decompression / wrong-source divergence),  */
+/* OR the relocate branch is taken when HW would take the in-place     */
+/* (unk_00 & 1) or cached (file.unk_08) branch instead.                */
+/*                                                                    */
+/* This always-on ring captures both ends of the chain so the          */
+/* post-mortem can distinguish those root causes:                      */
+/*   kind 0 = func_8000484C entry (archive consume):                   */
+/*     a=archive vaddr  b=file_number                                  */
+/*     hdr0=(unk_00<<16 | unk_02)   hdr1=unk_04 (compressed source)    */
+/*     hdr2=total_size   hdr3=num_files                                */
+/*     extra0=file[fn].offset  extra1=file[fn].size                    */
+/*     extra2=file[fn].unk_08 (decompressed-cache ptr)                 */
+/*   kind 1 = func_800043BC entry (relocate dispatch):                 */
+/*     a=id (raw s32 that indexes gFragments)  b=Fragment vaddr        */
+/*     hdr0=magic[0:4] ('FRAG')  hdr1=magic[4:8] ('MENT')              */
+/*     hdr2=relocOffset  hdr3=sizeInRam                                */
+/*                                                                    */
+/* Capturing both unk_02 (stored, hdr0&0xFFFF on kind 0) AND id        */
+/* (consumed, kind 1 a) pins whether a u16->s32 sign-extension turns a */
+/* stored 0xFFF1 into -15, vs whether the stored byte itself is wrong. */
+/* These are game.toml entry hooks, so rdram is librecomp's            */
+/* word-swapped store -> read via MEM_LOAD_BE32 (XOR-3 indexing).      */
+struct arcload_ev {
+    uint64_t seq;
+    uint32_t kind;
+    uint32_t a;
+    uint32_t b;
+    uint32_t hdr0, hdr1, hdr2, hdr3;
+    uint32_t extra0, extra1, extra2;
+    uint32_t caller;
+    uint32_t game_state;
+};
+#define ARCLOAD_RING_CAP 2048
+static volatile struct arcload_ev s_arcload_ring[ARCLOAD_RING_CAP];
+static volatile uint64_t s_arcload_seq = 0;
+
+/* Non-evicting smoking-gun: the first relocate dispatch whose fragment
+ * id is outside [0,239] (the OOB gFragments[] write), paired with the
+ * BinArchive consume frame that produced it. Kept separately so ring
+ * eviction can never lose the one event that matters. */
+static volatile int s_badfrag_captured = 0;
+static volatile struct arcload_ev s_badfrag_reloc;
+static volatile struct arcload_ev s_badfrag_aload;
+/* Per-thread last consume frame, so a synchronous relocate dispatch
+ * (func_800043BC is called from inside func_8000484C) correlates to its
+ * source archive without racing other threads. */
+static __thread struct arcload_ev s_last_aload;
+static __thread int s_have_last_aload = 0;
+
+static uint64_t arcload_ring_push(uint32_t kind, uint32_t a, uint32_t b,
+                                  uint32_t h0, uint32_t h1, uint32_t h2, uint32_t h3,
+                                  uint32_t e0, uint32_t e1, uint32_t e2,
+                                  uint32_t caller, uint32_t gs) {
+    uint64_t s = __atomic_fetch_add(&s_arcload_seq, 1, __ATOMIC_RELAXED);
+    uint32_t i = (uint32_t)(s % ARCLOAD_RING_CAP);
+    s_arcload_ring[i].seq = s;
+    s_arcload_ring[i].kind = kind;
+    s_arcload_ring[i].a = a;
+    s_arcload_ring[i].b = b;
+    s_arcload_ring[i].hdr0 = h0;
+    s_arcload_ring[i].hdr1 = h1;
+    s_arcload_ring[i].hdr2 = h2;
+    s_arcload_ring[i].hdr3 = h3;
+    s_arcload_ring[i].extra0 = e0;
+    s_arcload_ring[i].extra1 = e1;
+    s_arcload_ring[i].extra2 = e2;
+    s_arcload_ring[i].caller = caller;
+    s_arcload_ring[i].game_state = gs;
+    return s;
+}
+
+uint64_t pkmnstadium_arcload_seq(void) {
+    return __atomic_load_n(&s_arcload_seq, __ATOMIC_RELAXED);
+}
+uint32_t pkmnstadium_arcload_cap(void) { return ARCLOAD_RING_CAP; }
+void pkmnstadium_arcload_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                             uint32_t* a, uint32_t* b,
+                             uint32_t* h0, uint32_t* h1, uint32_t* h2, uint32_t* h3,
+                             uint32_t* e0, uint32_t* e1, uint32_t* e2,
+                             uint32_t* caller, uint32_t* gs) {
+    uint32_t idx = i % ARCLOAD_RING_CAP;
+    *seq    = s_arcload_ring[idx].seq;
+    *kind   = s_arcload_ring[idx].kind;
+    *a      = s_arcload_ring[idx].a;
+    *b      = s_arcload_ring[idx].b;
+    *h0     = s_arcload_ring[idx].hdr0;
+    *h1     = s_arcload_ring[idx].hdr1;
+    *h2     = s_arcload_ring[idx].hdr2;
+    *h3     = s_arcload_ring[idx].hdr3;
+    *e0     = s_arcload_ring[idx].extra0;
+    *e1     = s_arcload_ring[idx].extra1;
+    *e2     = s_arcload_ring[idx].extra2;
+    *caller = s_arcload_ring[idx].caller;
+    *gs     = s_arcload_ring[idx].game_state;
+}
+
+/* Returns 1 if a bad-id relocate was captured; fills the relocate event
+ * plus the source-archive (consume) event it was correlated to. */
+int pkmnstadium_arcload_badfrag(uint32_t* r_id, uint32_t* r_frag,
+                                uint32_t* r_magic0, uint32_t* r_magic1,
+                                uint32_t* r_relocoff, uint32_t* r_sizeram,
+                                uint32_t* r_caller, uint32_t* r_gs,
+                                uint32_t* a_archive, uint32_t* a_unk00unk02,
+                                uint32_t* a_unk04, uint32_t* a_total,
+                                uint32_t* a_nfiles, uint32_t* a_filenum,
+                                uint32_t* a_foff, uint32_t* a_fsize,
+                                uint32_t* a_funk08, uint32_t* a_caller) {
+    if (!__atomic_load_n(&s_badfrag_captured, __ATOMIC_ACQUIRE)) return 0;
+    *r_id       = s_badfrag_reloc.a;
+    *r_frag     = s_badfrag_reloc.b;
+    *r_magic0   = s_badfrag_reloc.hdr0;
+    *r_magic1   = s_badfrag_reloc.hdr1;
+    *r_relocoff = s_badfrag_reloc.hdr2;
+    *r_sizeram  = s_badfrag_reloc.hdr3;
+    *r_caller   = s_badfrag_reloc.caller;
+    *r_gs       = s_badfrag_reloc.game_state;
+    *a_archive     = s_badfrag_aload.a;
+    *a_unk00unk02  = s_badfrag_aload.hdr0;
+    *a_unk04       = s_badfrag_aload.hdr1;
+    *a_total       = s_badfrag_aload.hdr2;
+    *a_nfiles      = s_badfrag_aload.hdr3;
+    *a_filenum     = s_badfrag_aload.b;
+    *a_foff        = s_badfrag_aload.extra0;
+    *a_fsize       = s_badfrag_aload.extra1;
+    *a_funk08      = s_badfrag_aload.extra2;
+    *a_caller      = s_badfrag_aload.caller;
+    return 1;
+}
+
+/* func_800043BC(s32 id, Fragment* addr) entry. id == archive->unk_02 is
+ * forwarded to Memmap_RelocateFragment -> Memmap_SetFragmentMap; an id
+ * outside [0,239] is the OOB write that clobbers gSegments[]. */
+void pkmnstadium_relocfrag_enter(uint8_t* rdram, uint32_t id,
+                                 uint32_t fragment, uint32_t caller) {
+    uint32_t fo = fragment & 0x7FFFFFu;
+    uint32_t m0 = 0, m1 = 0, ro = 0, sr = 0;
+    if (fragment >= 0x80000000u && (fo + 0x20u) <= 0x800000u) {
+        m0 = MEM_LOAD_BE32(rdram, fo + 0x08u);  /* magic[0:4] -> 'FRAG' */
+        m1 = MEM_LOAD_BE32(rdram, fo + 0x0Cu);  /* magic[4:8] -> 'MENT' */
+        ro = MEM_LOAD_BE32(rdram, fo + 0x14u);  /* relocOffset */
+        sr = MEM_LOAD_BE32(rdram, fo + 0x1Cu);  /* sizeInRam   */
+    }
+    uint32_t gs = MEM_LOAD_BE32(rdram, 0x00075668u);
+    arcload_ring_push(1u, id, fragment, m0, m1, ro, sr, 0u, 0u, 0u, caller, gs);
+
+    if (((int32_t)id < 0 || id >= 240u) &&
+        !__atomic_load_n(&s_badfrag_captured, __ATOMIC_ACQUIRE)) {
+        s_badfrag_reloc.kind = 1u;
+        s_badfrag_reloc.a = id;
+        s_badfrag_reloc.b = fragment;
+        s_badfrag_reloc.hdr0 = m0;
+        s_badfrag_reloc.hdr1 = m1;
+        s_badfrag_reloc.hdr2 = ro;
+        s_badfrag_reloc.hdr3 = sr;
+        s_badfrag_reloc.caller = caller;
+        s_badfrag_reloc.game_state = gs;
+        if (s_have_last_aload) {
+            s_badfrag_aload = s_last_aload;
+        } else {
+            s_badfrag_aload.a = 0u;  /* archive unknown */
+        }
+        __atomic_store_n(&s_badfrag_captured, 1, __ATOMIC_RELEASE);
+        fprintf(stderr,
+            "[arcload] BAD FRAGMENT id=0x%08X (%d) frag=0x%08X magic=%c%c%c%c%c%c%c%c "
+            "sizeInRam=0x%X  <- archive=0x%08X unk_00=0x%04X unk_02=0x%04X "
+            "num_files=%u unk_04=0x%08X file=%d\n",
+            id, (int32_t)id, fragment,
+            (char)((m0>>24)&0xFF),(char)((m0>>16)&0xFF),(char)((m0>>8)&0xFF),(char)(m0&0xFF),
+            (char)((m1>>24)&0xFF),(char)((m1>>16)&0xFF),(char)((m1>>8)&0xFF),(char)(m1&0xFF),
+            sr, s_badfrag_aload.a, (s_badfrag_aload.hdr0>>16)&0xFFFF,
+            s_badfrag_aload.hdr0&0xFFFF, s_badfrag_aload.hdr3, s_badfrag_aload.hdr1,
+            (int32_t)s_badfrag_aload.b);
+        fflush(stderr);
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* func_80019D18 lookup-or-allocate diagnostic.                       */
@@ -1385,9 +1666,15 @@ static void pkmnstadium_segmap_dump_host_backtrace(void) {}
 #endif
 
 void pkmnstadium_segmap_set_enter(uint32_t id, uint32_t vaddr,
-                                  uint32_t size, uint32_t game_state) {
+                                  uint32_t size, uint32_t game_state,
+                                  uint32_t caller) {
     static int s_n = 0;
     static int s_n_id0 = 0;
+    /* Push into the queryable memmap ring (kind 0), EXCEPT id=0 which is
+     * the RDRAM identity remap that fires every frame (~70/s) — capturing
+     * it would evict the meaningful id>=1 binds from the 2048-entry ring
+     * within ~30s. id=0 is never a texture-asset segment anyway. */
+    if (id != 0u) memmap_ring_push(0u, id, vaddr, size, caller, game_state);
     s_n++;
     /* id=0 (RDRAM identity remap) fires every frame; cap separately
      * so it doesn't flood out the interesting non-id=0 events. */
@@ -1424,8 +1711,10 @@ void pkmnstadium_asset_load_enter(uint32_t id, uint32_t rom_start,
     fflush(stderr);
 }
 
-void pkmnstadium_segmap_clear_enter(uint32_t id, uint32_t game_state) {
+void pkmnstadium_segmap_clear_enter(uint32_t id, uint32_t game_state,
+                                    uint32_t caller) {
     static int s_n = 0;
+    memmap_ring_push(1u, id, 0u, 0u, caller, game_state);
     s_n++;
     fprintf(stderr,
         "[segmap-clear] #%d id=%u gs=0x%08X%s\n",
@@ -1485,18 +1774,58 @@ static __thread uint32_t s_aload_arg_archive[8];
 static __thread uint32_t s_aload_arg_file_number[8];
 static __thread int s_aload_sp = 0;
 
-void pkmnstadium_aload_enter(uint32_t archive, uint32_t file_number) {
+void pkmnstadium_aload_enter(uint8_t* rdram, uint32_t archive,
+                             uint32_t file_number, uint32_t caller) {
     if (s_aload_sp < 8) {
         s_aload_arg_archive[s_aload_sp] = archive;
         s_aload_arg_file_number[s_aload_sp] = file_number;
     }
     s_aload_sp++;
+
+    /* Read the BinArchive header (and the indexed BinArchiveFile entry)
+     * straight from RDRAM. `archive` is a kseg0 vaddr; mask to the 8 MiB
+     * physical offset and bounds-check each read. */
+    uint32_t ao = archive & 0x7FFFFFu;
+    uint32_t raw = 0, unk04 = 0, total = 0, nfiles = 0;
+    uint32_t foff = 0, fsz = 0, funk08 = 0;
+    if (archive >= 0x80000000u && (ao + 0x10u) <= 0x800000u) {
+        raw    = MEM_LOAD_BE32(rdram, ao + 0x00u);  /* unk_00<<16 | unk_02 */
+        unk04  = MEM_LOAD_BE32(rdram, ao + 0x04u);  /* compressed source   */
+        total  = MEM_LOAD_BE32(rdram, ao + 0x08u);
+        nfiles = MEM_LOAD_BE32(rdram, ao + 0x0Cu);
+        if ((int32_t)file_number >= 0 && file_number < nfiles) {
+            uint32_t feo = ao + 0x10u + (file_number * 0x10u);
+            if ((feo + 0x10u) <= 0x800000u) {
+                foff   = MEM_LOAD_BE32(rdram, feo + 0x00u);
+                fsz    = MEM_LOAD_BE32(rdram, feo + 0x04u);
+                funk08 = MEM_LOAD_BE32(rdram, feo + 0x08u);  /* decompressed cache */
+            }
+        }
+    }
+    uint32_t gs = MEM_LOAD_BE32(rdram, 0x00075668u);
+    uint64_t s = arcload_ring_push(0u, archive, file_number, raw, unk04,
+                                   total, nfiles, foff, fsz, funk08, caller, gs);
+
+    /* Remember this frame so a synchronous relocate dispatch from inside
+     * this func_8000484C call (the FRAGMENT-magic branch) can be paired
+     * with the archive that produced it. */
+    s_last_aload.seq = s; s_last_aload.kind = 0u;
+    s_last_aload.a = archive; s_last_aload.b = file_number;
+    s_last_aload.hdr0 = raw; s_last_aload.hdr1 = unk04;
+    s_last_aload.hdr2 = total; s_last_aload.hdr3 = nfiles;
+    s_last_aload.extra0 = foff; s_last_aload.extra1 = fsz;
+    s_last_aload.extra2 = funk08; s_last_aload.caller = caller;
+    s_last_aload.game_state = gs;
+    s_have_last_aload = 1;
+
     static int s_n = 0;
     s_n++;
     if (s_n <= 96) {
         fprintf(stderr,
-            "[aload] enter archive=0x%08X file_number=%d depth=%d\n",
-            archive, (int32_t)file_number, s_aload_sp);
+            "[aload] enter archive=0x%08X file=%d depth=%d unk_00=0x%04X "
+            "unk_02=0x%04X num_files=%u unk_04=0x%08X\n",
+            archive, (int32_t)file_number, s_aload_sp,
+            (raw >> 16) & 0xFFFFu, raw & 0xFFFFu, nfiles, unk04);
         fflush(stderr);
     }
 }

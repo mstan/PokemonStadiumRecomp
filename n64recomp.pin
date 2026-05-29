@@ -13,8 +13,11 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = fad8a9cafec06189a927155a350e0596459e6b4a
-# "recomp: mask host rdram offset in MEM_W/H/B macros"
-# (turns out-of-range vaddr loads into garbage reads instead of
-# host SEGVs — matches N64 silent-wrap; rescued the Register
-# Pokemon screen from a recurring audio-UAF host crash)
+sha = 91f05f8beef76aa033011647960fede2465ed837
+# 91f05f8 "docs: update fork notice for SS Anne org affiliation"
+#   — docs-only commit; functionally identical to its parent.
+# fad8a9c "recomp: mask host rdram offset in MEM_W/H/B macros" (parent)
+#   turns out-of-range vaddr loads into garbage reads instead of
+#   host SEGVs — matches N64 silent-wrap; rescued the Register
+#   Pokemon screen from a recurring audio-UAF host crash. Still the
+#   newest *functional* engine change; 91f05f8 only adds docs on top.

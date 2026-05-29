@@ -2909,6 +2909,28 @@ func = "Memmap_RelocateFragment"
 before_vram = 0x80001E50  # first instr of Memmap_RelocateFragment ⇒ entry hook
 text = "recomp_register_runtime_fragment(rdram, ctx->r4, ctx->r5);"
 
+# ── Memmap FRAGMENT-map binding ring (cursor/icon corruption) ──────────────
+# Always-on capture of gFragments[] register/clear, pushed into the same
+# queryable ring as the segment events (the pre-existing segmap_set/clear
+# hooks further below now also feed that ring). Together they give the full
+# bind timeline across a screen transition — needed to see whether the Poke
+# Cup Registration menu re-binds segment 1 or inherits the stale fragment-31
+# ("transfer pak checker") base from the Game Pak Check screen. Handlers +
+# ring in extras.c (pkmnstadium_memmap_*); reader tools/_memmap_ring.py; dump
+# cmd memmap_ring. ctx->r31 = caller return address.
+# NOTE: segment-map (gSegments[]) events come from the PRE-EXISTING
+# Memmap_SetSegmentMap/ClearSegmentMemmap hooks below — do NOT duplicate
+# those (the recompiler rejects two hooks at the same vram).
+[[patches.hook]]
+func = "Memmap_SetFragmentMap"
+before_vram = 0x800020B0
+text = "pkmnstadium_memmap_set_fragment(rdram, ctx->r4, ctx->r5, ctx->r6, ctx->r31);"
+
+[[patches.hook]]
+func = "Memmap_ClearFragmentMemmap"
+before_vram = 0x8000218C
+text = "pkmnstadium_memmap_clear_fragment(rdram, ctx->r4, ctx->r31);"
+
 # n_alLoadParam voice probe — fires just before the crashing load
 # `lw $t5, 0x8($v1)` at MIPS PC 0x8004FAE4. ctx->r2 = v0, ctx->r3 = v1
 # (post `lw $v1, 0xC($v0)` at 0x8004FAD8), ctx->r7 = a3. Records the
@@ -3167,12 +3189,12 @@ text = "ctx->r4 = librecomp_fragment_resolve_exit((uint32_t)ctx->r4, (uint32_t)M
 [[patches.hook]]
 func = "Memmap_SetSegmentMap"
 before_vram = 0x80001CE0   # entry — function start
-text = "pkmnstadium_segmap_set_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)MEM_W(0, (int32_t)0x80075668));"
+text = "pkmnstadium_segmap_set_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)MEM_W(0, (int32_t)0x80075668), (uint32_t)ctx->r31);"
 
 [[patches.hook]]
 func = "Memmap_ClearSegmentMemmap"
 before_vram = 0x80001D9C   # entry — function start
-text = "pkmnstadium_segmap_clear_enter((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x80075668));"
+text = "pkmnstadium_segmap_clear_enter((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x80075668), (uint32_t)ctx->r31);"
 
 # func_80004258 = ASSET_LOAD inner. Hook at function entry so we can
 # see every (id, rom_range, arg3) attempted, regardless of whether
@@ -3202,12 +3224,25 @@ text = "pkmnstadium_load2_exit((uint32_t)ctx->r2);"
 [[patches.hook]]
 func = "func_8000484C"
 before_vram = 0x8000484C   # entry
-text = "pkmnstadium_aload_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5);"
+text = "pkmnstadium_aload_enter(rdram, (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r31);"
 
 [[patches.hook]]
 func = "func_8000484C"
 before_vram = 0x80004954   # right before jr $ra
 text = "pkmnstadium_aload_exit((uint32_t)ctx->r2);"
+
+# Fragment-relocate dispatch hook (cursor/icon corruption root-cause).
+# func_800043BC(s32 id, Fragment* addr) forwards `id` to
+# Memmap_RelocateFragment -> Memmap_SetFragmentMap; an id outside
+# [0,239] is the OOB gFragments[] write that clobbers gSegments[1].
+# The id is archive->unk_02 when called from func_8000484C:681. Feeds
+# the always-on arcload ring (kind 1) + the non-evicting bad-frag
+# capture in extras.c; reader tools/_arcload_ring.py; dump cmds
+# arcload_ring / arcload_badfrag. ctx->r31 = caller return address.
+[[patches.hook]]
+func = "func_800043BC"
+before_vram = 0x800043BC   # entry — relocate-fragment dispatch
+text = "pkmnstadium_relocfrag_enter(rdram, (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r31);"
 
 [[patches.hook]]
 func = "func_800047C4"

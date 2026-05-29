@@ -58,6 +58,28 @@ extern "C" {
     int pkmnstadium_interesting_fn_total(void);
     int pkmnstadium_resolver_log_total(void);
     void pkmnstadium_resolver_log_get(int idx, uint32_t* arr, uint32_t* base, uint32_t* count);
+    uint64_t pkmnstadium_memmap_seq(void);
+    uint32_t pkmnstadium_memmap_cap(void);
+    void pkmnstadium_memmap_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                                uint32_t* id, uint32_t* vaddr, uint32_t* size,
+                                uint32_t* caller, uint32_t* gs);
+    uint64_t pkmnstadium_arcload_seq(void);
+    uint32_t pkmnstadium_arcload_cap(void);
+    void pkmnstadium_arcload_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                                 uint32_t* a, uint32_t* b, uint32_t* h0, uint32_t* h1,
+                                 uint32_t* h2, uint32_t* h3, uint32_t* e0, uint32_t* e1,
+                                 uint32_t* e2, uint32_t* caller, uint32_t* gs);
+    int recomp_debug_runtime_fragment(uint32_t id, uint32_t* out_section_index,
+                                      int32_t* out_section_addr, int32_t* out_link_addr);
+    int pkmnstadium_arcload_badfrag(uint32_t* r_id, uint32_t* r_frag,
+                                    uint32_t* r_magic0, uint32_t* r_magic1,
+                                    uint32_t* r_relocoff, uint32_t* r_sizeram,
+                                    uint32_t* r_caller, uint32_t* r_gs,
+                                    uint32_t* a_archive, uint32_t* a_unk00unk02,
+                                    uint32_t* a_unk04, uint32_t* a_total,
+                                    uint32_t* a_nfiles, uint32_t* a_filenum,
+                                    uint32_t* a_foff, uint32_t* a_fsize,
+                                    uint32_t* a_funk08, uint32_t* a_caller);
 }
 
 namespace pkmnstadium {
@@ -568,6 +590,126 @@ static std::string handle_command(const std::string& line) {
         }
         out += "]}";
         return out;
+    }
+    if (cmd == "memmap_ring") {
+        // Always-on ring of gSegments[]/gFragments[] mutations (extras.c,
+        // hooked on the four memmap.c mutators). kind: 0=SetSeg 1=ClearSeg
+        // 2=SetFrag 3=ClearFrag. Each entry: id, vaddr, size, caller PC,
+        // gCurrentGameState. Used to trace stale/wrong segment binding
+        // behind the menu cursor/icon corruption (seg 1 -> fragment code).
+        uint64_t total = pkmnstadium_memmap_seq();
+        uint32_t cap = pkmnstadium_memmap_cap();
+        int count = get_int(line, "count", 256);
+        if (count < 1) count = 1;
+        if (count > (int)cap) count = (int)cap;
+        if ((uint64_t)count > total) count = (int)total;
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(total) +
+                          R"(,"capacity":)" + std::to_string(cap) + R"(,"entries":[)";
+        bool first = true;
+        for (int k = 0; k < count; k++) {
+            uint64_t s = total - (uint64_t)count + (uint64_t)k;
+            uint64_t seq = 0; uint32_t kind = 0, id = 0, vaddr = 0, size = 0,
+                     caller = 0, gs = 0;
+            pkmnstadium_memmap_get((uint32_t)(s % cap), &seq, &kind, &id,
+                                   &vaddr, &size, &caller, &gs);
+            if (seq != s) continue;  // entry rolled past since we sampled total
+            if (!first) out += ",";
+            first = false;
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"kind\":%u,\"id\":%u,\"vaddr\":%u,\"size\":%u,"
+                "\"caller\":%u,\"gs\":%u}",
+                (unsigned long long)seq, kind, id, vaddr, size, caller, gs);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "arcload_ring") {
+        // Always-on ring of BinArchive consume (func_8000484C) + fragment
+        // relocate dispatch (func_800043BC) events (extras.c). kind 0 =
+        // aload: a=archive vaddr, b=file_number, h0=(unk_00<<16|unk_02),
+        // h1=unk_04 (compressed source), h2=total_size, h3=num_files,
+        // e0=file.offset, e1=file.size, e2=file.unk_08 (cache). kind 1 =
+        // relocfrag: a=id (raw s32 indexing gFragments), b=Fragment vaddr,
+        // h0/h1=magic ('FRAG'/'MENT'), h2=relocOffset, h3=sizeInRam. A
+        // kind-1 with id outside [0,239] is the OOB gFragments[] write
+        // behind the cursor/icon corruption (clobbers gSegments[1]).
+        uint64_t total = pkmnstadium_arcload_seq();
+        uint32_t cap = pkmnstadium_arcload_cap();
+        int count = get_int(line, "count", 256);
+        if (count < 1) count = 1;
+        if (count > (int)cap) count = (int)cap;
+        if ((uint64_t)count > total) count = (int)total;
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(total) +
+                          R"(,"capacity":)" + std::to_string(cap) + R"(,"entries":[)";
+        bool first = true;
+        for (int k = 0; k < count; k++) {
+            uint64_t s = total - (uint64_t)count + (uint64_t)k;
+            uint64_t seq = 0;
+            uint32_t kind = 0, a = 0, b = 0, h0 = 0, h1 = 0, h2 = 0, h3 = 0,
+                     e0 = 0, e1 = 0, e2 = 0, caller = 0, gs = 0;
+            pkmnstadium_arcload_get((uint32_t)(s % cap), &seq, &kind, &a, &b,
+                                    &h0, &h1, &h2, &h3, &e0, &e1, &e2, &caller, &gs);
+            if (seq != s) continue;  // entry rolled past since we sampled total
+            if (!first) out += ",";
+            first = false;
+            char buf[384];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"kind\":%u,\"a\":%u,\"b\":%u,\"h0\":%u,\"h1\":%u,"
+                "\"h2\":%u,\"h3\":%u,\"e0\":%u,\"e1\":%u,\"e2\":%u,\"caller\":%u,"
+                "\"gs\":%u}",
+                (unsigned long long)seq, kind, a, b, h0, h1, h2, h3, e0, e1, e2,
+                caller, gs);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "arcload_badfrag") {
+        // Non-evicting smoking-gun: the first func_800043BC dispatch with
+        // a fragment id outside [0,239], paired with the BinArchive
+        // (func_8000484C frame) that produced it. Answers "why is the
+        // fragment id corrupt" with the full archive header + the
+        // compressed source (unk_04) for reference decompression.
+        uint32_t r_id = 0, r_frag = 0, m0 = 0, m1 = 0, ro = 0, sr = 0, rc = 0, rgs = 0;
+        uint32_t a_arc = 0, a_hdr = 0, a_unk04 = 0, a_total = 0, a_nf = 0, a_fn = 0,
+                 a_fo = 0, a_fs = 0, a_fu = 0, a_c = 0;
+        int got = pkmnstadium_arcload_badfrag(&r_id, &r_frag, &m0, &m1, &ro, &sr,
+                                              &rc, &rgs, &a_arc, &a_hdr, &a_unk04,
+                                              &a_total, &a_nf, &a_fn, &a_fo, &a_fs,
+                                              &a_fu, &a_c);
+        if (!got) return std::string(R"({"ok":true,"captured":false})");
+        char buf[768];
+        std::snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"captured\":true,"
+            "\"reloc\":{\"id\":%u,\"frag\":%u,\"magic0\":%u,\"magic1\":%u,"
+            "\"relocOffset\":%u,\"sizeInRam\":%u,\"caller\":%u,\"gs\":%u},"
+            "\"archive\":{\"vaddr\":%u,\"unk00unk02\":%u,\"unk04\":%u,"
+            "\"total_size\":%u,\"num_files\":%u,\"file_number\":%u,"
+            "\"file_offset\":%u,\"file_size\":%u,\"file_unk08\":%u,\"caller\":%u}}",
+            r_id, r_frag, m0, m1, ro, sr, rc, rgs,
+            a_arc, a_hdr, a_unk04, a_total, a_nf, a_fn, a_fo, a_fs, a_fu, a_c);
+        return std::string(buf);
+    }
+    if (cmd == "frag_section") {
+        // Verification probe for the cursor/icon fix. For a Stadium
+        // fragment id, report the section it last registered to, that
+        // section's live section_addresses[] value, and its link-time
+        // ram_addr. After Memmap_ClearFragmentMemmap the address should
+        // fall back to the link literal (is_literal=true) so RELOC_HI16/
+        // LO16 stop resolving to the stale runtime base. "id" required.
+        uint32_t id = (uint32_t)get_int(line, "id", 0);
+        uint32_t sidx = 0; int32_t saddr = 0, laddr = 0;
+        int got = recomp_debug_runtime_fragment(id, &sidx, &saddr, &laddr);
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"id\":%u,\"registered\":%s,\"section_index\":%u,"
+            "\"section_addr\":%u,\"link_addr\":%u,\"is_literal\":%s}",
+            id, got ? "true" : "false", sidx,
+            (uint32_t)saddr, (uint32_t)laddr,
+            (got && saddr == laddr) ? "true" : "false");
+        return std::string(buf);
     }
     if (cmd == "interesting_fns") {
         // Returns the non-evicting interesting-function counters from
