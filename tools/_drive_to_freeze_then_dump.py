@@ -53,7 +53,7 @@ print(call({"cmd":"post_mortem_dump"}))
 
 # Print interesting bits
 import json as _json
-report = _json.loads(open("F:/Projects/PokemonStadiumRecomp/build/last_run_report.json").read())
+report = _json.loads(open("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_report.json").read())
 print("\nreason:", report.get("reason"))
 print("status:", _json.dumps(report.get("status"), indent=2))
 print("\nthreads:")

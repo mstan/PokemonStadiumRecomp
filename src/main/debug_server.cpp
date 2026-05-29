@@ -58,6 +58,28 @@ extern "C" {
     int pkmnstadium_interesting_fn_total(void);
     int pkmnstadium_resolver_log_total(void);
     void pkmnstadium_resolver_log_get(int idx, uint32_t* arr, uint32_t* base, uint32_t* count);
+    uint64_t pkmnstadium_memmap_seq(void);
+    uint32_t pkmnstadium_memmap_cap(void);
+    void pkmnstadium_memmap_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                                uint32_t* id, uint32_t* vaddr, uint32_t* size,
+                                uint32_t* caller, uint32_t* gs);
+    uint64_t pkmnstadium_arcload_seq(void);
+    uint32_t pkmnstadium_arcload_cap(void);
+    void pkmnstadium_arcload_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                                 uint32_t* a, uint32_t* b, uint32_t* h0, uint32_t* h1,
+                                 uint32_t* h2, uint32_t* h3, uint32_t* e0, uint32_t* e1,
+                                 uint32_t* e2, uint32_t* caller, uint32_t* gs);
+    int recomp_debug_runtime_fragment(uint32_t id, uint32_t* out_section_index,
+                                      int32_t* out_section_addr, int32_t* out_link_addr);
+    int pkmnstadium_arcload_badfrag(uint32_t* r_id, uint32_t* r_frag,
+                                    uint32_t* r_magic0, uint32_t* r_magic1,
+                                    uint32_t* r_relocoff, uint32_t* r_sizeram,
+                                    uint32_t* r_caller, uint32_t* r_gs,
+                                    uint32_t* a_archive, uint32_t* a_unk00unk02,
+                                    uint32_t* a_unk04, uint32_t* a_total,
+                                    uint32_t* a_nfiles, uint32_t* a_filenum,
+                                    uint32_t* a_foff, uint32_t* a_fsize,
+                                    uint32_t* a_funk08, uint32_t* a_caller);
 }
 
 namespace pkmnstadium {
@@ -76,8 +98,12 @@ std::atomic<uint16_t> g_buttons_override{0};
 std::atomic<int>      g_stick_x_override{0};  // -128..127
 std::atomic<int>      g_stick_y_override{0};
 
-// Default 0 (muted) — see header comment for rationale.
-std::atomic<float>    g_audio_volume{0.0f};
+// Default 1.0 (full volume). The previous default of 0 (muted) was meant
+// to prevent harness/test relaunches from blasting boot audio in a loop,
+// but in practice it just made every manual relaunch silent and required
+// a separate set_volume call. Set PSR_VOLUME=0 env var (or use TCP
+// set_volume) to mute for automated runs.
+std::atomic<float>    g_audio_volume{1.0f};
 
 std::atomic<uint64_t> g_send_dl_count{0};
 std::atomic<uint64_t> g_update_screen_count{0};
@@ -172,13 +198,38 @@ extern "C" uint64_t ultramodern_submit_audio_count(void);
 extern "C" uint64_t ultramodern_submit_other_count(void);
 extern "C" uint64_t ultramodern_sp_complete_count(void);
 extern "C" uint64_t ultramodern_dp_complete_count(void);
+extern "C" void ultramodern_get_current_dl_state(
+    uint64_t* entry_seq, uint64_t* exit_seq,
+    uint64_t* entry_ms,  uint64_t* exit_ms,
+    uint32_t* data_ptr,  uint32_t* data_size,
+    uint32_t* ucode_ptr);
 extern "C" void recomp_sp_task_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_sp_task_event_size(void);
+extern "C" void recomp_voice_events_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_voice_event_size(void);
+extern "C" void recomp_adpcm_decode_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_adpcm_decode_event_size(void);
+extern "C" void recomp_audio_queue_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_audio_queue_event_size(void);
 extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 extern "C" int psr_dump_current_dl(const char* path,
                                    uint32_t* out_addr,
                                    uint32_t* out_size);
+extern "C" uint64_t rt64_vtx_ring_write_idx(void);
+extern "C" uint32_t rt64_vtx_ring_capacity(void);
+extern "C" int rt64_vtx_ring_read(uint64_t seq, uint64_t* out_seq, float out_floats[9]);
+extern "C" uint64_t rt64_tmem_ring_write_idx(void);
+extern "C" uint32_t rt64_tmem_ring_capacity(void);
+extern "C" int rt64_tmem_ring_read(uint64_t seq, uint64_t* out_seq,
+                                   uint32_t out_u32[12], uint64_t* out_hash);
+extern "C" uint64_t rt64_sprite_ring_write_idx(void);
+extern "C" uint32_t rt64_sprite_ring_capacity(void);
+extern "C" int rt64_sprite_ring_read(uint64_t seq, uint64_t* out_seq,
+                                     int32_t out_i32[4], uint32_t out_u32[2]);
 // Defined in lib/rt64/src/hle/rt64_rsp.cpp under #if RT64_PSR_DEBUG_HOOKS.
 // We always link against rt64.lib so the symbol is present whenever
 // RT64_PSR_DEBUG_HOOKS=1 in the rt64 build (default in PSR's CMake).
@@ -304,6 +355,189 @@ static std::string handle_command(const std::string& line) {
         );
         return buf;
     }
+    if (cmd == "current_dl") {
+        // Returns the in-flight gfx DL state. When entry_seq > exit_seq,
+        // the gfx event thread is currently inside renderer_context->send_dl
+        // and the data_ptr/data_size identify exactly which DL is in flight.
+        // For a stuck send_dl, entry_seq > exit_seq AND (now - entry_ms) is
+        // large — that's the hanging DL, and its raw bytes are at
+        // [data_ptr, data_ptr+data_size) in rdram for offline analysis.
+        uint64_t entry_seq = 0, exit_seq = 0, entry_ms = 0, exit_ms = 0;
+        uint32_t data_ptr = 0, data_size = 0, ucode_ptr = 0;
+        ultramodern_get_current_dl_state(&entry_seq, &exit_seq,
+                                         &entry_ms, &exit_ms,
+                                         &data_ptr, &data_size, &ucode_ptr);
+        using namespace std::chrono;
+        uint64_t now_ms = duration_cast<milliseconds>(
+            steady_clock::now().time_since_epoch()).count();
+        bool in_flight = entry_seq > exit_seq;
+        uint64_t elapsed_ms = in_flight ? (now_ms - entry_ms) : (exit_ms - entry_ms);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"in_flight\":%s,\"entry_seq\":%llu,\"exit_seq\":%llu,"
+            "\"entry_ms\":%llu,\"exit_ms\":%llu,\"now_ms\":%llu,\"elapsed_ms\":%llu,"
+            "\"data_ptr\":%u,\"data_size\":%u,\"ucode_ptr\":%u}",
+            in_flight ? "true" : "false",
+            (unsigned long long)entry_seq, (unsigned long long)exit_seq,
+            (unsigned long long)entry_ms,  (unsigned long long)exit_ms,
+            (unsigned long long)now_ms,    (unsigned long long)elapsed_ms,
+            (unsigned)data_ptr, (unsigned)data_size, (unsigned)ucode_ptr);
+        return buf;
+    }
+    if (cmd == "vtx_ring") {
+        // Always-on triangle vertex ring (RT64 hle/rt64_vtx_ring). Each
+        // entry is one drawIndexedTri call's 3 post-MVP, post-divide,
+        // viewport-scaled screen-space positions — the same posScreen
+        // values the renderer's drawRect logic reads. Used to answer
+        // "do adjacent quads at the same world position produce
+        // identical screen-space coords?" without RenderDoc.
+        //
+        // Args:
+        //   "count"      — how many entries to return (default 32)
+        //   "start_seq"  — starting sequence (default = write_idx - count + 1)
+        //
+        // Disable the writer entirely with RT64_VTX_RING_DISABLE=1.
+        uint64_t write_idx = rt64_vtx_ring_write_idx();
+        uint32_t capacity = rt64_vtx_ring_capacity();
+        int count = get_int(line, "count", 32);
+        if (count < 1) count = 1;
+        if (count > 512) count = 512;
+        int64_t start_seq_arg = (int64_t)get_int(line, "start_seq", -1);
+        uint64_t start_seq;
+        if (start_seq_arg < 0) {
+            start_seq = (write_idx > (uint64_t)count) ? (write_idx - count + 1) : 1;
+        } else {
+            start_seq = (uint64_t)start_seq_arg;
+        }
+        std::string out;
+        char hdr[256];
+        std::snprintf(hdr, sizeof(hdr),
+            "{\"ok\":true,\"write_idx\":%llu,\"capacity\":%u,\"start_seq\":%llu,\"entries\":[",
+            (unsigned long long)write_idx, (unsigned)capacity,
+            (unsigned long long)start_seq);
+        out = hdr;
+        bool first = true;
+        for (int i = 0; i < count; i++) {
+            uint64_t seq = start_seq + (uint64_t)i;
+            if (seq > write_idx) break;
+            uint64_t got_seq = 0;
+            float fs[9] = {0};
+            if (!rt64_vtx_ring_read(seq, &got_seq, fs)) continue;
+            if (!first) out += ",";
+            first = false;
+            char buf[384];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,"
+                "\"v0\":[%.6f,%.6f,%.6f],"
+                "\"v1\":[%.6f,%.6f,%.6f],"
+                "\"v2\":[%.6f,%.6f,%.6f]}",
+                (unsigned long long)got_seq,
+                fs[0], fs[1], fs[2],
+                fs[3], fs[4], fs[5],
+                fs[6], fs[7], fs[8]);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "tmem_ring") {
+        // Always-on TMEM-load ring (RT64 hle/rt64_tmem_ring). Each entry
+        // is one RDP texture-load (loadTile/loadBlock/loadTLUT) at the
+        // moment RT64 fills TMEM from RDRAM: tile fmt/siz, TMEM dest,
+        // source RDRAM addr+span, SETTIMG base, dims, and a content hash
+        // of the loaded bytes. Used to diagnose the menu cursor/icon
+        // sprite corruption (stale TMEM / freed texture source).
+        //   "count"     — entries to return (default 64)
+        //   "start_seq" — starting sequence (default = write_idx-count+1)
+        // Disable the writer with RT64_TMEM_RING_DISABLE=1.
+        uint64_t write_idx = rt64_tmem_ring_write_idx();
+        uint32_t capacity = rt64_tmem_ring_capacity();
+        int count = get_int(line, "count", 64);
+        if (count < 1) count = 1;
+        if (count > 2048) count = 2048;
+        int64_t start_seq_arg = (int64_t)get_int(line, "start_seq", -1);
+        uint64_t start_seq;
+        if (start_seq_arg < 0) {
+            start_seq = (write_idx > (uint64_t)count) ? (write_idx - count + 1) : 1;
+        } else {
+            start_seq = (uint64_t)start_seq_arg;
+        }
+        const char* op_names[3] = {"tile", "block", "tlut"};
+        std::string out;
+        char hdr[256];
+        std::snprintf(hdr, sizeof(hdr),
+            "{\"ok\":true,\"write_idx\":%llu,\"capacity\":%u,\"start_seq\":%llu,\"entries\":[",
+            (unsigned long long)write_idx, (unsigned)capacity,
+            (unsigned long long)start_seq);
+        out = hdr;
+        bool first = true;
+        for (int i = 0; i < count; i++) {
+            uint64_t seq = start_seq + (uint64_t)i;
+            if (seq > write_idx) break;
+            uint64_t got_seq = 0, hash = 0;
+            uint32_t u[12] = {0};
+            if (!rt64_tmem_ring_read(seq, &got_seq, u, &hash)) continue;
+            if (!first) out += ",";
+            first = false;
+            const char* opn = (u[0] < 3) ? op_names[u[0]] : "?";
+            char buf[448];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"op\":\"%s\",\"fmt\":%u,\"siz\":%u,"
+                "\"tmem_addr\":%u,\"tmem_bytes\":%u,\"src_addr\":%u,"
+                "\"src_bytes\":%u,\"img_addr\":%u,\"width\":%u,\"rows\":%u,"
+                "\"words_per_row\":%u,\"hash\":\"%016llx\"}",
+                (unsigned long long)got_seq, opn, u[2], u[3], u[4], u[5],
+                u[6], u[7], u[8], u[9], u[10], u[11],
+                (unsigned long long)hash);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "sprite_ring") {
+        // Always-on sprite-draw ring (RT64 hle/rt64_tmem_ring). Each entry
+        // is one drawTexRect: on-screen rect + tile + the texture source
+        // RDRAM address. Map a corrupt on-screen sprite to its source by
+        // position (e.g. move the menu selection; the cursor's rect moves).
+        uint64_t write_idx = rt64_sprite_ring_write_idx();
+        uint32_t capacity = rt64_sprite_ring_capacity();
+        int count = get_int(line, "count", 128);
+        if (count < 1) count = 1;
+        if (count > 2048) count = 2048;
+        int64_t start_seq_arg = (int64_t)get_int(line, "start_seq", -1);
+        uint64_t start_seq;
+        if (start_seq_arg < 0) {
+            start_seq = (write_idx > (uint64_t)count) ? (write_idx - count + 1) : 1;
+        } else {
+            start_seq = (uint64_t)start_seq_arg;
+        }
+        std::string out;
+        char hdr[256];
+        std::snprintf(hdr, sizeof(hdr),
+            "{\"ok\":true,\"write_idx\":%llu,\"capacity\":%u,\"start_seq\":%llu,\"entries\":[",
+            (unsigned long long)write_idx, (unsigned)capacity,
+            (unsigned long long)start_seq);
+        out = hdr;
+        bool first = true;
+        for (int i = 0; i < count; i++) {
+            uint64_t seq = start_seq + (uint64_t)i;
+            if (seq > write_idx) break;
+            uint64_t got_seq = 0;
+            int32_t r[4] = {0};
+            uint32_t u[2] = {0};
+            if (!rt64_sprite_ring_read(seq, &got_seq, r, u)) continue;
+            if (!first) out += ",";
+            first = false;
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"ulx\":%d,\"uly\":%d,\"lrx\":%d,\"lry\":%d,"
+                "\"tile\":%u,\"src_addr\":%u}",
+                (unsigned long long)got_seq, r[0], r[1], r[2], r[3], u[0], u[1]);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
     if (cmd == "set_button") {
         auto name = get_str(line, "name");
         bool down = get_bool(line, "down", true);
@@ -356,6 +590,126 @@ static std::string handle_command(const std::string& line) {
         }
         out += "]}";
         return out;
+    }
+    if (cmd == "memmap_ring") {
+        // Always-on ring of gSegments[]/gFragments[] mutations (extras.c,
+        // hooked on the four memmap.c mutators). kind: 0=SetSeg 1=ClearSeg
+        // 2=SetFrag 3=ClearFrag. Each entry: id, vaddr, size, caller PC,
+        // gCurrentGameState. Used to trace stale/wrong segment binding
+        // behind the menu cursor/icon corruption (seg 1 -> fragment code).
+        uint64_t total = pkmnstadium_memmap_seq();
+        uint32_t cap = pkmnstadium_memmap_cap();
+        int count = get_int(line, "count", 256);
+        if (count < 1) count = 1;
+        if (count > (int)cap) count = (int)cap;
+        if ((uint64_t)count > total) count = (int)total;
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(total) +
+                          R"(,"capacity":)" + std::to_string(cap) + R"(,"entries":[)";
+        bool first = true;
+        for (int k = 0; k < count; k++) {
+            uint64_t s = total - (uint64_t)count + (uint64_t)k;
+            uint64_t seq = 0; uint32_t kind = 0, id = 0, vaddr = 0, size = 0,
+                     caller = 0, gs = 0;
+            pkmnstadium_memmap_get((uint32_t)(s % cap), &seq, &kind, &id,
+                                   &vaddr, &size, &caller, &gs);
+            if (seq != s) continue;  // entry rolled past since we sampled total
+            if (!first) out += ",";
+            first = false;
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"kind\":%u,\"id\":%u,\"vaddr\":%u,\"size\":%u,"
+                "\"caller\":%u,\"gs\":%u}",
+                (unsigned long long)seq, kind, id, vaddr, size, caller, gs);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "arcload_ring") {
+        // Always-on ring of BinArchive consume (func_8000484C) + fragment
+        // relocate dispatch (func_800043BC) events (extras.c). kind 0 =
+        // aload: a=archive vaddr, b=file_number, h0=(unk_00<<16|unk_02),
+        // h1=unk_04 (compressed source), h2=total_size, h3=num_files,
+        // e0=file.offset, e1=file.size, e2=file.unk_08 (cache). kind 1 =
+        // relocfrag: a=id (raw s32 indexing gFragments), b=Fragment vaddr,
+        // h0/h1=magic ('FRAG'/'MENT'), h2=relocOffset, h3=sizeInRam. A
+        // kind-1 with id outside [0,239] is the OOB gFragments[] write
+        // behind the cursor/icon corruption (clobbers gSegments[1]).
+        uint64_t total = pkmnstadium_arcload_seq();
+        uint32_t cap = pkmnstadium_arcload_cap();
+        int count = get_int(line, "count", 256);
+        if (count < 1) count = 1;
+        if (count > (int)cap) count = (int)cap;
+        if ((uint64_t)count > total) count = (int)total;
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(total) +
+                          R"(,"capacity":)" + std::to_string(cap) + R"(,"entries":[)";
+        bool first = true;
+        for (int k = 0; k < count; k++) {
+            uint64_t s = total - (uint64_t)count + (uint64_t)k;
+            uint64_t seq = 0;
+            uint32_t kind = 0, a = 0, b = 0, h0 = 0, h1 = 0, h2 = 0, h3 = 0,
+                     e0 = 0, e1 = 0, e2 = 0, caller = 0, gs = 0;
+            pkmnstadium_arcload_get((uint32_t)(s % cap), &seq, &kind, &a, &b,
+                                    &h0, &h1, &h2, &h3, &e0, &e1, &e2, &caller, &gs);
+            if (seq != s) continue;  // entry rolled past since we sampled total
+            if (!first) out += ",";
+            first = false;
+            char buf[384];
+            std::snprintf(buf, sizeof(buf),
+                "{\"seq\":%llu,\"kind\":%u,\"a\":%u,\"b\":%u,\"h0\":%u,\"h1\":%u,"
+                "\"h2\":%u,\"h3\":%u,\"e0\":%u,\"e1\":%u,\"e2\":%u,\"caller\":%u,"
+                "\"gs\":%u}",
+                (unsigned long long)seq, kind, a, b, h0, h1, h2, h3, e0, e1, e2,
+                caller, gs);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "arcload_badfrag") {
+        // Non-evicting smoking-gun: the first func_800043BC dispatch with
+        // a fragment id outside [0,239], paired with the BinArchive
+        // (func_8000484C frame) that produced it. Answers "why is the
+        // fragment id corrupt" with the full archive header + the
+        // compressed source (unk_04) for reference decompression.
+        uint32_t r_id = 0, r_frag = 0, m0 = 0, m1 = 0, ro = 0, sr = 0, rc = 0, rgs = 0;
+        uint32_t a_arc = 0, a_hdr = 0, a_unk04 = 0, a_total = 0, a_nf = 0, a_fn = 0,
+                 a_fo = 0, a_fs = 0, a_fu = 0, a_c = 0;
+        int got = pkmnstadium_arcload_badfrag(&r_id, &r_frag, &m0, &m1, &ro, &sr,
+                                              &rc, &rgs, &a_arc, &a_hdr, &a_unk04,
+                                              &a_total, &a_nf, &a_fn, &a_fo, &a_fs,
+                                              &a_fu, &a_c);
+        if (!got) return std::string(R"({"ok":true,"captured":false})");
+        char buf[768];
+        std::snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"captured\":true,"
+            "\"reloc\":{\"id\":%u,\"frag\":%u,\"magic0\":%u,\"magic1\":%u,"
+            "\"relocOffset\":%u,\"sizeInRam\":%u,\"caller\":%u,\"gs\":%u},"
+            "\"archive\":{\"vaddr\":%u,\"unk00unk02\":%u,\"unk04\":%u,"
+            "\"total_size\":%u,\"num_files\":%u,\"file_number\":%u,"
+            "\"file_offset\":%u,\"file_size\":%u,\"file_unk08\":%u,\"caller\":%u}}",
+            r_id, r_frag, m0, m1, ro, sr, rc, rgs,
+            a_arc, a_hdr, a_unk04, a_total, a_nf, a_fn, a_fo, a_fs, a_fu, a_c);
+        return std::string(buf);
+    }
+    if (cmd == "frag_section") {
+        // Verification probe for the cursor/icon fix. For a Stadium
+        // fragment id, report the section it last registered to, that
+        // section's live section_addresses[] value, and its link-time
+        // ram_addr. After Memmap_ClearFragmentMemmap the address should
+        // fall back to the link literal (is_literal=true) so RELOC_HI16/
+        // LO16 stop resolving to the stale runtime base. "id" required.
+        uint32_t id = (uint32_t)get_int(line, "id", 0);
+        uint32_t sidx = 0; int32_t saddr = 0, laddr = 0;
+        int got = recomp_debug_runtime_fragment(id, &sidx, &saddr, &laddr);
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"id\":%u,\"registered\":%s,\"section_index\":%u,"
+            "\"section_addr\":%u,\"link_addr\":%u,\"is_literal\":%s}",
+            id, got ? "true" : "false", sidx,
+            (uint32_t)saddr, (uint32_t)laddr,
+            (got && saddr == laddr) ? "true" : "false");
+        return std::string(buf);
     }
     if (cmd == "interesting_fns") {
         // Returns the non-evicting interesting-function counters from
@@ -582,6 +936,172 @@ static std::string handle_command(const std::string& line) {
         out += "]}";
         return out;
     }
+    if (cmd == "voice_events_recent") {
+        // Returns the last N libnaudio voice events (key-on / key-off /
+        // sample-change) from the always-on ring in librecomp's
+        // audio_uaf_protect.cpp. Used to correlate the music-rate
+        // periodic click against voice-start cadence and to inspect the
+        // ADPCM predictor carry / dc_first flag at each key-on.
+        //
+        // Mirror of voice_ring::VoiceEvent — kept in lockstep and
+        // validated via recomp_voice_event_size().
+        struct VoiceEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint64_t pass;
+            uint32_t voice_ptr;
+            uint32_t kind;
+            uint32_t em_motion;
+            uint32_t prev_motion;
+            uint32_t dc_table;
+            uint32_t prev_table;
+            uint32_t dc_sample;
+            uint32_t dc_first;
+            int32_t  dc_lastsam;
+            uint32_t dc_state;
+            int16_t  carry0;
+            int16_t  carry1;
+            uint32_t wt_base;
+            uint32_t wt_len;
+            uint32_t wt_type;
+            uint32_t loop_start;
+            uint32_t loop_end;
+            uint32_t loop_count;
+        };
+        if (recomp_voice_event_size() != sizeof(VoiceEvent)) {
+            return R"({"ok":false,"error":"voice event size mismatch"})";
+        }
+        int n = get_int(line, "n", 128);
+        if (n < 1) n = 1;
+        if (n > 16384) n = 16384;
+        std::vector<VoiceEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_voice_events_recent_copy(buf.data(), buf.size(), &got, &widx);
+        auto kind_name = [](uint32_t k) -> const char* {
+            switch (k) {
+                case 0: return "attack";
+                case 1: return "key_off";
+                case 2: return "realloc";
+                default: return "?";
+            }
+        };
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[640];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"pass\":%llu,\"voice\":%u,"
+                "\"kind\":\"%s\",\"em_motion\":%u,\"prev_motion\":%u,"
+                "\"dc_table\":%u,\"prev_table\":%u,\"dc_sample\":%u,"
+                "\"dc_first\":%u,\"dc_lastsam\":%d,\"dc_state\":%u,"
+                "\"carry0\":%d,\"carry1\":%d,\"wt_base\":%u,\"wt_len\":%u,"
+                "\"wt_type\":%u,\"loop_start\":%u,\"loop_end\":%u,"
+                "\"loop_count\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                (unsigned long long)e.pass, e.voice_ptr,
+                kind_name(e.kind), e.em_motion, e.prev_motion,
+                e.dc_table, e.prev_table, e.dc_sample,
+                e.dc_first, (int)e.dc_lastsam, e.dc_state,
+                (int)e.carry0, (int)e.carry1, e.wt_base, e.wt_len,
+                e.wt_type, e.loop_start, e.loop_end, e.loop_count);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "adpcm_decode_recent") {
+        // Returns the last N ADPCM-decode commands parsed from the audio
+        // command list in librecomp's audio_uaf_protect.cpp. This is the
+        // ground-truth A_INIT decision per decode (the task-time voice
+        // ring cannot see it). `suspect`=1 marks a CONTINUE decode onto a
+        // book that changed vs the prior decode on the same state buffer
+        // — i.e. stale predictor loaded for a new sample (click site).
+        struct AdpcmEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint64_t frame;
+            uint32_t state;
+            uint32_t book;
+            uint32_t prev_book;
+            uint32_t flags;
+            uint32_t init;
+            uint32_t count;
+            uint32_t suspect;
+        };
+        if (recomp_adpcm_decode_event_size() != sizeof(AdpcmEvent)) {
+            return R"({"ok":false,"error":"adpcm event size mismatch"})";
+        }
+        int n = get_int(line, "n", 256);
+        if (n < 1) n = 1;
+        if (n > 16384) n = 16384;
+        std::vector<AdpcmEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_adpcm_decode_recent_copy(buf.data(), buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[384];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"frame\":%llu,\"state\":%u,"
+                "\"book\":%u,\"prev_book\":%u,\"flags\":%u,\"init\":%u,"
+                "\"count\":%u,\"suspect\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                (unsigned long long)e.frame, e.state, e.book, e.prev_book,
+                e.flags, e.init, e.count, e.suspect);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "audio_queue_recent") {
+        // Returns the last N host-side queue_samples() events from the
+        // always-on ring in main.cpp. `decimated`=1 means skip_factor
+        // sample-dropping fired (a click candidate). `queued_us` is the
+        // SDL queue depth; decimation triggers above ~100000us.
+        struct AudioQueueEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint32_t sample_count;
+            uint32_t sample_rate;
+            uint32_t queued_us;
+            uint32_t skip_factor;
+            uint32_t bytes_queued;
+            uint32_t decimated;
+        };
+        if (recomp_audio_queue_event_size() != sizeof(AudioQueueEvent)) {
+            return R"({"ok":false,"error":"audio queue event size mismatch"})";
+        }
+        int n = get_int(line, "n", 256);
+        if (n < 1) n = 1;
+        if (n > 8192) n = 8192;
+        std::vector<AudioQueueEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_audio_queue_recent_copy(buf.data(), buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[320];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"sample_count\":%u,"
+                "\"sample_rate\":%u,\"queued_us\":%u,\"skip_factor\":%u,"
+                "\"bytes_queued\":%u,\"decimated\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                e.sample_count, e.sample_rate, e.queued_us, e.skip_factor,
+                e.bytes_queued, e.decimated);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
     if (cmd == "libultra_recent") {
         // Returns the last N libultra-call events from the ring in
         // librecomp. Each event: function name, caller PC ($ra),
@@ -723,6 +1243,46 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"addr":)" + std::to_string(addr) +
                R"(,"n":)" + std::to_string(n) +
                R"(,"hex":")" + hex + R"("})";
+    }
+    if (cmd == "rdram_poke") {
+        // Write N bytes to rdram at a virtual address. Companion to
+        // rdram_peek. Used to live-test runtime patches (e.g. mutate
+        // Vtx coords on a running build to check whether a proposed
+        // seam-overlap fix actually clears a visual artifact, before
+        // committing the patch to extras.c + game.toml).
+        //
+        // Args: {"addr": <vaddr>, "hex": "<hex_bytes>"}
+        //   addr: K0/K1 vaddr; physical also accepted.
+        //   hex:  even-length hex string, 1..256 bytes (matches
+        //         the encoding rdram_peek returns).
+        //
+        // Uses the same XOR-3 byte addressing as rdram_peek so the
+        // bytes round-trip identically.
+        uint32_t addr = get_uint(line, "addr", 0);
+        std::string hex = get_str(line, "hex");
+        if (hex.size() < 2 || (hex.size() & 1)) {
+            return R"({"ok":false,"error":"hex must be even-length, >=2 chars"})";
+        }
+        size_t n = hex.size() / 2;
+        if (n > 256) {
+            return R"({"ok":false,"error":"hex >256 bytes"})";
+        }
+        uint32_t paddr = addr & 0x1FFFFFFFu;
+        constexpr uint32_t kRdramSize = 8u * 1024u * 1024u;
+        if (paddr + (uint32_t)n > kRdramSize) {
+            return R"({"ok":false,"error":"oob"})";
+        }
+        uint8_t* rdram = recomp_runtime_get_rdram();
+        if (rdram == nullptr) {
+            return R"({"ok":false,"error":"rdram not yet captured"})";
+        }
+        for (size_t i = 0; i < n; i++) {
+            char hb[3] = { hex[i*2], hex[i*2+1], 0 };
+            uint8_t b = (uint8_t)std::strtoul(hb, nullptr, 16);
+            rdram[(paddr + (uint32_t)i) ^ 3] = b;
+        }
+        return R"({"ok":true,"addr":)" + std::to_string(addr) +
+               R"(,"n":)" + std::to_string(n) + R"(})";
     }
     // NOTE: rdram_scan_u32 added 2026-05-08 — needs rebuild before use.
     if (cmd == "rdram_scan_u32") {
@@ -993,7 +1553,7 @@ static std::string handle_command(const std::string& line) {
         // without any "arm + capture" timing dance. Used to capture
         // the DL feeding any visible frame (e.g. a sprite-corruption
         // repro screen) for offline GBI decoding.
-        std::string path = "F:/Projects/PokemonStadiumRecomp/build/last_run_dl.bin";
+        std::string path = "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_dl.bin";
         std::string p = get_str(line, "path");
         if (!p.empty()) path = p;
         uint32_t addr = 0, size = 0;
@@ -1006,7 +1566,7 @@ static std::string handle_command(const std::string& line) {
         return buf;
     }
     if (cmd == "tail_errlog") {
-        FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "rb");
+        FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "rb");
         if (!f) return R"({"ok":true,"errlog":""})";
         char chunk[4096]{};
         size_t n = fread(chunk, 1, sizeof(chunk) - 1, f);
@@ -1031,7 +1591,7 @@ static std::string handle_command(const std::string& line) {
         // diagnose deep stalls (e.g. attract demo blocked in an
         // OSMesgQueue wait) without having to instrument every libultra
         // primitive.
-        FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+        FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
         if (!f) return R"({"ok":false,"error":"could not open log"})";
         fprintf(f, "\n=== dump_threads ===\n");
 

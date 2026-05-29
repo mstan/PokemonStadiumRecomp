@@ -3,7 +3,7 @@ check for PERS-SZP / PRES-* magic. Validates the data-structure
 assumption that the container is a TOC for the pokemon_models
 segment with each entry being (offset_within_blob, length)."""
 
-ROM = "F:/Projects/PokemonStadiumRecomp/baserom.z64"
+ROM = "F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64"
 BUFFER_BASE = 0x00920000  # container[+0x4]
 
 # entries we peeked at runtime (offset, length):

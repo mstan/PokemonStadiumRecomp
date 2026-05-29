@@ -51,12 +51,15 @@ _experimental_*
 *.z64
 *.n64
 *.v64
+*.gb
+*.gbc
 
 # Save / dump
 *.sav
 *.srm
 *.state
 saves.txt
+transfer_pak.cfg
 tools/_derive.stderr
 tools/_splice.py
 # Build artifacts produced by tools/_decompress_*.py — regenerable from

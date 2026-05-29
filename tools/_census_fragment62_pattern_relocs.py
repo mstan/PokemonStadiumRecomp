@@ -20,9 +20,9 @@ import struct
 import sys
 from pathlib import Path
 
-ROM_PATH = Path("F:/Projects/PokemonStadiumRecomp/baserom.z64")
+ROM_PATH = Path("F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64")
 RELOC_BIN = Path(
-    "F:/Projects/PokemonStadiumRecomp/disasm/assets/us/fragments/62/"
+    "F:/Projects/n64recomp/PokemonStadiumRecomp/disasm/assets/us/fragments/62/"
     "fragment62_reloc.rodatabin.bin"
 )
 FRAGMENT62_ROM = 0x2EA8C0

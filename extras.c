@@ -33,6 +33,12 @@
  * hand-written recomp wrappers below. recomp.h is C-compatible. */
 #include "recomp.h"
 
+/* librecomp overlay-table maintenance. Releases the recompiler's
+ * section registration for a Stadium fragment id when the game clears
+ * it (Memmap_ClearFragmentMemmap), resetting section_addresses[] to the
+ * link literal. Defined in lib/N64ModernRuntime/librecomp/src/overlays.cpp. */
+extern void recomp_unregister_runtime_fragment(uint32_t id);
+
 /* Read a 32-bit big-endian value from rdram. rdram on the host
  * side stores BE words in word-swapped (per-byte XOR-3) order, so
  * to read the original big-endian word we recombine bytes via the
@@ -48,7 +54,7 @@ static void unhandled_abort(const char *kind, uint32_t pc, const char *detail) {
     /* Persistent-file copy: stderr in headless runs gets buffered and
      * the abort() can wipe it before the parent process reads. The
      * file is the source of truth for post-mortem inspection. */
-    FILE *f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    FILE *f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
     if (f) {
         fprintf(f,
             "\n=== N64Recomp UNHANDLED %s ===\n"
@@ -131,7 +137,7 @@ void recomp_unhandled_instruction(uint8_t *rdram, recomp_context *ctx,
 
 #define UNIMPL_LIBULTRA(name)                                                  \
     void name##_recomp(uint8_t *rdram, recomp_context *ctx) {                  \
-        FILE *f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a"); \
+        FILE *f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a"); \
         if (f) {                                                               \
             fprintf(f, "\n=== UNIMPLEMENTED LIBULTRA: %s ===\n", #name);       \
             fclose(f);                                                         \
@@ -147,13 +153,10 @@ void recomp_unhandled_instruction(uint8_t *rdram, recomp_context *ctx,
 
 // osEPiWriteIo is implemented in librecomp/src/pi.cpp.
 // osPfsIsPlug is implemented in librecomp/src/pak.cpp.
-UNIMPL_LIBULTRA(__osContRamWrite)
-UNIMPL_LIBULTRA(__osContRamRead)
 UNIMPL_LIBULTRA(osLeoDiskInit)
 UNIMPL_LIBULTRA(__osSetSR)
 UNIMPL_LIBULTRA(__osSetCause)
 UNIMPL_LIBULTRA(__osSetCount)
-UNIMPL_LIBULTRA(__osPfsGetStatus)
 UNIMPL_LIBULTRA(__osSetCompare)
 UNIMPL_LIBULTRA(osDpGetCounters)
 UNIMPL_LIBULTRA(rmonPrintf)
@@ -233,6 +236,13 @@ static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
 };
 static volatile uint64_t k_interesting_counts[INTERESTING_FN_COUNT];
 
+/* Voluntary-preemption fast-path entry. Declared here so we don't need
+ * to pull in C++ headers from a C TU. Defined in
+ * lib/N64ModernRuntime/ultramodern/src/scheduler_tick.cpp. Hot path is
+ * one relaxed atomic load + branch; returns immediately when no yield
+ * is pending. See scheduler_tick.hpp for the design rationale. */
+extern void ultramodern_scheduler_tick(void);
+
 void pkmnstadium_trace_entry(const char *func) {
     uint64_t idx = __atomic_fetch_add(&trace_ring_write_idx, 1, __ATOMIC_RELAXED);
     trace_ring[idx & (TRACE_RING_CAP - 1)] = func;
@@ -246,6 +256,16 @@ void pkmnstadium_trace_entry(const char *func) {
             break;
         }
     }
+
+    /* Voluntary-preemption check. Almost always returns immediately
+     * after a single relaxed atomic load. Fires the slow path only
+     * when the ultramodern host monitor has decided the current game
+     * thread has been running for >200ms without a context switch —
+     * at which point we drain pending external messages and yield to
+     * any queued thread, letting predicate-flipping threads make
+     * progress. Retires the free-battle-modal, petit-cup, and
+     * asset-pending-bypass per-site hacks. */
+    ultramodern_scheduler_tick();
 }
 
 /* Public accessor used by debug_server's "interesting_fns" command. */
@@ -258,6 +278,281 @@ const char* pkmnstadium_interesting_fn_name(int idx) {
     return k_interesting_fns[idx];
 }
 int pkmnstadium_interesting_fn_total(void) { return INTERESTING_FN_COUNT; }
+
+/* ------------------------------------------------------------------ */
+/* Memmap segment/fragment binding ring.                              */
+/*                                                                    */
+/* Always-on ring capturing every mutation of gSegments[]/gFragments[]*/
+/* in memmap.c. Built to diagnose the menu cursor/icon corruption:    */
+/* RSP segment 1 resolves icon-texture loads into a STALE/wrong       */
+/* fragment's code section (e.g. fragment 31 "transfer pak checker"   */
+/* left bound after the Game Pak Check screen, while the Poke Cup      */
+/* Registration menu reads seg1+offset as a texture). Each entry       */
+/* records (seq, kind, id, vaddr, size, caller PC, gCurrentGameState) */
+/* so the post-mortem shows the exact bind timeline across a screen    */
+/* transition: which code bound segment N to what, and whether a menu  */
+/* re-bound it or inherited a previous screen's value.                */
+/*                                                                    */
+/* Hooked at the entry of the four memmap mutators via game.toml:     */
+/*   kind 0 = Memmap_SetSegmentMap(id, vaddr, size)                   */
+/*   kind 1 = Memmap_ClearSegmentMemmap(id)                           */
+/*   kind 2 = Memmap_SetFragmentMap(id, vaddr, size)                  */
+/*   kind 3 = Memmap_ClearFragmentMemmap(id)                          */
+/* gCurrentGameState lives at vaddr 0x80075668 (phys 0x00075668). */
+struct memmap_ev {
+    uint64_t seq;
+    uint32_t kind;
+    uint32_t id;
+    uint32_t vaddr;
+    uint32_t size;
+    uint32_t caller;
+    uint32_t game_state;
+};
+#define MEMMAP_RING_CAP 2048
+static volatile struct memmap_ev s_memmap_ring[MEMMAP_RING_CAP];
+static volatile uint64_t s_memmap_seq = 0;
+
+static void memmap_ring_push(uint32_t kind, uint32_t id, uint32_t vaddr,
+                             uint32_t size, uint32_t caller, uint32_t game_state) {
+    uint64_t s = __atomic_fetch_add(&s_memmap_seq, 1, __ATOMIC_RELAXED);
+    uint32_t i = (uint32_t)(s % MEMMAP_RING_CAP);
+    s_memmap_ring[i].seq = s;
+    s_memmap_ring[i].kind = kind;
+    s_memmap_ring[i].id = id;
+    s_memmap_ring[i].vaddr = vaddr;
+    s_memmap_ring[i].size = size;
+    s_memmap_ring[i].caller = caller;
+    s_memmap_ring[i].game_state = game_state;
+}
+
+/* Segment-map events (kind 0/1) are pushed from the existing
+ * pkmnstadium_segmap_set_enter / _clear_enter handlers below — they
+ * already receive game_state and now also caller — so we do NOT add a
+ * second hook on Memmap_SetSegmentMap/ClearSegmentMemmap (one already
+ * exists at the same vram and the recompiler rejects duplicates).
+ * Only the fragment-map mutators get fresh hooks; those handlers have
+ * rdram and read gCurrentGameState from it. */
+void pkmnstadium_memmap_set_fragment(uint8_t* rdram, uint32_t id, uint32_t vaddr,
+                                     uint32_t size, uint32_t caller) {
+    memmap_ring_push(2u, id, vaddr, size, caller, MEM_LOAD_BE32(rdram, 0x00075668u));
+}
+void pkmnstadium_memmap_clear_fragment(uint8_t* rdram, uint32_t id, uint32_t caller) {
+    memmap_ring_push(3u, id, 0u, 0u, caller, MEM_LOAD_BE32(rdram, 0x00075668u));
+    /* Functional fix (not just diagnostic): mirror the game's fragment
+     * clear into the recompiler's overlay table so RELOC_HI16/LO16 for
+     * this fragment's section fall back to the link literal once it is
+     * no longer resident. Without this the stale runtime base makes
+     * fragment-id-extraction math compute a wrong (negative) id that
+     * indexes gFragments[]/gSegments[] OOB — the menu cursor/icon
+     * corruption. See recomp::overlays::unregister_runtime_fragment. */
+    recomp_unregister_runtime_fragment(id);
+}
+
+uint64_t pkmnstadium_memmap_seq(void) {
+    return __atomic_load_n(&s_memmap_seq, __ATOMIC_RELAXED);
+}
+uint32_t pkmnstadium_memmap_cap(void) { return MEMMAP_RING_CAP; }
+void pkmnstadium_memmap_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                            uint32_t* id, uint32_t* vaddr, uint32_t* size,
+                            uint32_t* caller, uint32_t* gs) {
+    uint32_t idx = i % MEMMAP_RING_CAP;
+    *seq    = s_memmap_ring[idx].seq;
+    *kind   = s_memmap_ring[idx].kind;
+    *id     = s_memmap_ring[idx].id;
+    *vaddr  = s_memmap_ring[idx].vaddr;
+    *size   = s_memmap_ring[idx].size;
+    *caller = s_memmap_ring[idx].caller;
+    *gs     = s_memmap_ring[idx].game_state;
+}
+
+/* ------------------------------------------------------------------ */
+/* Archive-load + fragment-relocate ring (cursor/icon corruption root).*/
+/*                                                                    */
+/* The memmap ring (above) PROVED the corruption: an OOB               */
+/* Memmap_SetFragmentMap(id=-15) writes into gFragments[-15], which    */
+/* aliases &gSegments[1] (gFragments base 0x800A58F0 - 15*8 =          */
+/* 0x800A5878), resetting seg 1 from the icon texture bank to          */
+/* fragment-31 CODE; the cursor then samples MIPS code -> sparkle.     */
+/* The id traces back through func_800043BC(id, Fragment*) to          */
+/* func_8000484C's `func_800043BC(archive->unk_02, frag)` — i.e. the   */
+/* fragment id is BinArchive->unk_02 (the u16 at decompressed offset   */
+/* 0x02). On real HW the same gFragments[-15] aliasing exists, so the  */
+/* shipped game cannot legitimately pass -15; therefore EITHER unk_02  */
+/* is corrupt in our build (decompression / wrong-source divergence),  */
+/* OR the relocate branch is taken when HW would take the in-place     */
+/* (unk_00 & 1) or cached (file.unk_08) branch instead.                */
+/*                                                                    */
+/* This always-on ring captures both ends of the chain so the          */
+/* post-mortem can distinguish those root causes:                      */
+/*   kind 0 = func_8000484C entry (archive consume):                   */
+/*     a=archive vaddr  b=file_number                                  */
+/*     hdr0=(unk_00<<16 | unk_02)   hdr1=unk_04 (compressed source)    */
+/*     hdr2=total_size   hdr3=num_files                                */
+/*     extra0=file[fn].offset  extra1=file[fn].size                    */
+/*     extra2=file[fn].unk_08 (decompressed-cache ptr)                 */
+/*   kind 1 = func_800043BC entry (relocate dispatch):                 */
+/*     a=id (raw s32 that indexes gFragments)  b=Fragment vaddr        */
+/*     hdr0=magic[0:4] ('FRAG')  hdr1=magic[4:8] ('MENT')              */
+/*     hdr2=relocOffset  hdr3=sizeInRam                                */
+/*                                                                    */
+/* Capturing both unk_02 (stored, hdr0&0xFFFF on kind 0) AND id        */
+/* (consumed, kind 1 a) pins whether a u16->s32 sign-extension turns a */
+/* stored 0xFFF1 into -15, vs whether the stored byte itself is wrong. */
+/* These are game.toml entry hooks, so rdram is librecomp's            */
+/* word-swapped store -> read via MEM_LOAD_BE32 (XOR-3 indexing).      */
+struct arcload_ev {
+    uint64_t seq;
+    uint32_t kind;
+    uint32_t a;
+    uint32_t b;
+    uint32_t hdr0, hdr1, hdr2, hdr3;
+    uint32_t extra0, extra1, extra2;
+    uint32_t caller;
+    uint32_t game_state;
+};
+#define ARCLOAD_RING_CAP 2048
+static volatile struct arcload_ev s_arcload_ring[ARCLOAD_RING_CAP];
+static volatile uint64_t s_arcload_seq = 0;
+
+/* Non-evicting smoking-gun: the first relocate dispatch whose fragment
+ * id is outside [0,239] (the OOB gFragments[] write), paired with the
+ * BinArchive consume frame that produced it. Kept separately so ring
+ * eviction can never lose the one event that matters. */
+static volatile int s_badfrag_captured = 0;
+static volatile struct arcload_ev s_badfrag_reloc;
+static volatile struct arcload_ev s_badfrag_aload;
+/* Per-thread last consume frame, so a synchronous relocate dispatch
+ * (func_800043BC is called from inside func_8000484C) correlates to its
+ * source archive without racing other threads. */
+static __thread struct arcload_ev s_last_aload;
+static __thread int s_have_last_aload = 0;
+
+static uint64_t arcload_ring_push(uint32_t kind, uint32_t a, uint32_t b,
+                                  uint32_t h0, uint32_t h1, uint32_t h2, uint32_t h3,
+                                  uint32_t e0, uint32_t e1, uint32_t e2,
+                                  uint32_t caller, uint32_t gs) {
+    uint64_t s = __atomic_fetch_add(&s_arcload_seq, 1, __ATOMIC_RELAXED);
+    uint32_t i = (uint32_t)(s % ARCLOAD_RING_CAP);
+    s_arcload_ring[i].seq = s;
+    s_arcload_ring[i].kind = kind;
+    s_arcload_ring[i].a = a;
+    s_arcload_ring[i].b = b;
+    s_arcload_ring[i].hdr0 = h0;
+    s_arcload_ring[i].hdr1 = h1;
+    s_arcload_ring[i].hdr2 = h2;
+    s_arcload_ring[i].hdr3 = h3;
+    s_arcload_ring[i].extra0 = e0;
+    s_arcload_ring[i].extra1 = e1;
+    s_arcload_ring[i].extra2 = e2;
+    s_arcload_ring[i].caller = caller;
+    s_arcload_ring[i].game_state = gs;
+    return s;
+}
+
+uint64_t pkmnstadium_arcload_seq(void) {
+    return __atomic_load_n(&s_arcload_seq, __ATOMIC_RELAXED);
+}
+uint32_t pkmnstadium_arcload_cap(void) { return ARCLOAD_RING_CAP; }
+void pkmnstadium_arcload_get(uint32_t i, uint64_t* seq, uint32_t* kind,
+                             uint32_t* a, uint32_t* b,
+                             uint32_t* h0, uint32_t* h1, uint32_t* h2, uint32_t* h3,
+                             uint32_t* e0, uint32_t* e1, uint32_t* e2,
+                             uint32_t* caller, uint32_t* gs) {
+    uint32_t idx = i % ARCLOAD_RING_CAP;
+    *seq    = s_arcload_ring[idx].seq;
+    *kind   = s_arcload_ring[idx].kind;
+    *a      = s_arcload_ring[idx].a;
+    *b      = s_arcload_ring[idx].b;
+    *h0     = s_arcload_ring[idx].hdr0;
+    *h1     = s_arcload_ring[idx].hdr1;
+    *h2     = s_arcload_ring[idx].hdr2;
+    *h3     = s_arcload_ring[idx].hdr3;
+    *e0     = s_arcload_ring[idx].extra0;
+    *e1     = s_arcload_ring[idx].extra1;
+    *e2     = s_arcload_ring[idx].extra2;
+    *caller = s_arcload_ring[idx].caller;
+    *gs     = s_arcload_ring[idx].game_state;
+}
+
+/* Returns 1 if a bad-id relocate was captured; fills the relocate event
+ * plus the source-archive (consume) event it was correlated to. */
+int pkmnstadium_arcload_badfrag(uint32_t* r_id, uint32_t* r_frag,
+                                uint32_t* r_magic0, uint32_t* r_magic1,
+                                uint32_t* r_relocoff, uint32_t* r_sizeram,
+                                uint32_t* r_caller, uint32_t* r_gs,
+                                uint32_t* a_archive, uint32_t* a_unk00unk02,
+                                uint32_t* a_unk04, uint32_t* a_total,
+                                uint32_t* a_nfiles, uint32_t* a_filenum,
+                                uint32_t* a_foff, uint32_t* a_fsize,
+                                uint32_t* a_funk08, uint32_t* a_caller) {
+    if (!__atomic_load_n(&s_badfrag_captured, __ATOMIC_ACQUIRE)) return 0;
+    *r_id       = s_badfrag_reloc.a;
+    *r_frag     = s_badfrag_reloc.b;
+    *r_magic0   = s_badfrag_reloc.hdr0;
+    *r_magic1   = s_badfrag_reloc.hdr1;
+    *r_relocoff = s_badfrag_reloc.hdr2;
+    *r_sizeram  = s_badfrag_reloc.hdr3;
+    *r_caller   = s_badfrag_reloc.caller;
+    *r_gs       = s_badfrag_reloc.game_state;
+    *a_archive     = s_badfrag_aload.a;
+    *a_unk00unk02  = s_badfrag_aload.hdr0;
+    *a_unk04       = s_badfrag_aload.hdr1;
+    *a_total       = s_badfrag_aload.hdr2;
+    *a_nfiles      = s_badfrag_aload.hdr3;
+    *a_filenum     = s_badfrag_aload.b;
+    *a_foff        = s_badfrag_aload.extra0;
+    *a_fsize       = s_badfrag_aload.extra1;
+    *a_funk08      = s_badfrag_aload.extra2;
+    *a_caller      = s_badfrag_aload.caller;
+    return 1;
+}
+
+/* func_800043BC(s32 id, Fragment* addr) entry. id == archive->unk_02 is
+ * forwarded to Memmap_RelocateFragment -> Memmap_SetFragmentMap; an id
+ * outside [0,239] is the OOB write that clobbers gSegments[]. */
+void pkmnstadium_relocfrag_enter(uint8_t* rdram, uint32_t id,
+                                 uint32_t fragment, uint32_t caller) {
+    uint32_t fo = fragment & 0x7FFFFFu;
+    uint32_t m0 = 0, m1 = 0, ro = 0, sr = 0;
+    if (fragment >= 0x80000000u && (fo + 0x20u) <= 0x800000u) {
+        m0 = MEM_LOAD_BE32(rdram, fo + 0x08u);  /* magic[0:4] -> 'FRAG' */
+        m1 = MEM_LOAD_BE32(rdram, fo + 0x0Cu);  /* magic[4:8] -> 'MENT' */
+        ro = MEM_LOAD_BE32(rdram, fo + 0x14u);  /* relocOffset */
+        sr = MEM_LOAD_BE32(rdram, fo + 0x1Cu);  /* sizeInRam   */
+    }
+    uint32_t gs = MEM_LOAD_BE32(rdram, 0x00075668u);
+    arcload_ring_push(1u, id, fragment, m0, m1, ro, sr, 0u, 0u, 0u, caller, gs);
+
+    if (((int32_t)id < 0 || id >= 240u) &&
+        !__atomic_load_n(&s_badfrag_captured, __ATOMIC_ACQUIRE)) {
+        s_badfrag_reloc.kind = 1u;
+        s_badfrag_reloc.a = id;
+        s_badfrag_reloc.b = fragment;
+        s_badfrag_reloc.hdr0 = m0;
+        s_badfrag_reloc.hdr1 = m1;
+        s_badfrag_reloc.hdr2 = ro;
+        s_badfrag_reloc.hdr3 = sr;
+        s_badfrag_reloc.caller = caller;
+        s_badfrag_reloc.game_state = gs;
+        if (s_have_last_aload) {
+            s_badfrag_aload = s_last_aload;
+        } else {
+            s_badfrag_aload.a = 0u;  /* archive unknown */
+        }
+        __atomic_store_n(&s_badfrag_captured, 1, __ATOMIC_RELEASE);
+        fprintf(stderr,
+            "[arcload] BAD FRAGMENT id=0x%08X (%d) frag=0x%08X magic=%c%c%c%c%c%c%c%c "
+            "sizeInRam=0x%X  <- archive=0x%08X unk_00=0x%04X unk_02=0x%04X "
+            "num_files=%u unk_04=0x%08X file=%d\n",
+            id, (int32_t)id, fragment,
+            (char)((m0>>24)&0xFF),(char)((m0>>16)&0xFF),(char)((m0>>8)&0xFF),(char)(m0&0xFF),
+            (char)((m1>>24)&0xFF),(char)((m1>>16)&0xFF),(char)((m1>>8)&0xFF),(char)(m1&0xFF),
+            sr, s_badfrag_aload.a, (s_badfrag_aload.hdr0>>16)&0xFFFF,
+            s_badfrag_aload.hdr0&0xFFFF, s_badfrag_aload.hdr3, s_badfrag_aload.hdr1,
+            (int32_t)s_badfrag_aload.b);
+        fflush(stderr);
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* func_80019D18 lookup-or-allocate diagnostic.                       */
@@ -959,51 +1254,11 @@ void pkmnstadium_pers_enter(uint32_t a0, uint32_t a1) {
     s_pers_sp++;
 }
 
-/* Pre-Util_InitMainPools hook: activate Stadium's expansion-pak
- * code path so it allocates the 6 MiB main_pool instead of the
- * 4 MiB one. See game.toml's hook on Util_InitMainPools entry.
- *
- * Why this is needed:
- *   Util_InitMainPools chooses POOL_END_4MB unless BOTH
- *   gExpansionRAMStart > 0 AND osMemSize > 0x600000. Our runtime
- *   correctly reports osMemSize = 8 MiB, but `gExpansionRAMStart`
- *   is Stadium-specific (in BSS, init to 0) and has NO writer
- *   in the recompiled binary — the 6 MiB path is unreachable
- *   dead code on a freshly-booted Stadium image. Real hardware
- *   doesn't hit this because Stadium's working set fits in the
- *   4 MiB pool there; in our runtime, marginally larger
- *   allocations from extra recompiler overhead push us past
- *   the 3-MiB-usable cap and the title-screen pokemon_models
- *   loader hits an alloc failure.
- *
- * `gExpansionRAMStart` is at 0x80068B90. We set it to 1 BEFORE
- * Util_InitMainPools' first instruction reads it — that takes
- * Stadium down the 6 MiB code path that the original devs wrote
- * but evidently never tested.
- *
- * This is Stadium-specific by symbol name, but the pattern
- * applies to many N64 games: an expansion-pak global that
- * gates a larger memory region is sometimes left zeroed because
- * the original developer relied on a side effect that doesn't
- * carry over to the recomp environment.
- */
-void pkmnstadium_force_expansion_ram(uint8_t* rdram) {
-    /* gExpansionRAMStart at kseg0 0x80068B90 → physical 0x00068B90.
-     * MEM_LOAD_BE32 / store via XOR-3 byte order. */
-    uint32_t paddr = 0x00068B90u;
-    static int s_logged = 0;
-    if (!s_logged) {
-        s_logged = 1;
-        rdram[(paddr + 0) ^ 3] = 0;
-        rdram[(paddr + 1) ^ 3] = 0;
-        rdram[(paddr + 2) ^ 3] = 0;
-        rdram[(paddr + 3) ^ 3] = 1;
-        fprintf(stderr,
-            "[pool] forced gExpansionRAMStart=1 to activate "
-            "POOL_END_6MB path in Util_InitMainPools\n");
-        fflush(stderr);
-    }
-}
+/* DELETED 2026-05-23: pkmnstadium_force_expansion_ram was a hook on
+ * Util_InitMainPools entry that wrote gExpansionRAMStart=1 once before
+ * the global was read. Moved to src/main/main.cpp's GameEntry
+ * on_init_callback — runtime-init facts belong at the game-init layer,
+ * not as a recompile-time hook on a specific MIPS function. */
 
 /* main_pool_alloc(size, side) diagnostic. Logs every call's
  * (size, result) plus the running sMemPool.available so we can
@@ -1356,72 +1611,14 @@ void pkmnstadium_cri_exit(uint32_t cur_buttondown_via_cont0_word, uint32_t butto
  * fragment buckets (single-variant) get the game's native answer
  * untouched.
  */
-extern int32_t recomp_resolve_via_data_context(uint32_t link_vaddr,
-                                                  uint32_t data_ctx_addr);
-extern int recomp_addr_in_loaded_variant(uint32_t bucket, uint32_t addr);
-extern int32_t recomp_resolve_synthetic_fragment(uint32_t addr);
-
-static __thread uint32_t s_memmap_get_input_stack[16];
-static __thread int s_memmap_get_sp = 0;
-
-void pkmnstadium_memmap_get_enter(uint32_t input) {
-    if (s_memmap_get_sp < 16) s_memmap_get_input_stack[s_memmap_get_sp] = input;
-    s_memmap_get_sp++;
-}
-
-uint32_t pkmnstadium_memmap_get_exit(uint32_t game_result, uint32_t data_ctx) {
-    s_memmap_get_sp--;
-    int idx = (s_memmap_get_sp >= 0 && s_memmap_get_sp < 16) ? s_memmap_get_sp : 0;
-    uint32_t input = s_memmap_get_input_stack[idx];
-
-    /* Path 2 synthetic resolver (highest priority). If the input is in
-     * the per-variant synthetic-vram pool (0xA0000000..0xC0000000), it
-     * was emitted by a recompiled pattern variant whose section.ram_addr
-     * we assigned a unique synthetic identity. Resolve via the parallel
-     * recomp_synthetic_fragments[] table, bypassing the game's native
-     * gFragments[id] entirely. The native game path returned the input
-     * unchanged here (game_result == input) because the input is outside
-     * the 0x81000000..0x90000000 range the game recognizes — we just
-     * substitute our resolution.
-     *
-     * recomp_resolve_synthetic_fragment aborts deterministically if the
-     * slot is empty. Returning 0 here means "addr wasn't in the
-     * synthetic pool", in which case we fall through to the existing
-     * 0x8FF00000-bucket data-context logic. */
-    {
-        int32_t synth = recomp_resolve_synthetic_fragment(input);
-        if (synth != 0) {
-            return (uint32_t)synth;
-        }
-    }
-
-    /* Bounded scope: only the known-ambiguous 0x8FF00000 bucket. */
-    if ((input & 0xFFF00000u) != 0x8FF00000u) return game_result;
-    if (input < 0x81000000u || input >= 0x90000000u) return game_result;
-
-    /* Step 1: trust the game's answer when it lands inside a registered
-     * variant of this bucket. */
-    if (recomp_addr_in_loaded_variant(input & 0xFFF00000u, game_result)) {
-        return game_result;
-    }
-
-    /* Step 2: data-context resolution. Walker's current data pointer
-     * lives in the variant currently being walked. */
-    int32_t resolved = recomp_resolve_via_data_context(input, data_ctx);
-
-    static volatile int s_n_logged = 0;
-    int log_idx = __atomic_fetch_add(&s_n_logged, 1, __ATOMIC_RELAXED);
-    if (log_idx < 16) {
-        fprintf(stderr,
-            "[memmap-ctx] in=0x%08X game-result=0x%08X "
-            "data-ctx=0x%08X resolved=0x%08X\n",
-            input, game_result, data_ctx, (uint32_t)resolved);
-        fflush(stderr);
-    }
-
-    if (resolved != 0) return (uint32_t)resolved;
-    return game_result;
-}
+/* DELETED 2026-05-23: pkmnstadium_memmap_get_enter / pkmnstadium_memmap_get_exit
+ * were Stadium-specific bridges from Memmap_GetFragmentVaddr to the
+ * data-context resolution helpers in librecomp. Their orchestration
+ * logic (TLS-stack input save at entry + 3-step resolve at exit) was
+ * promoted to librecomp on 2026-05-23 as librecomp_fragment_input_push
+ * / librecomp_fragment_resolve_exit — the game.toml hooks now call
+ * those directly. Pattern is generic across any game with pattern-bucket
+ * fragments; see lib/N64ModernRuntime/librecomp/src/overlays.cpp. */
 
 /* Segment-map setter/clear diagnostic.
  *
@@ -1469,9 +1666,15 @@ static void pkmnstadium_segmap_dump_host_backtrace(void) {}
 #endif
 
 void pkmnstadium_segmap_set_enter(uint32_t id, uint32_t vaddr,
-                                  uint32_t size, uint32_t game_state) {
+                                  uint32_t size, uint32_t game_state,
+                                  uint32_t caller) {
     static int s_n = 0;
     static int s_n_id0 = 0;
+    /* Push into the queryable memmap ring (kind 0), EXCEPT id=0 which is
+     * the RDRAM identity remap that fires every frame (~70/s) — capturing
+     * it would evict the meaningful id>=1 binds from the 2048-entry ring
+     * within ~30s. id=0 is never a texture-asset segment anyway. */
+    if (id != 0u) memmap_ring_push(0u, id, vaddr, size, caller, game_state);
     s_n++;
     /* id=0 (RDRAM identity remap) fires every frame; cap separately
      * so it doesn't flood out the interesting non-id=0 events. */
@@ -1508,8 +1711,10 @@ void pkmnstadium_asset_load_enter(uint32_t id, uint32_t rom_start,
     fflush(stderr);
 }
 
-void pkmnstadium_segmap_clear_enter(uint32_t id, uint32_t game_state) {
+void pkmnstadium_segmap_clear_enter(uint32_t id, uint32_t game_state,
+                                    uint32_t caller) {
     static int s_n = 0;
+    memmap_ring_push(1u, id, 0u, 0u, caller, game_state);
     s_n++;
     fprintf(stderr,
         "[segmap-clear] #%d id=%u gs=0x%08X%s\n",
@@ -1569,18 +1774,58 @@ static __thread uint32_t s_aload_arg_archive[8];
 static __thread uint32_t s_aload_arg_file_number[8];
 static __thread int s_aload_sp = 0;
 
-void pkmnstadium_aload_enter(uint32_t archive, uint32_t file_number) {
+void pkmnstadium_aload_enter(uint8_t* rdram, uint32_t archive,
+                             uint32_t file_number, uint32_t caller) {
     if (s_aload_sp < 8) {
         s_aload_arg_archive[s_aload_sp] = archive;
         s_aload_arg_file_number[s_aload_sp] = file_number;
     }
     s_aload_sp++;
+
+    /* Read the BinArchive header (and the indexed BinArchiveFile entry)
+     * straight from RDRAM. `archive` is a kseg0 vaddr; mask to the 8 MiB
+     * physical offset and bounds-check each read. */
+    uint32_t ao = archive & 0x7FFFFFu;
+    uint32_t raw = 0, unk04 = 0, total = 0, nfiles = 0;
+    uint32_t foff = 0, fsz = 0, funk08 = 0;
+    if (archive >= 0x80000000u && (ao + 0x10u) <= 0x800000u) {
+        raw    = MEM_LOAD_BE32(rdram, ao + 0x00u);  /* unk_00<<16 | unk_02 */
+        unk04  = MEM_LOAD_BE32(rdram, ao + 0x04u);  /* compressed source   */
+        total  = MEM_LOAD_BE32(rdram, ao + 0x08u);
+        nfiles = MEM_LOAD_BE32(rdram, ao + 0x0Cu);
+        if ((int32_t)file_number >= 0 && file_number < nfiles) {
+            uint32_t feo = ao + 0x10u + (file_number * 0x10u);
+            if ((feo + 0x10u) <= 0x800000u) {
+                foff   = MEM_LOAD_BE32(rdram, feo + 0x00u);
+                fsz    = MEM_LOAD_BE32(rdram, feo + 0x04u);
+                funk08 = MEM_LOAD_BE32(rdram, feo + 0x08u);  /* decompressed cache */
+            }
+        }
+    }
+    uint32_t gs = MEM_LOAD_BE32(rdram, 0x00075668u);
+    uint64_t s = arcload_ring_push(0u, archive, file_number, raw, unk04,
+                                   total, nfiles, foff, fsz, funk08, caller, gs);
+
+    /* Remember this frame so a synchronous relocate dispatch from inside
+     * this func_8000484C call (the FRAGMENT-magic branch) can be paired
+     * with the archive that produced it. */
+    s_last_aload.seq = s; s_last_aload.kind = 0u;
+    s_last_aload.a = archive; s_last_aload.b = file_number;
+    s_last_aload.hdr0 = raw; s_last_aload.hdr1 = unk04;
+    s_last_aload.hdr2 = total; s_last_aload.hdr3 = nfiles;
+    s_last_aload.extra0 = foff; s_last_aload.extra1 = fsz;
+    s_last_aload.extra2 = funk08; s_last_aload.caller = caller;
+    s_last_aload.game_state = gs;
+    s_have_last_aload = 1;
+
     static int s_n = 0;
     s_n++;
     if (s_n <= 96) {
         fprintf(stderr,
-            "[aload] enter archive=0x%08X file_number=%d depth=%d\n",
-            archive, (int32_t)file_number, s_aload_sp);
+            "[aload] enter archive=0x%08X file=%d depth=%d unk_00=0x%04X "
+            "unk_02=0x%04X num_files=%u unk_04=0x%08X\n",
+            archive, (int32_t)file_number, s_aload_sp,
+            (raw >> 16) & 0xFFFFu, raw & 0xFFFFu, nfiles, unk04);
         fflush(stderr);
     }
 }
@@ -1857,170 +2102,32 @@ void pkmnstadium_geo_render_call_log(uint32_t arg0_node, uint32_t arg1_seg,
     }
 }
 
-/* Stop all libnaudio voices by clearing each voice's unk_038
- * (sequence-stream pointer). func_8003AD58 (the per-voice synth)
- * skips voices with unk_038 == NULL, so this is sufficient to
- * prevent the synth from dereferencing the voices' unk_090 bank
- * pointer.
- *
- * Hooked at func_8004FF20 entry — fragment36 calls func_8004FF20
- * right before main_pool_pop_state('TITL'), which frees the 1 MiB
- * SoundBank buffer at fragment36.c:351. Without this, the synth
- * keeps voicing the freed bank across the state transition and
- * the audio thread crashes.
- *
- * Why not just call func_8004FCD8 (the libnaudio audio-stop)?
- * Because that's a recompiled function and hooks can't easily
- * cross-call recompiled funcs. Direct rdram writes do the same job.
- *
- * D_800FC7D0 (vaddr 0x800FC7D0) holds a pointer to the voice array;
- * D_800FC7CC (vaddr 0x800FC7CC) holds the voice count;
- * sizeof(unk_D_800FC7D0) = 0x150; unk_038 sits at offset 0x38.
- */
-void pkmnstadium_audio_stop_voices(uint8_t* rdram) {
-    uint32_t count_paddr = 0x000FC7CCu;
-    uint32_t count =
-        ((uint32_t)rdram[(count_paddr + 0) ^ 3] << 24) |
-        ((uint32_t)rdram[(count_paddr + 1) ^ 3] << 16) |
-        ((uint32_t)rdram[(count_paddr + 2) ^ 3] <<  8) |
-        ((uint32_t)rdram[(count_paddr + 3) ^ 3]);
-    uint32_t arr_ptr_paddr = 0x000FC7D0u;
-    uint32_t arr_vaddr =
-        ((uint32_t)rdram[(arr_ptr_paddr + 0) ^ 3] << 24) |
-        ((uint32_t)rdram[(arr_ptr_paddr + 1) ^ 3] << 16) |
-        ((uint32_t)rdram[(arr_ptr_paddr + 2) ^ 3] <<  8) |
-        ((uint32_t)rdram[(arr_ptr_paddr + 3) ^ 3]);
-    if (arr_vaddr == 0 || arr_vaddr < 0x80000000u || arr_vaddr >= 0x80800000u) {
-        fprintf(stderr,
-            "[audio-stop] D_800FC7D0 array ptr out of range (0x%08X), skipped\n",
-            arr_vaddr);
-        fflush(stderr);
-        return;
-    }
-    if (count == 0 || count > 256) {
-        fprintf(stderr,
-            "[audio-stop] D_800FC7CC voice count out of range (%u), skipped\n",
-            count);
-        fflush(stderr);
-        return;
-    }
-    uint32_t arr_paddr = arr_vaddr & 0x1FFFFFFFu;
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t voice_paddr = arr_paddr + i * 0x150u;
-        for (int b = 0; b < 4; b++) {
-            rdram[(voice_paddr + 0x38 + b) ^ 3] = 0;
-        }
-    }
-    static int s_logged = 0;
-    if (!s_logged) {
-        s_logged = 1;
-        fprintf(stderr,
-            "[audio-stop] cleared unk_038 for %u voice(s) at "
-            "0x%08X (size 0x150 each) — synth will skip these "
-            "until the next sequence-load reassigns them\n",
-            count, arr_vaddr);
-        fflush(stderr);
-    }
-
-    /* Stadium-side stop above is necessary but not sufficient: the
-     * libnaudio synth maintains its OWN voice pool (N_PVoice array)
-     * via n_syn->auxBus->sources. Even after Stadium stops feeding
-     * the high-level voice, those low-level N_PVoices keep getting
-     * pulled by n_alAuxBusPull → n_alEnvmixerPull → n_alAdpcmPull
-     * because their em_motion is still AL_PLAYING. n_alAdpcmPull
-     * then reads f->dc_table and friends from soon-to-be-popped
-     * pool memory, computes overflow nOver of ~3.7B samples, emits
-     * a CLEARBUFF cmd whose count wraps DMEM and zeroes the dispatch
-     * table — the post-title audio bug 2026-05-06.
-     *
-     * Walk libnaudio's voice pool and force em_motion=AL_STOPPED so
-     * n_alEnvmixerPull's "if (em_motion != AL_PLAYING) return" gate
-     * kicks them out before any wavetable deref.
-     *
-     * Field offsets (verified against recompiled n_alAuxBusPull and
-     * the N_PVoice struct in n_synthInternals.h):
-     *   n_syn at vaddr 0x80078584 (pointer-to-struct, NOT inline)
-     *     +0x34 auxBus*
-     *   N_ALAuxBus
-     *     +0x14 sourceCount (s32)
-     *     +0x1C sources (N_PVoice**)
-     *   N_PVoice
-     *     +0x84 em_motion (s32; 0 = AL_STOPPED, 1 = AL_PLAYING)
-     */
-    {
-        uint32_t n_syn_var_paddr = 0x00078584u;
-        uint32_t n_syn_vaddr = MEM_LOAD_BE32(rdram, n_syn_var_paddr);
-        if (n_syn_vaddr < 0x80000000u || n_syn_vaddr >= 0x80800000u) {
-            fprintf(stderr,
-                "[audio-stop] n_syn pointer not in RDRAM (0x%08X), "
-                "libnaudio voices not stopped\n", n_syn_vaddr);
-            fflush(stderr);
-            return;
-        }
-        uint32_t n_syn_paddr = n_syn_vaddr & 0x1FFFFFFFu;
-        uint32_t auxBus_vaddr = MEM_LOAD_BE32(rdram, n_syn_paddr + 0x34);
-        if (auxBus_vaddr < 0x80000000u || auxBus_vaddr >= 0x80800000u) {
-            fprintf(stderr,
-                "[audio-stop] auxBus ptr not in RDRAM (0x%08X), skipped\n",
-                auxBus_vaddr);
-            fflush(stderr);
-            return;
-        }
-        uint32_t auxBus_paddr = auxBus_vaddr & 0x1FFFFFFFu;
-        uint32_t source_count = MEM_LOAD_BE32(rdram, auxBus_paddr + 0x14);
-        uint32_t sources_vaddr = MEM_LOAD_BE32(rdram, auxBus_paddr + 0x1C);
-        if (source_count == 0 || source_count > 64 ||
-            sources_vaddr < 0x80000000u || sources_vaddr >= 0x80800000u) {
-            fprintf(stderr,
-                "[audio-stop] auxBus sourceCount=%u sources=0x%08X "
-                "(skipping libnaudio stop)\n",
-                source_count, sources_vaddr);
-            fflush(stderr);
-            return;
-        }
-        uint32_t sources_paddr = sources_vaddr & 0x1FFFFFFFu;
-        uint32_t stopped = 0;
-        for (uint32_t i = 0; i < source_count; i++) {
-            uint32_t pvoice_vaddr = MEM_LOAD_BE32(rdram, sources_paddr + i*4);
-            if (pvoice_vaddr < 0x80000000u || pvoice_vaddr >= 0x80800000u) continue;
-            uint32_t pvoice_paddr = pvoice_vaddr & 0x1FFFFFFFu;
-            /* Write 0 (AL_STOPPED) to em_motion at +0x84. */
-            for (int b = 0; b < 4; b++) {
-                rdram[(pvoice_paddr + 0x84 + b) ^ 3] = 0;
-            }
-            stopped++;
-        }
-        static int s_lib_logged = 0;
-        if (!s_lib_logged) {
-            s_lib_logged = 1;
-            fprintf(stderr,
-                "[audio-stop] libnaudio: zeroed em_motion on %u of %u "
-                "N_PVoice(s) via n_syn->auxBus->sources at 0x%08X\n",
-                stopped, source_count, sources_vaddr);
-            fflush(stderr);
-        }
-    }
-}
-
-/* Thin glue for the generic libnaudio voice UAF protector in librecomp.
+/* Thin glue for the generic voice-UAF protector in librecomp.
  *
  * Hooked at main_pool_pop_state entry. Reads sMemPool to compute the
- * about-to-be-freed range [saved.L, current.L), then forwards to
- * librecomp_audio_uaf_silence_voices_in_range which walks the libnaudio
- * voice array (registered at startup in main.cpp) and zeros em_motion
- * on any voice whose dc_table falls in the freed range.
+ * about-to-be-freed range [saved.L, current.L), then forwards to:
+ *   - librecomp_audio_uaf_silence_voices_in_range: libnaudio side
+ *     (walks N_ALSynth's pAllocList + pLameList, range-checks dc_table)
+ *   - librecomp_audio_uaf_silence_secondary_in_range: Stadium-side
+ *     (walks D_800FC7D0 array, chains through unk_090 -> +0x2C to
+ *      reach the wavetable-pointer-array base, range-checks it)
+ *
+ * Both layouts are registered at startup in src/main/main.cpp. This
+ * single hook covers any pool pop that would orphan an active voice's
+ * wavetable — at either the libnaudio level OR the Stadium-side synth
+ * level. Retires the prior per-scene func_8004FF20 hook (was:
+ * pkmnstadium_audio_stop_voices, deleted) which stopped Stadium voices
+ * unconditionally at one specific cleanup; the generic range-checked
+ * approach handles every pop, not just fragment36's.
  *
  * sMemPool layout (vaddr 0x800A6070, see pkmnstadium_pool_pop_log):
  *   +0x28 listHeadL (current bump pointer, low side)
  *   +0x30 mainState* (pointer to MainPoolState)
  * MainPoolState (whatever state_v points to):
- *   +0x04 listHeadL (saved low-side bump pointer to pop back to)
- *
- * Single hook subsumes per-scene voice-stop hooks (e.g. the post-title
- * fragment36 hook at func_8004FF20) for any pop that would orphan an
- * active voice's wavetable. Stays out of the way otherwise — silenced=0
- * is logged-quietly inside the librecomp helper. */
+ *   +0x04 listHeadL (saved low-side bump pointer to pop back to) */
 extern int librecomp_audio_uaf_silence_voices_in_range(
+    uint8_t* rdram, uint32_t start_vaddr, uint32_t end_vaddr);
+extern int librecomp_audio_uaf_silence_secondary_in_range(
     uint8_t* rdram, uint32_t start_vaddr, uint32_t end_vaddr);
 
 void pkmnstadium_pool_pop_silence_voices(uint8_t* rdram) {
@@ -2034,6 +2141,7 @@ void pkmnstadium_pool_pop_silence_voices(uint8_t* rdram) {
     if (saved_L < 0x80000000u || saved_L >= 0x80800000u) return;
     if (saved_L >= cur_L) return;  /* nothing to free */
     librecomp_audio_uaf_silence_voices_in_range(rdram, saved_L, cur_L);
+    librecomp_audio_uaf_silence_secondary_in_range(rdram, saved_L, cur_L);
 }
 
 /* miniEkansInitCam entry diagnostic.
@@ -2192,132 +2300,3 @@ uint32_t pkmnstadium_trace_capacity(void) {
     return TRACE_RING_CAP;
 }
 
-/* ====================================================================
- * PSR_TEMP_PATCH: free-battle-modal-softlock — see TEMP_PATCHES.md
- *
- * Stadium-specific Option B fix for func_8000771C cooperative-scheduler
- * deadlock. See game.toml [patches].ignored entry for full context.
- *
- * Original `func_8000771C` is a tight predicate-only busy-wait:
- *
- *   void func_8000771C(void) {
- *       while (func_80001C90() == 0) {}
- *   }
- *
- * On real N64, hardware DP/SP/AI/VI interrupts preempt the busy-wait
- * to deliver completion events that eventually flip the predicate.
- * ultramodern's cooperative scheduler can't preempt — so when the game
- * thread runs this loop, the audio scheduler thread (priority 3, lower
- * than Game_Thread) sits in running_queue waiting for its turn that
- * never comes. external_messages accumulate undrained. The DONE that
- * would flip D_800846C0.queue.validCount > 0 (the loop exit
- * condition) never gets posted.
- *
- * Workaround: between predicate checks, temporarily lower this
- * thread's priority below the audio scheduler's so check_running_queue
- * (called by yield_self_1ms) actually swaps to the audio scheduler.
- * Once it runs, it drains external_messages, dispatches msg=0x65
- * (DP-complete) → func_80005148 → func_80004C68 → osSendMesg DONE
- * to D_800846C0.queue, flipping validCount. We then resume, see the
- * predicate satisfied, restore priority, and return.
- *
- * yield_self_1ms also calls wait_for_external_message_timed which
- * directly drains pending externals via do_send under cooperative
- * single-current-game-thread invariants — safe to call from here
- * because we ARE the cooperatively-current thread.
- *
- * This is the targeted Option B fix; the proper Option C runtime fix
- * lives in N64ModernRuntime/ultramodern (a queue-ops mutex + external-
- * pump host thread) and will obsolete this entry once shipped.
- * See memory: project_free_battle_modal_softlock_2026_05_08.
- * ==================================================================== */
-
-/* Recompiler-generated wrapper for the original predicate body
- * (func_80001C90 reads D_80083CA0.unk_AA0 and D_800846C0.queue.validCount,
- * returns 1 if predicate satisfied). */
-extern void func_80001C90(uint8_t* rdram, recomp_context* ctx);
-
-/* ultramodern primitives. Marked extern "C" in their .cpp definitions
- * so they're callable from this C translation unit. RDRAM_ARG / NULLPTR
- * macros expand to the corresponding C types per ultra64.h. */
-extern void osSetThreadPri(uint8_t* rdram, int32_t /*PTR(OSThread)*/ thread, int32_t pri);
-extern int32_t osGetThreadPri(uint8_t* rdram, int32_t /*PTR(OSThread)*/ thread);
-extern void yield_self_1ms(uint8_t* rdram);
-
-/* Note: NOT named with _recomp suffix — user-config ignored functions
- * (game.toml [patches].ignored) only mark `ignored = true` and skip
- * emission; they don't get renamed. Callers in generated/*.c still
- * reference the bare `func_8000771C` symbol, so our replacement
- * matches that name. (Distinct from the N64Recomp::ignored_funcs
- * built-in set which DOES rename, used for libultra translation.) */
-void func_8000771C(uint8_t* rdram, recomp_context* ctx) {
-    /* Save current priority, drop below audio scheduler (priority 3)
-     * so check_running_queue swaps to it on yield. Stadium creates
-     * Game_Thread with a higher priority; without lowering, the swap
-     * never happens. */
-    int32_t saved_pri = osGetThreadPri(rdram, 0 /* PTR(OSThread) NULL = self */);
-    osSetThreadPri(rdram, 0, 1);
-
-    while (1) {
-        func_80001C90(rdram, ctx);
-        /* func_80001C90 returns its result in $v0 = ctx->r2.
-         * Predicate satisfied (any non-zero) → exit loop. */
-        if (ctx->r2 != 0) {
-            break;
-        }
-        /* Yield: drain external_messages (delivers any pending DP/SP/
-         * VI completions to their target queues, possibly waking
-         * blocked recv'ers) + check_running_queue (swap to higher-
-         * priority queued thread; with our priority dropped to 1,
-         * any other thread queued will preempt us). */
-        yield_self_1ms(rdram);
-    }
-
-    osSetThreadPri(rdram, 0, saved_pri);
-}
-
-/* ====================================================================
- * PSR_TEMP_PATCH: petit-cup-softlock — see TEMP_PATCHES.md
- *
- * Stadium-specific Option B fix for the cooperative-scheduler deadlock
- * inside func_80003680 (JPEG decoder). After several pages of work
- * loading quantization/Huffman tables and pixel buffers, func_80003680
- * busy-waits on the same predicate as func_8000771C:
- *
- *     L_80003770:
- *         func_80001C90();          // 0x80003770 jal 0x80001C90
- *         if (v0 == 0) goto L_80003770;  // 0x80003778 beq $v0,$0,L
- *
- * The loop is INLINED inside func_80003680 (not wrappable like
- * func_8000771C). Replacing the whole 200+-line JPEG function in
- * extras.c is brittle, so we attach a [[patches.hook]] hook in
- * game.toml that fires before the BEQ at vram 0x80003778 and runs
- * this helper. The helper inspects ctx->r2 (the func_80001C90 return
- * in $v0); if non-zero, we're about to exit the loop and the helper
- * is a no-op. If zero, we're about to loop back — we drop priority
- * below the audio scheduler (priority 3), yield_self_1ms (drains
- * externals + swaps to highest-pri queued), then restore priority.
- *
- * Reproduced symptom (pre-fix): selecting Petit Cup at Free Battle's
- * cup-confirm screen freezes Game_Thread inside this loop; thread
- * dump shows pkmnstadium_trace_entry → func_80001C90 → func_80003680
- * → func_80003C80 → func_80003DC4 (Stadium asset loader chain).
- *
- * Same proper-fix layer as func_8000771C: a host-monitor "no context-
- * switch in N seconds" flag in N64ModernRuntime/ultramodern would
- * obsolete both per-site patches in one move.
- * See memory: project_petit_cup_softlock_optionB_2026_05_09.
- * ==================================================================== */
-
-void pkmnstadium_petit_cup_yield(uint8_t* rdram, recomp_context* ctx) {
-    /* func_80001C90 just ran; ctx->r2 holds the predicate result.
-     * Non-zero → loop will exit on the BEQ; nothing to do. */
-    if (ctx->r2 != 0) return;
-
-    /* Loop will continue. Drop priority below the audio scheduler so
-     * yield_self_1ms's check_running_queue actually swaps. */
-    int32_t saved_pri = osGetThreadPri(rdram, 0 /* PTR(OSThread) NULL = self */);
-    osSetThreadPri(rdram, 0, 1);
-    yield_self_1ms(rdram);
-    osSetThreadPri(rdram, 0, saved_pri);
-}

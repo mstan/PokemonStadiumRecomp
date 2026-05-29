@@ -3,8 +3,8 @@ import struct
 import re
 import sys
 
-ROM = 'F:/Projects/PokemonStadiumRecomp/baserom.z64'
-YAML = 'F:/Projects/PokemonStadiumRecomp/disasm/yamls/us/rom.yaml'
+ROM = 'F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64'
+YAML = 'F:/Projects/n64recomp/PokemonStadiumRecomp/disasm/yamls/us/rom.yaml'
 
 with open(ROM, 'rb') as f:
     rom = f.read()

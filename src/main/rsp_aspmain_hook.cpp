@@ -186,39 +186,29 @@ void aspmain_pre_task(uint8_t* rdram,
     ctx->r3               = chunk - 1;
     ctx->r31              = 0x1144;
 
-    // Inform diagnostic ring that the hook ran. Quiet; not an
-    // error path. Helpful if a future regression makes us doubt
-    // whether the hook was even invoked.
-    fprintf(stderr,
-        "[aspmain_hook] %s: data_ptr=0x%08X data_size=0x%X chunk=0x%X "
-        "→ DMEM[0x%X], r29=0x2B0, r30=%u\n",
-        ucode_name ? ucode_name : "?",
-        data_ptr, data_size, chunk,
-        kAudioCommandsDmemOffset, chunk);
+    // Per-task tracing is opt-in via PSR_ASPMAIN_DEBUG; without it
+    // this fires every audio frame and floods stderr.
+    static const bool s_aspmain_debug = getenv("PSR_ASPMAIN_DEBUG") != nullptr;
+    if (s_aspmain_debug) {
+        fprintf(stderr,
+            "[aspmain_hook] %s: data_ptr=0x%08X data_size=0x%X chunk=0x%X "
+            "→ DMEM[0x%X], r29=0x2B0, r30=%u\n",
+            ucode_name ? ucode_name : "?",
+            data_ptr, data_size, chunk,
+            kAudioCommandsDmemOffset, chunk);
 
-    // Diagnostic: dump opcodes of chunk 0 so we can correlate
-    // command stream with audio symptoms across scene transitions.
-    // Each cmd is 8 bytes; opcode = (cmd_word_0 >> 24) & 0xFF.
-    // Print up to 40 cmds (one full chunk).
-    {
         uint32_t n_cmds = (data_size > 320) ? 40 : (data_size / 8);
         char ops[256];
         char* p = ops;
         for (uint32_t i = 0; i < n_cmds && (p - ops) < 240; i++) {
-            // Read big-endian 32-bit word at rdram[data_ptr + i*8].
-            // RDRAM is host-byte-order; aspMain reads via XOR-3.
             uint32_t addr = data_ptr + i * 8;
-            uint32_t off  = addr & 0xFFFFFF;  // mask to RDRAM range
+            uint32_t off  = addr & 0xFFFFFF;
             uint8_t b0 = rdram[off ^ 3];
-            uint8_t b1 = rdram[(off + 1) ^ 3];
-            uint8_t b2 = rdram[(off + 2) ^ 3];
-            uint8_t b3 = rdram[(off + 3) ^ 3];
-            (void)b1; (void)b2; (void)b3;
             p += snprintf(p, ops + sizeof(ops) - p, "%02X ", b0);
         }
         fprintf(stderr, "[aspmain_chunk0] ops: %s\n", ops);
+        fflush(stderr);
     }
-    fflush(stderr);
 }
 
 void register_pre_task_hooks() {

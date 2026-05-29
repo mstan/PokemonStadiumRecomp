@@ -19,31 +19,53 @@ the per-site patch is currently active.
 
 ---
 
-## free-battle-modal-softlock
+## free-battle-modal-softlock (retired 2026-05-24)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | 2026-05-08 (PSR commit `062cece`) |
-| sites  | `extras.c::func_8000771C`; `game.toml [patches].ignored = ["func_8000771C", …]` |
-| markers | `PSR_TEMP_PATCH: free-battle-modal-softlock` (both sites) |
-| repro | Title → Free Battle → 1P → Rule → Cup → confirm any cup. Pre-patch: hangs at the cup-confirm screen, never advances. |
-| signal that the proper fix has shipped | Free Battle Rule/Cup confirm advances cleanly *with both this entry and `petit-cup-softlock` reverted*. |
-| memory note | `project_free_battle_modal_softlock_2026_05_08.md` |
-| proper-fix layer | N64ModernRuntime/ultramodern: voluntary preemption of busy-waiting game threads. Stage 1 (per-call same-fn detector in `pkmnstadium_trace_entry`) was tried at 2026-05-09 and reverted (commits `5e91259`/`fe0d2fd` engine-fork; `646ba43`/this-revert PSR) — the per-call overhead in `trace_entry` perturbed audio-synth timing enough to flip a pre-existing audio UAF from rare to ~deterministic. The viable shape is a host-monitor "no context-switch in N seconds" flag set by ultramodern + a single atomic-load + branch in `trace_entry`; not yet implemented. |
+| status | **retired** — superseded by the ultramodern voluntary-preemption mechanism (N64MR `b0364f2` host-monitor + yield flag; PSR `25d157c` wires `ultramodern_scheduler_tick` into `pkmnstadium_trace_entry`). `func_8000771C` is no longer in `[patches.ignored]`; the native recompiled body (the tight `while (func_80001C90() == 0) {}` loop) now resolves naturally — each call to `func_80001C90` inside the loop body hits `trace_entry`, and once the busy-waiter has held the CPU >200 ms without a context switch the host monitor flags a yield, swapping to the audio scheduler so it can drain `external_messages` and post the DONE that flips `D_800846C0.queue.validCount`. No game-side priority manipulation, no hand-written wrapper. |
 
-## petit-cup-softlock
+## petit-cup-softlock (retired 2026-05-24)
 
 | field | value |
 |---|---|
-| status | **active** |
-| applied | 2026-05-09 |
-| sites  | `extras.c::pkmnstadium_petit_cup_yield`; `game.toml [[patches.hook]] func = "func_80003680" before_vram = 0x80003778` |
-| markers | `PSR_TEMP_PATCH: petit-cup-softlock` (both sites) |
-| repro | Title → Free Battle → 1P → Rule → Cup → confirm **Petit Cup** specifically (other cups don't always trip this site). Pre-patch: hangs at the cup-confirm screen with `Game_Thread` spinning at `funcs_60.c:1008` inside `func_80003680`'s inlined `while (func_80001C90() == 0) {}` loop. |
-| signal that the proper fix has shipped | Petit Cup advances past cup-confirm cleanly *with both this entry and `free-battle-modal-softlock` reverted*. |
-| memory note | `project_petit_cup_softlock_optionB_2026_05_09.md` |
-| proper-fix layer | Same as `free-battle-modal-softlock` — both go away in one move when ultramodern grows voluntary-preemption-on-stuck-thread. |
+| status | **retired** — superseded by the ultramodern voluntary-preemption mechanism (N64MR `b0364f2` host-monitor + yield flag; PSR `25d157c` wires `ultramodern_scheduler_tick` into `pkmnstadium_trace_entry`). The `func_80003680` JPEG-decoder inlined busy-wait (`while (func_80001C90() == 0) {}` at vram `0x80003770`/`0x80003778`) now drains naturally: when the busy-waiter has held the CPU >200 ms without a context switch, the host monitor flags a yield; the next `trace_entry` (from `func_80001C90`'s own re-entry inside the loop body) drains externals and swaps to the head of `running_queue`, letting the asset-loader / audio threads run and flip the predicate. No game-side priority manipulation needed. |
+
+## fragment57-vtx-seams (retired 2026-05-24)
+
+| field | value |
+|---|---|
+| status | **retired** — superseded by conservative rasterization on the N64 triangle PSO (`lib/rt64` `b60cf10` adds `RenderGraphicsPipelineDesc::conservativeRasterEnabled`, wired through the D3D12 backend; `RasterShader::createPipeline` opts in unconditionally). The `func_82D01758` hook + `pkmnstadium_patch_fragment57_ui_seams` + `pkmnstadium_overlap_vtx_*` helpers + `FRAG57_*` defines are all removed. With `D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON`, the rasterizer covers every pixel a triangle touches and the shared-edge tie-break that previously left dashed seams no longer applies. `RT64_CONSERVATIVE_RASTER=0` on the runner is a force-OFF escape hatch if a future workload regresses. Vulkan/Metal backends treat the flag as a no-op pending `VK_EXT_conservative_rasterization` / Metal plumbing — D3D12 is currently the only backend in regular use on this project. Verified 2026-05-24 against the seam-visible baseline: cards 2/3/4 and the WARNING banner render without seam dashes. The faint artifact remaining on card 1 is a different bug class (the still-active `fragment57-selected-card-overlay` replacement). |
+
+## fragment57-selected-card-overlay (retired 2026-05-24)
+
+| field | value |
+|---|---|
+| status | **retired** — `func_82D022E8` removed from `[patches.ignored]`; the extras.c replacement + its `pkmnstadium_append_display_list` / `pkmnstadium_append_env_color` helpers deleted. The native 5-strip RGBA overlay now emits via the recompiled body. The original hack was always net-negative — it omitted the **controller-icon graphic** that indicates the selected card, on top of suppressing the TMEM-row leakage; users lost a critical UI cue. With the hack retired, the controller icon renders correctly on the selected card. Lib/rt64 conservative rasterization (b60cf10) does not address the residual yellow streaks in the 5-strip overlay — that's a different bug class (likely TMEM row sampling at strip boundaries, not the rasterizer edge-rule class). Tracked in `ISSUES.md` as the strip-overlay TMEM residual; investigation deferred. Verified 2026-05-24 with screenshot: card 1 shows the controller icon, faint horizontal residuals on the strip-overlay rows only on the selected card; cards 2/3/4 + WARNING banner unaffected. |
+
+## force-expansion-ram (retired 2026-05-23)
+
+| field | value |
+|---|---|
+| status | **retired** — moved from a Util_InitMainPools hook to `GameEntry::on_init_callback` in `src/main/main.cpp`. No more Stadium-specific helper in `extras.c` or hook in `game.toml`; the write happens once at game init in the runner, which is the right layer for "missing-from-HLE hardware-detect side-effect" runtime facts. The deeper "N64Recomp static-analysis pass to identify dead-code expansion-pak gates" is still a future investment that would benefit other titles, but isn't required for Stadium. |
+
+## asset-pending-bypass (retired 2026-05-24)
+
+| field | value |
+|---|---|
+| status | **retired** — superseded by the ultramodern voluntary-preemption mechanism (N64MR `b0364f2` host-monitor + yield flag; PSR `25d157c` wires `ultramodern_scheduler_tick` into `pkmnstadium_trace_entry`). The `func_800484E0` hook + `ctx->r2 = 0` bypass is removed from `game.toml`; the spin in `func_8000D2B4` now drains naturally because the host monitor forces a yield once the busy-waiter has held the CPU >200 ms without a context switch, giving async loaders a chance to flip the pending count. |
+
+## audio-uaf-fragment36-voice-stop (retired 2026-05-23)
+
+| field | value |
+|---|---|
+| status | **retired** — PSR `cefd9f6` shipped the generic mechanism: `lib/N64ModernRuntime/librecomp` `SecondaryVoiceTableLayout` (chain `[+0x90, +0x2C]` to wavetable-pointer-array base, silence `voice.unk_038`), registered from `src/main/main.cpp` at startup, fires from the existing `main_pool_pop_state` hook alongside the libnaudio-side helper — both range-check the freed `[saved.L, current.L)` on every pool pop. Per-scene `pkmnstadium_audio_stop_voices` + `func_8004FF20` hook deleted. Open follow-up (separate future work, does NOT retire any current hack): extend the chain language with an **indexed-deref step** (offset + index-source-offset + index-size + stride) so the full 4-level Stadium chain through `voice+0xC2` `v1_index*4` to individual wavetable pointers can be range-checked. The current 2-step chain reaches the array base, which is sufficient for Stadium's UAF source (array base and its wavetable entries both live in the freed 1 MiB SoundBank buffer) but not generally. |
+
+## memmap-get-fragment-data-context (retired 2026-05-23)
+
+| field | value |
+|---|---|
+| status | **retired** — orchestration logic (TLS-stack input save + 3-step resolve combining `recomp_resolve_synthetic_fragment` + `recomp_addr_in_loaded_variant` + `recomp_resolve_via_data_context`) promoted to librecomp as `librecomp_fragment_input_push` / `librecomp_fragment_resolve_exit`. Stadium's `game.toml` hooks now call those librecomp helpers directly; the per-game `pkmnstadium_memmap_get_enter` / `pkmnstadium_memmap_get_exit` were deleted from `extras.c`. Pattern is reusable by any game with variant-aware fragment buckets. See `lib/N64ModernRuntime/librecomp/src/overlays.cpp`. |
 
 ---
 

@@ -51,6 +51,7 @@
 #include "recomp.h"
 #include <librecomp/game.hpp>
 #include <ultramodern/ultramodern.hpp>
+#include <ultramodern/scheduler_tick.hpp>
 #include <ultramodern/error_handling.hpp>
 
 #include "pokestadium_render.h"
@@ -58,6 +59,7 @@
 #include <librecomp/ultra_trace.hpp>
 #include <librecomp/audio_uaf_protect.hpp>
 #include "ares_worker.h"
+#include "transfer_pak.h"
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
@@ -65,7 +67,7 @@ namespace pokestadium { void register_overlays(); }
 namespace pokestadium::rsp { void register_pre_task_hooks(); }
 
 // RSP microcode entry points provided by RSPRecomp output (Zelda's
-// built aspMain.cpp + njpgdspMain.cpp at F:/Projects/Zelda64Recomp/rsp,
+// built aspMain.cpp + njpgdspMain.cpp at F:/Projects/n64recomp/Zelda64Recomp/rsp,
 // referenced by CMakeLists). These implement the libultra standard
 // audio/JPEG microcodes that ship with Pokemon Stadium-era N64 games.
 extern RspUcodeFunc aspMain;
@@ -106,6 +108,73 @@ static void update_audio_converter() {
         throw std::runtime_error("Error creating SDL audio converter");
     }
     discarded_output_frames = static_cast<uint32_t>(duplicated_input_frames * output_sample_rate / sample_rate);
+}
+
+// ── Always-on host audio-queue ring ─────────────────────────────────
+// Records one event per queue_samples() call so the host-side output
+// path can be inspected for the music-rate click. Captures the SDL
+// queue depth and whether the skip_factor sample-decimation fired
+// (which drops samples mid-waveform => discontinuity at chunk
+// boundaries). Per the project ring rule this is always-on; query
+// backward via the `audio_queue_recent` debug command. Env-gate
+// PSR_DISABLE_AUDIO_QUEUE_RING=1 to disable.
+namespace {
+struct AudioQueueEvent {
+    uint64_t seq;
+    uint64_t ms;
+    uint32_t sample_count;   // input int16 samples this chunk (L+R interleaved)
+    uint32_t sample_rate;    // current input sample rate
+    uint32_t queued_us;      // SDL queue depth (microseconds) before this queue
+    uint32_t skip_factor;    // 0 = no decimation; >0 = drop (1<<skip_factor):1
+    uint32_t bytes_queued;   // bytes actually handed to SDL_QueueAudio
+    uint32_t decimated;      // 1 if skip_factor != 0 (samples dropped this chunk)
+};
+constexpr size_t AQ_RING_CAP = 8192;
+AudioQueueEvent g_aq_ring[AQ_RING_CAP];
+std::atomic<uint64_t> g_aq_seq{0};
+std::mutex g_aq_mtx;
+std::chrono::steady_clock::time_point g_aq_t0 = std::chrono::steady_clock::now();
+bool g_aq_enabled = [] {
+    const char* v = std::getenv("PSR_DISABLE_AUDIO_QUEUE_RING");
+    return !(v && v[0] != '\0' && v[0] != '0');
+}();
+
+void aq_record(uint32_t sample_count, uint32_t srate, uint32_t queued_us,
+               uint32_t skip_factor, uint32_t bytes_queued) {
+    if (!g_aq_enabled) return;
+    std::lock_guard<std::mutex> lk(g_aq_mtx);
+    const uint64_t s = g_aq_seq.load(std::memory_order_relaxed);
+    AudioQueueEvent& e = g_aq_ring[s % AQ_RING_CAP];
+    e.seq = s;
+    e.ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - g_aq_t0).count();
+    e.sample_count = sample_count;
+    e.sample_rate = srate;
+    e.queued_us = queued_us;
+    e.skip_factor = skip_factor;
+    e.bytes_queued = bytes_queued;
+    e.decimated = skip_factor != 0 ? 1u : 0u;
+    g_aq_seq.store(s + 1, std::memory_order_release);
+}
+}  // namespace
+
+extern "C" void recomp_audio_queue_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out)
+{
+    std::lock_guard<std::mutex> lk(g_aq_mtx);
+    const uint64_t s = g_aq_seq.load(std::memory_order_relaxed);
+    if (next_seq_out) *next_seq_out = s;
+    if (cap == 0 || out_void == nullptr) { if (n_written) *n_written = 0; return; }
+    const size_t available = (s < AQ_RING_CAP) ? size_t(s) : AQ_RING_CAP;
+    const size_t want = (cap < available) ? cap : available;
+    AudioQueueEvent* out = static_cast<AudioQueueEvent*>(out_void);
+    const size_t start = (s - want) % AQ_RING_CAP;
+    for (size_t i = 0; i < want; i++) out[i] = g_aq_ring[(start + i) % AQ_RING_CAP];
+    if (n_written) *n_written = want;
+}
+
+extern "C" size_t recomp_audio_queue_event_size(void) {
+    return sizeof(AudioQueueEvent);
 }
 
 static void queue_samples(int16_t* audio_data, size_t sample_count) {
@@ -158,7 +227,17 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
     uint32_t num_bytes_to_queue = audio_convert.len_cvt - output_channels * discarded_output_frames * sizeof(swap_buffer[0]);
     float* samples_to_queue = swap_buffer.data() + output_channels * discarded_output_frames / 2;
 
-    uint32_t skip_factor = static_cast<uint32_t>(cur_queued_microseconds / 100000);
+    // PSR_AUDIO_NO_DECIMATE=1: disable the skip_factor sample-decimation
+    // entirely. Diagnostic lever for the music-rate click investigation —
+    // lets us observe whether the SDL queue self-stabilizes (game's
+    // osAiGetLength feedback loop) or grows unbounded (true clock
+    // mismatch) when the decimation drain is removed.
+    static const bool no_decimate = [] {
+        const char* v = std::getenv("PSR_AUDIO_NO_DECIMATE");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
+    uint32_t skip_factor = no_decimate ? 0u
+        : static_cast<uint32_t>(cur_queued_microseconds / 100000);
     if (skip_factor != 0) {
         uint32_t skip_ratio = 1u << skip_factor;
         num_bytes_to_queue /= skip_ratio;
@@ -168,6 +247,8 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
         }
     }
 
+    aq_record((uint32_t)sample_count, sample_rate,
+              (uint32_t)cur_queued_microseconds, skip_factor, num_bytes_to_queue);
     SDL_QueueAudio(audio_device, samples_to_queue, num_bytes_to_queue);
 }
 
@@ -520,11 +601,24 @@ static ultramodern::input::connected_device_info_t get_connected_device_info(int
     // the same get_n64_input return surface, so the game is told
     // "yes, there's a controller in port 1" regardless of which
     // input device the user is actually using.
+    const bool has_transfer_pak = pkmnstadium::transfer_pak::has_transfer_pak(controller_num);
     ultramodern::input::connected_device_info_t info{};
-    info.connected_device = (controller_num == 0)
+    info.connected_device = (controller_num == 0 || has_transfer_pak)
         ? ultramodern::input::Device::Controller
         : ultramodern::input::Device::None;
-    info.connected_pak = ultramodern::input::Pak::None;
+    // Stadium identifies the *kind* of pak by reading its bus
+    // signature (handled in transfer_pak.cpp's read/write shims for
+    // __osContRamRead / __osContRamWrite); connected_pak is consumed
+    // here only as a "something is plugged in" presence bit.
+    //
+    // ultramodern's Pak enum only has {None, RumblePak} -- there is no
+    // first-class TransferPak value -- so we report RumblePak as the
+    // presence stand-in. Stadium's own pak-type discrimination happens
+    // over the bus, so it should see "Transfer Pak" despite the label.
+    // If ultramodern ever grows Pak::TransferPak, switch to that.
+    info.connected_pak = has_transfer_pak
+        ? ultramodern::input::Pak::RumblePak
+        : ultramodern::input::Pak::None;
     return info;
 }
 
@@ -546,7 +640,7 @@ static LONG WINAPI psr_crash_filter(EXCEPTION_POINTERS* info) {
     // last_run_report.json.
     psr_post_mortem_dump("seh", info);
 
-    FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
     if (f) {
         fprintf(f, "\n=== UNHANDLED EXCEPTION ===\n");
         fprintf(f, "  code:    0x%08lX\n", info->ExceptionRecord->ExceptionCode);
@@ -622,7 +716,7 @@ static void error_message_box(const char* msg) {
     // ultramodern::error_handling::quick_exit() terminates the process,
     // and stderr buffering can swallow the message in headless runs.
     // Write a known file path so post-mortem inspection is easy.
-    FILE* f = fopen("F:/Projects/PokemonStadiumRecomp/build/last_error.log", "a");
+    FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
     if (f) {
         fprintf(f, "[PSR ERROR] %s\n", msg);
         fclose(f);
@@ -704,6 +798,28 @@ int main(int argc, char** argv) {
                  turbo_default ? "ON" : "off");
     std::fflush(stderr);
 
+    // PSR_DISABLE_VOLUNTARY_PREEMPTION env var: short-circuit ultramodern's
+    // host-monitored "no context-switch in N seconds" yield mechanism.
+    // The mechanism replaces three per-site Stadium hacks
+    // (free-battle-modal-softlock, petit-cup-softlock, asset-pending-bypass)
+    // with a generic cooperative-scheduler preemption that fires when a
+    // game thread monopolizes the CPU. If audio synth timing regresses
+    // (prior 2026-05-09 attempt flipped a pre-existing UAF — that UAF
+    // has since been fixed by SecondaryVoiceTableLayout, but this gate
+    // gives us a quick rollback if a new regression surfaces).
+    {
+        const char* dis_env = std::getenv("PSR_DISABLE_VOLUNTARY_PREEMPTION");
+        bool enabled = true;
+        if (dis_env && dis_env[0] != '\0' && dis_env[0] != '0') {
+            enabled = false;
+        }
+        ultramodern_voluntary_preemption_set_enabled(enabled ? 1 : 0);
+        std::fprintf(stderr,
+            "[PSR] voluntary preemption %s (set PSR_DISABLE_VOLUNTARY_PREEMPTION=1 to disable)\n",
+            enabled ? "ENABLED" : "DISABLED");
+        std::fflush(stderr);
+    }
+
     SDL_InitSubSystem(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
     std::fprintf(stderr, "[PSR] SDL audio/controller init OK\n"); std::fflush(stderr);
     reset_audio(48000);
@@ -723,6 +839,7 @@ int main(int argc, char** argv) {
 
     recomp::Version project_version{0, 1, 0, ""};
     recomp::register_config_path(std::filesystem::current_path());
+    pkmnstadium::transfer_pak::initialize();
 
     recomp::GameEntry game{};
     game.rom_hash               = 0x6E46EACF8F27011DULL;  // XXH3_64bits of baserom.z64 (US v1.0)
@@ -735,6 +852,38 @@ int main(int argc, char** argv) {
     game.has_compressed_code    = false;
     game.entrypoint_address     = get_entrypoint_address();
     game.entrypoint             = recomp_entrypoint;
+
+    // Activate Stadium's dead-code expansion-pak path before Util_InitMainPools
+    // runs. Util_InitMainPools reads gExpansionRAMStart (vaddr 0x80068B90)
+    // to choose POOL_END_4MB vs POOL_END_6MB. The 6MB path is only taken
+    // when gExpansionRAMStart > 0 AND osMemSize > 0x600000. Our runtime
+    // reports osMemSize=8MB correctly, but gExpansionRAMStart lives in
+    // BSS and has NO writer anywhere in the recompiled binary — on real
+    // hardware some hardware-detect path (RDP probe / silicon side-effect)
+    // sets it; in our HLE harness it stays zeroed and the 6MB code path is
+    // unreachable. Stadium's working set marginally exceeds the 3MB usable
+    // cap of the 4MB path, so the title-screen pokemon-models loader hits
+    // an alloc failure without this. Forcing the value at on_init_callback
+    // is the proper layer for this kind of "missing-from-HLE hardware-detect
+    // side-effect" — it fires once after rdram is wired up but before the
+    // game thread reads the global. Previously implemented as a hook on
+    // Util_InitMainPools entry; that worked but required a recompile-time
+    // hook for a one-time runtime-init fact. See TEMP_PATCHES.md
+    // 'force-expansion-ram' entry (retired by this change).
+    game.on_init_callback = [](uint8_t* rdram, recomp_context* /*ctx*/) {
+        // gExpansionRAMStart at kseg0 0x80068B90 -> physical 0x00068B90.
+        // Write u32 = 1 with XOR-3 byte order to match recompiled MEM_W.
+        constexpr uint32_t paddr = 0x00068B90u;
+        rdram[(paddr + 0) ^ 3] = 0;
+        rdram[(paddr + 1) ^ 3] = 0;
+        rdram[(paddr + 2) ^ 3] = 0;
+        rdram[(paddr + 3) ^ 3] = 1;
+        std::fprintf(stderr,
+            "[PSR] on_init: forced gExpansionRAMStart=1 "
+            "(POOL_END_6MB path active)\n");
+        std::fflush(stderr);
+    };
+
     recomp::register_game(game);
     std::fprintf(stderr, "[PSR] game registered\n"); std::fflush(stderr);
 
@@ -779,7 +928,43 @@ int main(int argc, char** argv) {
         layout.voice_dc_table_offset          = 0x20u;  // N_PVoice.dc_table
         layout.voice_em_motion_stopped_value  = 0u;     // AL_STOPPED
         layout.max_voice_count                = 64u;
+        // Diagnostic-only offsets for the always-on voice-event ring.
+        // Standard libnaudio N_PVoice ABI (n_synthInternals.h): the
+        // ADPCM load-filter fields. Used to capture predictor carry /
+        // first-decode flag / sample position at each key-on so the
+        // music-rate click can be correlated against voice events.
+        layout.voice_dc_state_offset          = 0x0Cu;  // N_PVoice.dc_state (ADPCM_STATE*)
+        layout.voice_dc_sample_offset         = 0x30u;  // N_PVoice.dc_sample
+        layout.voice_dc_lastsam_offset        = 0x34u;  // N_PVoice.dc_lastsam
+        layout.voice_dc_first_offset          = 0x38u;  // N_PVoice.dc_first
         librecomp::audio_uaf::register_voice_layout(layout);
+    }
+
+    // Stadium-side secondary voice table — array-style high-level synth
+    // voices at D_800FC7D0 (count at 0x800FC7CC, array ptr at 0x800FC7D0).
+    // The wavetable-pointer-ARRAY base lives at voice.unk_090 + 0x2C
+    // (verified against the audio_diag hook capture: ctx->r11 = $t3 =
+    // MEM_W($s0, 0x2C) where $s0 = arg0->unk_090). For Stadium's UAF
+    // source (the 1 MiB SoundBank pool buffer freed at fragment36
+    // cleanup), the array base AND its wavetable entries all live in
+    // the same buffer, so range-checking the array base correctly
+    // catches the freed-bank case. Silence by zeroing voice.unk_038 —
+    // Stadium's func_8003AD58 skips voices whose unk_038 is null.
+    // Routing this through audio_uaf_protect retires the per-scene
+    // func_8004FF20 hook (was pkmnstadium_audio_stop_voices) and makes
+    // coverage range-checked + global across all pool pops.
+    {
+        librecomp::audio_uaf::SecondaryVoiceTableLayout sec{};
+        sec.count_vaddr           = 0x800FC7CCu;
+        sec.array_ptr_vaddr       = 0x800FC7D0u;
+        sec.voice_size            = 0x150u;
+        sec.max_voice_count       = 64u;
+        sec.chain_step_count      = 2u;
+        sec.chain_offsets[0]      = 0x90u;  // voice.unk_090 -> inner struct ptr
+        sec.chain_offsets[1]      = 0x2Cu;  // .unk_2C       -> wavetable-array base
+        sec.silence_field_offset  = 0x38u;  // voice.unk_038
+        sec.silence_value         = 0u;
+        librecomp::audio_uaf::register_secondary_voice_table(sec);
     }
 
     // Validate + load the ROM before recomp::start. select_rom verifies

@@ -2,7 +2,7 @@
 import json, socket, subprocess, sys, time
 from pathlib import Path
 
-ROOT = Path("F:/Projects/PokemonStadiumRecomp")
+ROOT = Path("F:/Projects/n64recomp/PokemonStadiumRecomp")
 
 def call(cmd, t=4.0):
     s=socket.create_connection(("127.0.0.1",4371),timeout=t)

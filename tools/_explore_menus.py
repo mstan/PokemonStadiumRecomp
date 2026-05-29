@@ -17,7 +17,7 @@ from __future__ import annotations
 import json, os, socket, sys, time, re
 from pathlib import Path
 
-ROOT = Path("F:/Projects/PokemonStadiumRecomp")
+ROOT = Path("F:/Projects/n64recomp/PokemonStadiumRecomp")
 ERRLOG = ROOT / "build" / "last_error.log"
 
 def call(c, t=3):

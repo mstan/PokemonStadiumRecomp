@@ -1,7 +1,7 @@
 """Dump ROM bytes at 0x5C7A70 — the source of id=0xC0 fragment."""
 import struct
 
-with open('F:/Projects/PokemonStadiumRecomp/baserom.z64', 'rb') as f:
+with open('F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64', 'rb') as f:
     f.seek(0x5C7A70)
     data = f.read(0x60)
 

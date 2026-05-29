@@ -1997,36 +1997,7 @@ size = 0x90   # 0x800005C0 - 0x80000530
 [patches]
 ignored = [
     "osSetTime",
-    # PSR_TEMP_PATCH: free-battle-modal-softlock — see TEMP_PATCHES.md
-    # Stadium-specific Option B fix for the cooperative-scheduler
-    # deadlock: func_8000771C is a tight predicate-only busy-wait
-    # (`while (func_80001C90() == 0) {}`) that blocks the game thread
-    # waiting on D_800846C0.queue.validCount > 0. ultramodern's
-    # cooperative scheduler can't preempt the busy-wait, so blocked
-    # game threads (e.g. the audio scheduler waiting on a DP-complete
-    # message in external_messages) can starve forever — Free Battle
-    # Rule/Cup confirm hangs at this point. We replace func_8000771C
-    # with a hand-written version in extras.c that yields between
-    # iterations (lowering thread priority + yield_self_1ms) so other
-    # game threads can run, drain external_messages, and eventually
-    # write the DONE that unblocks the predicate. The proper runtime
-    # fix lives in N64ModernRuntime/ultramodern (Option C in the
-    # backlog); this is the targeted Stadium-only stopgap.
-    # See memory: project_free_battle_modal_softlock_2026_05_08.
-    "func_8000771C",
 ]
-
-# PSR_TEMP_PATCH: petit-cup-softlock — see TEMP_PATCHES.md
-# Same cooperative-scheduler busy-wait family as func_8000771C, but
-# inlined inside func_80003680 (JPEG decoder) so a whole-function
-# replacement isn't tractable. Hook fires before the BEQ at vram
-# 0x80003778 (the loop's back-edge test); helper yields with a
-# priority drop when the predicate ($v0/ctx->r2) is still 0.
-# See memory: project_petit_cup_softlock_optionB_2026_05_09.
-[[patches.hook]]
-func = "func_80003680"
-before_vram = 0x80003778
-text = "pkmnstadium_petit_cup_yield(rdram, ctx);"
 
 [[input.manual_funcs]]
 # proutSprintf — libultra static helper used by sprintf as the
@@ -2938,6 +2909,28 @@ func = "Memmap_RelocateFragment"
 before_vram = 0x80001E50  # first instr of Memmap_RelocateFragment ⇒ entry hook
 text = "recomp_register_runtime_fragment(rdram, ctx->r4, ctx->r5);"
 
+# ── Memmap FRAGMENT-map binding ring (cursor/icon corruption) ──────────────
+# Always-on capture of gFragments[] register/clear, pushed into the same
+# queryable ring as the segment events (the pre-existing segmap_set/clear
+# hooks further below now also feed that ring). Together they give the full
+# bind timeline across a screen transition — needed to see whether the Poke
+# Cup Registration menu re-binds segment 1 or inherits the stale fragment-31
+# ("transfer pak checker") base from the Game Pak Check screen. Handlers +
+# ring in extras.c (pkmnstadium_memmap_*); reader tools/_memmap_ring.py; dump
+# cmd memmap_ring. ctx->r31 = caller return address.
+# NOTE: segment-map (gSegments[]) events come from the PRE-EXISTING
+# Memmap_SetSegmentMap/ClearSegmentMemmap hooks below — do NOT duplicate
+# those (the recompiler rejects two hooks at the same vram).
+[[patches.hook]]
+func = "Memmap_SetFragmentMap"
+before_vram = 0x800020B0
+text = "pkmnstadium_memmap_set_fragment(rdram, ctx->r4, ctx->r5, ctx->r6, ctx->r31);"
+
+[[patches.hook]]
+func = "Memmap_ClearFragmentMemmap"
+before_vram = 0x8000218C
+text = "pkmnstadium_memmap_clear_fragment(rdram, ctx->r4, ctx->r31);"
+
 # n_alLoadParam voice probe — fires just before the crashing load
 # `lw $t5, 0x8($v1)` at MIPS PC 0x8004FAE4. ctx->r2 = v0, ctx->r3 = v1
 # (post `lw $v1, 0xC($v0)` at 0x8004FAD8), ctx->r7 = a3. Records the
@@ -2992,7 +2985,8 @@ text = "pkmnstadium_set_wavetable_probe(rdram, ctx->r4, ctx->r5, ctx->r6);"
 # generically in librecomp (audio_uaf_protect.cpp); the layout for finding
 # Stadium's voice array is registered at startup in src/main/main.cpp.
 # This single hook subsumes the prior per-scene fragment36 audio-stop
-# hook (func_8004FF20) and prevents the rental-pokemon UAF + AREA_SELECT
+# hook (func_8004FF20, deleted 2026-05-23 once SecondaryVoiceTableLayout
+# extension landed) and prevents the rental-pokemon UAF + AREA_SELECT
 # UAF + post-title UAF families generically.
 [[patches.hook]]
 func = "main_pool_pop_state"
@@ -3081,17 +3075,11 @@ text = "pkmnstadium_pers_exit(rdram, ctx->r2);"
 # main_pool_alloc diagnostic: log size + result + sMemPool.available
 # on every call, with full state on alloc-failure. sMemPool is the
 # static at 0x800A6070; availability sits at +0x1C = 0x800A608C.
-# Pre-Util_InitMainPools hook: set gExpansionRAMStart=1 so Stadium
-# takes the POOL_END_6MB path (5 MiB usable) instead of POOL_END_4MB
-# (3 MiB usable). The 6 MB path is dead code on real Stadium
-# (gExpansionRAMStart has no writer anywhere in the binary), but
-# Stadium's working set on our runtime is marginally larger than
-# the 3 MB cap, so the title-screen loader hits an alloc failure
-# without this. See extras.c's pkmnstadium_force_expansion_ram.
-[[patches.hook]]
-func = "Util_InitMainPools"
-before_vram = 0x80002F58   # first instr — runs BEFORE the gExpansionRAMStart load
-text = "pkmnstadium_force_expansion_ram(rdram);"
+# (Previously, a Pre-Util_InitMainPools hook also lived here that
+# forced gExpansionRAMStart=1. That moved to GameEntry::on_init_callback
+# in src/main/main.cpp on 2026-05-23 — runtime-init facts belong at
+# the game-init layer, not as a recompile-time hook on a specific MIPS
+# function. The TEMP_PATCHES.md 'force-expansion-ram' entry was retired.)
 
 [[patches.hook]]
 func = "main_pool_alloc"
@@ -3157,13 +3145,6 @@ text = "pkmnstadium_frag36_exit(ctx->r2);"
 # [[patches.hook]] func = "func_82100B1C" before_vram = 0x82100B58
 #   text = "ctx->r2 = 1;"
 
-# Force func_800484E0 (asset-loader pending count) to always return 0,
-# bypassing the wait loop in func_8000D2B4.
-[[patches.hook]]
-func = "func_800484E0"
-before_vram = 0x8004856C   # before jr $ra (delay slot is just sp adjust)
-text = "ctx->r2 = 0;"
-
 # Audio voice-table NULL-deref diagnostic — capture state right before
 # the crashing `lw $a0, 0x0($t4)` at 0x8003AF64. At hook position
 # 0x8003AF60 (the `addu $t4, $t3, $v0` that computes the bad addr):
@@ -3189,7 +3170,7 @@ text = "pkmnstadium_audio_diag(rdram, (uint32_t)ctx->r16, (uint32_t)ctx->r17, (u
 [[patches.hook]]
 func = "Memmap_GetFragmentVaddr"
 before_vram = 0x800020E0   # entry — save input arg
-text = "pkmnstadium_memmap_get_enter((uint32_t)ctx->r4);"
+text = "librecomp_fragment_input_push((uint32_t)ctx->r4);"
 
 [[patches.hook]]
 func = "Memmap_GetFragmentVaddr"
@@ -3197,7 +3178,7 @@ before_vram = 0x80002140   # exit — override before delay-slot
 # MEM_W macro expects a sign-extended gpr value as the address.
 # The literal 0x800ABE00 is unsigned and would wrap; cast to int32_t
 # first so the high bit triggers sign-extension to 0xFFFFFFFF800ABE00.
-text = "ctx->r4 = pkmnstadium_memmap_get_exit((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x800ABE00));"
+text = "ctx->r4 = librecomp_fragment_resolve_exit((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x800ABE00));"
 
 # Segment-map setter/clear hooks — capture every gSegments[id]
 # write so we can answer "is segment 6 ever mapped before attract,
@@ -3208,12 +3189,12 @@ text = "ctx->r4 = pkmnstadium_memmap_get_exit((uint32_t)ctx->r4, (uint32_t)MEM_W
 [[patches.hook]]
 func = "Memmap_SetSegmentMap"
 before_vram = 0x80001CE0   # entry — function start
-text = "pkmnstadium_segmap_set_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)MEM_W(0, (int32_t)0x80075668));"
+text = "pkmnstadium_segmap_set_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)MEM_W(0, (int32_t)0x80075668), (uint32_t)ctx->r31);"
 
 [[patches.hook]]
 func = "Memmap_ClearSegmentMemmap"
 before_vram = 0x80001D9C   # entry — function start
-text = "pkmnstadium_segmap_clear_enter((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x80075668));"
+text = "pkmnstadium_segmap_clear_enter((uint32_t)ctx->r4, (uint32_t)MEM_W(0, (int32_t)0x80075668), (uint32_t)ctx->r31);"
 
 # func_80004258 = ASSET_LOAD inner. Hook at function entry so we can
 # see every (id, rom_range, arg3) attempted, regardless of whether
@@ -3243,12 +3224,25 @@ text = "pkmnstadium_load2_exit((uint32_t)ctx->r2);"
 [[patches.hook]]
 func = "func_8000484C"
 before_vram = 0x8000484C   # entry
-text = "pkmnstadium_aload_enter((uint32_t)ctx->r4, (uint32_t)ctx->r5);"
+text = "pkmnstadium_aload_enter(rdram, (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r31);"
 
 [[patches.hook]]
 func = "func_8000484C"
 before_vram = 0x80004954   # right before jr $ra
 text = "pkmnstadium_aload_exit((uint32_t)ctx->r2);"
+
+# Fragment-relocate dispatch hook (cursor/icon corruption root-cause).
+# func_800043BC(s32 id, Fragment* addr) forwards `id` to
+# Memmap_RelocateFragment -> Memmap_SetFragmentMap; an id outside
+# [0,239] is the OOB gFragments[] write that clobbers gSegments[1].
+# The id is archive->unk_02 when called from func_8000484C:681. Feeds
+# the always-on arcload ring (kind 1) + the non-evicting bad-frag
+# capture in extras.c; reader tools/_arcload_ring.py; dump cmds
+# arcload_ring / arcload_badfrag. ctx->r31 = caller return address.
+[[patches.hook]]
+func = "func_800043BC"
+before_vram = 0x800043BC   # entry — relocate-fragment dispatch
+text = "pkmnstadium_relocfrag_enter(rdram, (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r31);"
 
 [[patches.hook]]
 func = "func_800047C4"
@@ -3305,14 +3299,15 @@ func = "func_80010FDC"
 before_vram = 0x80010FDC   # entry
 text = "pkmnstadium_geo_render_call_log((uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6);"
 
-# Re-enabled 2026-04-29 alongside Memmap_GetFragmentVaddr caller-
-# context override. Voice-stop is needed for audio UAF; the
-# override is the candidate fix for the AREA_SELECT regression
-# that voice-stop's pool-timing shift previously introduced.
-[[patches.hook]]
-func = "func_8004FF20"
-before_vram = 0x8004FF20
-text = "pkmnstadium_audio_stop_voices(rdram);"
+# Stadium-side audio-UAF voice silencing now lives in the generic
+# main_pool_pop_state hook (pkmnstadium_pool_pop_silence_voices),
+# which calls librecomp_audio_uaf_silence_secondary_in_range against
+# the D_800FC7D0 voice array registered from src/main/main.cpp.
+# Chain: voice+0x90 -> +0x2C reaches the wavetable-pointer-array base
+# (offset verified against audio_diag hook capture at PC 0x8003AF60).
+# The prior per-scene func_8004FF20 hook + pkmnstadium_audio_stop_voices
+# in extras.c were deleted on 2026-05-23 — generic range-checked path
+# covers every pool pop, not just fragment36 cleanup.
 
 # miniEkansInitCam entry diagnostic — auto-attract crashes in
 # miniUpdateCamera writing to D_87906054->unk_24.fovy (NULL+0x2C).

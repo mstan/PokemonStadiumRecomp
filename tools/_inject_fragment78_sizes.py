@@ -25,7 +25,7 @@ Run after every splat regen of asm/us/fragments/78/fragment78.s.
 import re
 import sys
 
-PATH = 'F:/Projects/PokemonStadiumRecomp/disasm/asm/us/fragments/78/fragment78.s'
+PATH = 'F:/Projects/n64recomp/PokemonStadiumRecomp/disasm/asm/us/fragments/78/fragment78.s'
 
 GLABEL_RE = re.compile(r'^(\s*)glabel\s+(\S+)\s*$')
 SIZE_RE = re.compile(r'^\.size\s+\S+,\s*\.\-\S+\s*$')

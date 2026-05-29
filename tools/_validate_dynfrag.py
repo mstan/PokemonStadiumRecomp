@@ -11,7 +11,7 @@ Q5: Total decompressed-payload size.
 from collections import Counter
 import hashlib
 
-ROM = "F:/Projects/PokemonStadiumRecomp/baserom.z64"
+ROM = "F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64"
 
 
 def yay0_decompress(data, target_size=None):

@@ -1,6 +1,6 @@
 """Hexdump fragment 31's header + unk_table from ROM."""
 import struct
-with open("F:/Projects/PokemonStadiumRecomp/baserom.z64", "rb") as f:
+with open("F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64", "rb") as f:
     f.seek(0x2552C0)
     data = f.read(0x300)
 

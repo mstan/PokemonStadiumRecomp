@@ -139,12 +139,12 @@ def main(argv: list[str]) -> int:
                     help="Stadium runner debug-server port (default 4371)")
     ap.add_argument("--ares-port", type=int, default=4372,
                     help="ares_oracle_server port (default 4372)")
-    ap.add_argument("--rom", default="F:/Projects/PokemonStadiumRecomp/baserom.z64",
+    ap.add_argument("--rom", default="F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64",
                     help="Path to baserom.z64 (must match what Stadium uses)")
     ap.add_argument("--ares-frames", type=int, default=60,
                     help="Frames to step Ares forward before diffing")
     ap.add_argument("--oracle-server",
-                    default="F:/Projects/N64Recomp/build-aresbridge/"
+                    default="F:/Projects/n64recomp/N64Recomp/build-aresbridge/"
                             "ares-bridge/Release/ares_oracle_server.exe",
                     help="Path to the ares_oracle_server.exe binary. If "
                          "the server is already running on --ares-port, "

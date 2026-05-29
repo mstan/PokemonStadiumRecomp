@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-ROOT = Path("F:/Projects/PokemonStadiumRecomp")
+ROOT = Path("F:/Projects/n64recomp/PokemonStadiumRecomp")
 RUNNER_EXE = ROOT / "build" / "PokemonStadiumRecomp.exe"
 HISTORY_PATH = ROOT / "build" / "last_run_input_history.json"
 HOST = "127.0.0.1"
