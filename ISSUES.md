@@ -10,9 +10,14 @@ cups, Gym Leader Castle have been validated) but the following
 visible imperfections remain.
 
 **Priority order (user-set 2026-05-28):**
-1. **Cursor / icon sprite corruption** — HIGHEST. Fix this next.
-2. Diagonal line across the screen at transitions.
-3. POKéMON STADIUM panel bottom clip.
+1. ~~Cursor / icon sprite corruption~~ — **FIXED 2026-05-28, user-confirmed.**
+   Recomp `section_addresses` not reset on fragment clear; librecomp
+   `unregister_runtime_fragment` (N64MR PR #2 `5a3579c` + PSR PR #5 `58d34c4`).
+2. ~~Diagonal line across the screen at transitions~~ — **FIXED 2026-05-28,
+   user-confirmed.** Conservative raster double-blended the shared diagonal of
+   alpha-blended fullscreen quads; rt64 per-PSO conservative raster (`edcb06f`).
+   **Closed with a noted caveat — see the entry below.**
+3. POKéMON STADIUM panel bottom clip.  ← **next**
 4. Selected Game Pak card strip-overlay residual.
 5. GB Tower "start GB game" crash — deep-dive, currently unreproducible
    (no GB cart simulated); higher than the latent gfx UAF, lower than
@@ -29,9 +34,21 @@ visible imperfections remain.
       → ~4 clicks/s. Full post-mortem under
       [Audio → Music-rate periodic tick](#audio) below.
 
-- [ ] **Visually corrupted "hand" pointer / cursor sprite** on
-      certain menus. **★ HIGHEST PRIORITY (user-set 2026-05-28) — fix
-      this next.** Re-confirmed 2026-05-28: on the Gym Leader Castle
+- [x] **Visually corrupted "hand" pointer / cursor sprite** on
+      certain menus. **FIXED 2026-05-28 (user-confirmed).** Root cause was
+      a recompiler/runtime divergence, NOT corrupt texture/archive data:
+      the recomp's `section_addresses[]` for a fragment section was not
+      reset when the game cleared that fragment, so a fragment-id computed
+      from a stale-relocated literal (`D_8D000000`) came out as −15, and
+      `Memmap_SetFragmentMap(−15)` clobbered `gSegments[1]` (the cursor's
+      texture bank → fragment-31 code). Fixed in librecomp
+      `unregister_runtime_fragment` (reset `section_addresses` on
+      `Memmap_ClearFragmentMemmap`, mirroring `Memmap_GetFragmentVaddr`'s
+      NULL-fallback). N64MR PR #2 `5a3579c` + PSR PR #5 `58d34c4`. The
+      session-2 "archive `unk_02` = 0xFFF1 decompression" theory was
+      refuted by direct measurement (`unk_02` = 0). Full post-mortem in
+      memory `project_cursor_corruption_2026_05_28.md`.
+      *Original report (historical):* Re-confirmed 2026-05-28: on the Gym Leader Castle
       Registration screen the icon left of "Register Pokémon" renders
       as a sparkly/glittery garbled block where a clean icon should be
       (screenshot captured this session).
@@ -111,25 +128,40 @@ visible imperfections remain.
       mapping extends past the quad's bottom. See
       `NOTES_TO_CODEX.md` for the investigation path.
 
-- [ ] **Diagonal line across the entire screen at transitions**
-      (reported + screenshotted 2026-05-28). A thin straight line runs
-      roughly corner-to-corner across the whole frame. Subtle and
-      usually only visible during screen transitions/fades, but present.
-      Observed both over a 3D model scene (Rhydon close-up) and over the
-      main mini-game select screen — i.e. it's not tied to specific
-      content, it's a full-frame overlay artifact.
+- [x] **Diagonal line across the entire screen at transitions.**
+      **FIXED 2026-05-28 (user-confirmed) — CLOSED WITH A CAVEAT (below).**
+      (Reported + screenshotted 2026-05-28.) A thin straight corner-to-corner
+      line over the whole frame during transitions/fades (and faintly over
+      dark 3D scenes).
 
-      *Hypothesis:* the fullscreen transition/fade quad is drawn as two
-      triangles, and a hairline gap along their shared diagonal
-      (hypotenuse) edge shows the background through it — the same
-      shared-edge tie-break seam CLASS that conservative rasterization
-      fixed for the fragment-57 HUD grids (lib/rt64 `b60cf10`), but on
-      the fullscreen transition quad, which evidently isn't covered by
-      that fix (different PSO / coverage path, or a screen-space-aligned
-      diagonal). Next step: identify the transition-quad draw in RT64
-      and check whether conservative raster applies to its PSO; if the
-      seam is the cause, extend coverage there. Low severity (subtle,
-      transition-only) but a real renderer artifact.
+      *Root cause:* conservative rasterization, enabled unconditionally on
+      RT64's N64 triangle PSO (`b60cf10`) to close fragment-57 HUD Vtx-grid
+      gaps, also covers the **shared diagonal** of the game's fullscreen
+      transition-fade quad (a translucent quad = 2 triangles). On an
+      **alpha-blended** quad that diagonal is blended twice → visible seam.
+      (Opaque double-coverage is invisible, so HUD grids were fine.)
+      Confirmed via `RT64_CONSERVATIVE_RASTER=0`: the diagonal vanished but
+      the HUD grid seams returned — same mechanism, opposite signs. (The
+      fade is alpha-blended *triangle* geometry, not a `Rectangle`-projection
+      rect — an initial rect-only gate missed it.)
+
+      *Fix:* per-PSO conservative rasterization in lib/rt64 (`edcb06f`,
+      shipped to rt64 `main`/`dev`). `RasterShaderUber` pipelines `[8]→[16]`
+      with a conservative bit; the draw-call selector routes **rect OR
+      alpha-blended** draws to the non-conservative variant, keeping
+      conservative raster on opaque triangles (HUD grids stay closed).
+
+      **⚠ CAVEAT (the closure is conditional on this):** the gate is BROAD —
+      it disables conservative raster for *any* alpha-blended draw, which
+      also routes 3D translucent geometry through the non-conservative
+      pipeline. Verified on menus/transitions + HUD, but **NOT yet
+      regression-tested in a live battle**. If translucent 3D surfaces show
+      new hairline seams or a perf dip in battle, NARROW the gate to a
+      fullscreen-coverage test (intended tool: an always-on draw-signature
+      ring — proj type / alphaBlend / triangle count / coverage — queried
+      across a transition window; do NOT screenshot-time the transient).
+      `RT64_CONSERVATIVE_RASTER=0` remains a global force-off escape hatch.
+      Memory: `project_diagonal_transition_line_2026_05_28.md`.
 
 - [ ] **GB Tower "start GB game" crash** (reported 2026-05-28; deep-dive,
       currently UNREPRODUCIBLE). Attempting to start a Game Boy game
