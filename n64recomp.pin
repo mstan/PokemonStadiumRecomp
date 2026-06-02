@@ -13,8 +13,11 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = 91f05f8beef76aa033011647960fede2465ed837
-# 91f05f8 "docs: update fork notice for SS Anne org affiliation"
+sha = a0aaa1c655d1b58eadcbdff301e24daa7b5961d1
+# a0aaa1c "feat(recompiler): static-entry seeding + loop-yield + jr-ra
+#   fixes for GB Tower [Codex GB Tower session]" — the engine commit the
+#   GB Tower bring-up was built against (Transfer Pak + GB Tower R/B/Y).
+# 91f05f8 "docs: update fork notice for SS Anne org affiliation" (prior pin)
 #   — docs-only commit; functionally identical to its parent.
 # fad8a9c "recomp: mask host rdram offset in MEM_W/H/B macros" (parent)
 #   turns out-of-range vaddr loads into garbage reads instead of
