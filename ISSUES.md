@@ -17,11 +17,14 @@ visible imperfections remain.
    user-confirmed.** Conservative raster double-blended the shared diagonal of
    alpha-blended fullscreen quads; rt64 per-PSO conservative raster (`edcb06f`).
    **Closed with a noted caveat — see the entry below.**
-3. POKéMON STADIUM panel bottom clip.  ← **next**
+3. POKéMON STADIUM panel bottom border missing — **DIAGNOSED 2026-05-28**
+   (RT64 under-fills the bottom strip; unique oversized-tile/interior-
+   sampling config). Fix not yet landed — see entry below.
 4. Selected Game Pak card strip-overlay residual.
-5. GB Tower "start GB game" crash — deep-dive, currently unreproducible
-   (no GB cart simulated); higher than the latent gfx UAF, lower than
-   the visible bugs above.
+5. ~~GB Tower "start GB game" hang~~ - **FIXED 2026-06-02.**
+   Red, Blue, and Yellow launch from GB Tower and reach gameplay via
+   scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
+   See entry below.
 6. Latent Stadium-side gfx pool UAF / race — lowest (masked by RT64).
 
 - [x] **Small clicking sound between audio chunks** during music
@@ -117,16 +120,93 @@ visible imperfections remain.
       not a regression from the prior state (the hack was net-negative,
       it omitted the controller icon entirely).
 
-- [ ] **POKéMON STADIUM panel bottom clip (main menu).** The
-      central icon's "POKéMON STADIUM" label band gets the
-      descenders cut off and the gap before the bottom corner
-      bracket is too small. Different bug class from the seam
-      issue — quad #7 of the 2×8 grid at frag57+0x8870 is
-      intentionally short (13 units tall vs 20 for the column),
-      and bumping seam overlap doesn't help. Likely Y-axis
-      scissor / projection clipping, or the label texture's t-coord
-      mapping extends past the quad's bottom. See
-      `NOTES_TO_CODEX.md` for the investigation path.
+- [ ] **POKéMON STADIUM panel bottom border missing (main menu).**
+      **DIAGNOSED 2026-05-28 — root cause is an RT64 render bug (NOT
+      texture data, NOT geometry, NOT authentic). FIX NOT YET LANDED.**
+
+      *Symptom.* The central, highlighted "POKéMON STADIUM" icon panel
+      renders with a thick blue frame border on its top and sides but
+      **no blue border along the bottom** — the blue label band ends right
+      at the "POKéMON STADIUM" text baseline and the gold selection bracket
+      sits against bare wallpaper. (Originally mis-described in
+      `NOTES_TO_CODEX.md` as "lowercase descenders clipped / gap too
+      small"; the real artifact is the panel frame's missing bottom edge.
+      User-confirmed it is the highlighted *panel's* missing bottom, not
+      the selection bracket.)
+
+      *How the panel is drawn.* The icon is an RGBA16 image (172 px wide,
+      ~156 rows tall) split into horizontal strips, drawn as a 2-column Vtx
+      grid (left col quads #0-7 @`0x8011D460`, right col #8-15). Sub-DL
+      @`0x8011D860` issues, per strip: `G_SETTIMG` (image base set via
+      segment `0x0F` = `0x804C6D80`) → `G_LOADTILE` → `G_VTX` → `G_TRI2`.
+      Strips 0-6 each load/map 20 image rows (0..139); the bottom strip
+      (quad #7/#15) maps image rows 140-152 (12 rows) over a 12-unit-tall
+      quad at a clean 1:1.
+
+      *Ruled out (each VERIFIED directly):*
+      - **Texture data** — dumped the full RGBA16 image + alpha map; it has
+        a complete, symmetric frame, and rows 140-152 (the bottom border)
+        are fully OPAQUE navy. Not corrupt/missing.
+      - **Geometry / t-coords** — dumped the grid; quad #7 maps rows
+        140-152 over its height at clean 1:1, same scale as every strip
+        above. No overrun, no squish.
+      - **Draw issued** — decoded the sub-DL; all 16 strips incl. the
+        bottom one emit SETTIMG/LOADTILE/VTX/TRI2.
+      - **Texture load** — tmem ring shows the bottom strip loaded from the
+        right source (img row 140) with the right rows.
+      - **Scissor** — full-screen 640×480; nothing clips the panel.
+      - **Render scale** — missing at native 1× *and* upscaled → not a
+        high-res sampling artifact.
+      - **Conservative rasterization** — forced OFF
+        (`RT64_CONSERVATIVE_RASTER=0`): bottom STILL missing (and the HUD
+        seam lines return). Exonerated.
+      - **UV / sampling transparent texels** — ruled out by the stretch
+        test: at both 12px and 96px the bottom-most pixel samples the SAME
+        UV (row 152, opaque navy), yet 12px → background, 96px → navy. Same
+        UV, different result.
+      - **Highlight** — moved the highlight to BATTLE NOW; the missing
+        bottom stayed on STADIUM. All other panels (BATTLE NOW, EVENT
+        BATTLE, GALLERY, OPTIONS) render complete bottom borders.
+
+      *Probable cause — RT64 tile/height-dependent under-fill.* The bottom
+      strip's quad rasterizes at the correct screen position & height
+      (vtx_ring: internal y[256,268], a 12px quad) but only its top ~3px
+      get filled; the bottom ~9px show wallpaper. Live Vtx poke stretching
+      the quad taller makes it fill completely → RT64 is under-filling the
+      short strip.
+
+      *What makes STADIUM strip #7 UNIQUE* (verified by decoding the other
+      panels' grids): its `G_LOADTILE` loads 16 image rows (140-155,
+      lrt=155) but the quad samples only 12 (rows 140-152) — the quad
+      samples the **interior** of an oversized loaded tile, never reaching
+      the tile's bottom edge. Every other strip (incl. GALLERY's
+      equally-short 12-unit bottom strip, which renders FINE) has its quad
+      t-range reach/exceed the loaded tile's bottom (clamping at the edge).
+      This oversized-tile / interior-sampling configuration is the prime
+      suspect.
+
+      *Not yet pinned:* the exact RT64 code path. `RasterVS` is a clean
+      transform and the framebuffer `drawColorRect` math
+      (`rt64_rsp.cpp` ~L1073) computes correctly for the strip, so the
+      under-fill is elsewhere — candidates: framebuffer tile/resolve, or
+      rasterization of the wide-short (100×12) triangle pair when the tile
+      is oversized. **Next step:** add an always-on RT64 instrumentation
+      hook logging the bottom strip's submitted triangle + tile dims +
+      final draw/resolve rect, then fix in `lib/rt64`. Fix at the RT64
+      layer — NO game-side hack.
+
+      *Confidence it is a divergence (not authentic):* the texture frame is
+      symmetric (~12-13px borders top & bottom), so real hardware shows a
+      ~12px navy bottom border; we show ~3px. (Could not obtain an
+      original-hardware reference image through the available tooling.)
+
+      *Diagnostic tools added this session (kept):* `tools/_gbi_decode.py`
+      (F3DEX2 DL decoder), `_dump_rgba16_tex.py` (RGBA16 texture+alpha
+      dumper), `_peek_bin.py`, `_capture_panel.py` (isolate a panel's quad
+      stack from vtx_ring), `_find_panel_loads.py` (isolate a panel's
+      RGBA16 tile loads from tmem ring), `_poke_quad7.py` / `_poke_height.py`
+      / `_poke_flip_t.py` (live Vtx pokes for the stretch/flip/height
+      experiments), `_panel_tris.py`.
 
 - [x] **Diagonal line across the entire screen at transitions.**
       **FIXED 2026-05-28 (user-confirmed) — CLOSED WITH A CAVEAT (below).**
@@ -163,17 +243,186 @@ visible imperfections remain.
       `RT64_CONSERVATIVE_RASTER=0` remains a global force-off escape hatch.
       Memory: `project_diagonal_transition_line_2026_05_28.md`.
 
-- [ ] **GB Tower "start GB game" crash** (reported 2026-05-28; deep-dive,
-      currently UNREPRODUCIBLE). Attempting to start a Game Boy game
-      from within the embedded Game Boy Tower crashes. Cannot reproduce
-      right now because no GB cartridge is being simulated into the
-      Tower yet. Note: GB Tower is documented as **out of scope** in
-      `CLAUDE.md` decision #4 (the plan was to stub its entry points,
-      not port the embedded GB emulator) — this item revisits that as a
-      future deep-dive, NOT current scope. Priority: above the latent
-      gfx pool UAF below, but below the visible rendering bugs above.
-      When picked up, first establish a reproduction (simulate/load a GB
-      cart into the Tower path) before diagnosing.
+- [x] **GB Tower "start GB game" hang / launch path** (reported 2026-05-28;
+      **FIXED 2026-06-02**). The embedded GB Tower now launches Red, Blue,
+      and Yellow from Transfer Pak cart images, reaches live gameplay, and
+      persists saves.
+
+      **2026-06-02 current status.** Verified with scripted TCP input and
+      screenshot captures:
+      - Yellow/CGB: `build/gbtower_yellow_cgb_fix/yellow_cgb_after_fix.png`
+        reaches the full-color Yellow title screen; `yellow_cgb_after_start.png`
+        reaches the Continue/New Game/Option menu. Gameplay proof:
+        `build/gbtower_yellow_gameplay_fix2/yellow_gameplay_after_continue.png`
+        and `yellow_gameplay_start_menu.png`.
+      - Blue/DMG: `build/gbtower_blue_lui_current/blue_lui_gameplay.png`
+        and `blue_lui_start_menu.png` reach gameplay and the in-game menu.
+      - Red/DMG: `build/gbtower_red_title_start_current/` reaches gameplay
+        and the in-game menu; Red shares the same 0xA40 GB Tower ucode path
+        as Blue.
+      - Route reports contain no crash/error markers. Yellow uses boot
+        `0x80147310`, size `0x9E4`; Blue uses boot `0x80147DB0`, size
+        `0xA40`.
+
+      **Verified navigation route from fresh boot.**
+      1. Press `Start`, wait about 4.2s.
+      2. Press `Start`, wait about 4.2s to the title screen.
+      3. Press `A`, wait about 4.2s to Game Pak Check.
+      4. Press `A`, wait about 4.2s to the main select screen.
+      5. Press `A` on the default `POKEMON STADIUM`, wait about 4.2s to the
+         Stadium map.
+      6. Press `DRight`, wait about 1.5s to highlight the giant Game Boy /
+         GB Tower.
+      7. Press `A`, wait about 2.5s to the GB cart select screen.
+      8. Cart select: Yellow is the default 1P cart; Red is `DRight` once;
+         Blue is `DRight` twice.
+      9. Press `A` to launch the selected cart.
+
+      **Fix details.**
+      - Transfer Pak input/config is generic and cart-driven. Runtime env
+        overrides are `PSR_TRANSFER_PAK_P1_ROM`/`_SAVE`, `_P2_...`, and
+        `_P3_...`; save files are flushed after dirty GB SRAM writes.
+      - Pokemon Stadium submits GB Tower display/copy microcode as
+        `M_AUDTASK`, so dispatching solely by task type incorrectly routes it
+        to `aspMain`. The game project now checks the ucode boot signature
+        before the `M_AUDTASK` fallback:
+        `0xA40` -> `gbTowerMain` for DMG/Red/Blue, and `0x9E4` ->
+        `gbTowerColorMain` for CGB/Yellow. This is game-side microcode
+        registration, not a generic runtime hardcode.
+      - `gbTowerColorMain` was generated from the ROM's 0x9E4 CGB GB Tower
+        ucode. `gbTowerMain` was regenerated from the 0xA40 DMG GB Tower
+        ucode.
+      - RSPRecomp now emits unsigned-source shifts for RSP `lui`, `sll`,
+        and `sllv` (`U32(...) << ...`) before sign-casting, avoiding signed
+        left-shift UB in generated microcode. Both GB Tower RSP sources were
+        regenerated after that fix.
+
+      **Save validation.**
+      - Yellow/MBC5 temp save:
+        `build/save_tests/yellow-save-test-result.json`, 32768 bytes,
+        SHA-256 changed from
+        `053826A1F36338E9A73BF268E4B2362D36CE1441D2D8BDEA3ED309793FE026CF`
+        to
+        `7483FAAC75FC21FB6529583E79A43736DAA6019C2F51C394D38DE5EB03701295`.
+        Captures: `build/gbtower_yellow_save_test/yellow_save_prompt_1.png`,
+        `yellow_save_prompt_2.png`, and `yellow_after_save.png`.
+      - Blue/MBC3 temp save:
+        `build/save_tests/blue-ingame-save-test-result.json`, 32768 bytes,
+        SHA-256 changed from
+        `E96A8ACBDE5C01AAF7D37DD5E7D5FE7F8C456CB8B2194D903F891696F4B4E8CA`
+        to
+        `C99BEC49C2E66BCF93089BF12C85A7256E58C58F89EC1DADBE417FABDB1EEAE6`.
+        Captures: `build/gbtower_blue_ingame_save_test/blue_gameplay_before_save.png`,
+        `blue_save_prompt_1.png`, `blue_save_prompt_2.png`, and
+        `blue_after_ingame_save.png`.
+
+      **Historical repro (superseded):** booting a Game Boy game in the
+      embedded GB Tower used to hang to a black screen.
+
+      **Historical repro from 2026-05-28 (superseded):** load a GB cart
+      image into P1 Transfer Pak —
+      `transfer_pak.cfg` `p1_rom=pokemon-yellow.gbc` / `p1_save=...`, OR env
+      `PSR_TRANSFER_PAK_P1_ROM`/`_SAVE` (the cfg is read from `current_path`
+      = `build/`, so env is easiest from the repo root). Main menu →
+      POKéMON STADIUM → Right (highlights "GB TOWER") → A → select the
+      `YELLOW` cart → it loads, detects the cart, then **hangs (black
+      screen, graphics pipeline frozen)**.
+
+      **Cart layer works.** Transfer Pak serves Yellow correctly (log shows
+      the Nintendo logo + `POKEMON YELLOW` title + type 0x1B read off the
+      image; MBC5 banking via writes to tpak blocks 0x400/0x500/0x580). The
+      GB Tower **detects** the cart ("YELLOW ID 20921"). The embedded
+      emulator code (`gb_tower` seg, `func_8000A630` @ ROM 0xB230) is NOT
+      stubbed and runs. The GB game ROMs are **not** built into Stadium
+      (verified: only 3 GB-logo signatures in the 32 MB ROM = the
+      emulator's boot/reference logo; `POKEMON YELLOW/RED/BLUE` strings ×2
+      each = cart-detection tables) — the GB Tower is a generic cart-reading
+      emulator, so a cart image is required (no physical cart needed).
+
+      **Root cause — cooperative-scheduler deadlock at the GB Pak power-up
+      delay.** Two threads (`dump_threads`):
+      - Thread A is in `func_81200AA8` (frag-1 GB Tower init) → `osGbpakInit`
+        (funcs_72.c) which creates queue `0x80102220`, calls `osSetTimer`
+        for a ~0.2 s power-up delay (countdown `0x895440` ticks → mq
+        `0x80102220`, msg `0x80102238`), then **blocks in `osRecvMesg`**
+        waiting for that timer message. (`__osPfsGetStatus` earlier in
+        `osGbpakInit` is shimmed and works.)
+      - Thread B (`func_812033F4` @ frag-1, called by `func_81206D9C` ←
+        resident `func_8000D678`/E1C0) **spins in a tight loop**
+        (`L_81203A80: bnel $t4,$0; lbu $t4,0x5DC8($s0)`) waiting for a busy
+        byte at `[*D_8122B2C0]+0x5DC8` to clear — a flag `osGbpakInit`
+        clears only after its delay completes.
+
+      The queue's `validCount=0` → the timer message was **never delivered**
+      despite minutes elapsing. The tight spin loop has **no preemption
+      point** (pure load+branch, no call), so it monopolizes ultramodern's
+      cooperative N64-scheduler token: the timer thread's `osSendMesg`
+      (timer.cpp:133) can't take effect and `osGbpakInit`'s (higher-pri)
+      thread can't be scheduled to clear the busy flag → both stall forever
+      → frozen graphics / black screen. On real N64 the timer is an
+      **interrupt** and `osGbpakInit` is **preemptively** scheduled, so
+      hardware never deadlocks. Same bug *family* as the prior softlocks
+      fixed by voluntary preemption (free-battle-modal / petit-cup), but
+      voluntary preemption isn't catching THIS loop (no yield check on the
+      back-edge of a call-free spin).
+
+      **Original fix-layer diagnosis = runtime / recompiler (N64ModernRuntime + maybe
+      n64recomp).** Make a CPU-bound recomp thread yield so a higher-pri
+      runnable thread and timer-message delivery aren't starved — e.g.
+      insert a preemption/yield check on loop back-edges (recompiler), or
+      have the host monitor force-preempt a thread that's spun N iterations
+      without yielding (runtime). NO game-side hack. (Supersedes the old
+      CLAUDE.md decision #4 "stub it" stance — user opted in to making the
+      GB Tower actually boot.) `osGbpakInit` itself is correct N64 code;
+      the gap is preemptive scheduling under the recomp.
+
+      *Diag tools added:* `tools/_gbhdr.py`, `_scan_gb_roms.py`. Diagnosis
+      via `dump_threads` (→ `build/last_error.log`), `trace_recent`,
+      `get_last_pc_trail`, `rdram_peek` of the OSMesgQueue, and the
+      `[transfer-pak]` stderr trace (`PSR_TRANSFER_PAK_DEBUG=1`).
+
+      **2026-05-31/2026-06-01 navigation reference (verified by scripted
+      TCP input + screenshots).** Current screenshot run:
+      `build/gbtower_diag_red_rawwindows_20260601/`. Earlier reference:
+      `build/gbtower_asset_wait_trace_screens5_20260531/`.
+
+      Route from a fresh boot/intro state:
+      1. Press `Start`, wait ~4.2s.
+      2. Press `Start`, wait ~4.2s. Verified title screen:
+         `02_title.png`.
+      3. Press `A`, wait ~4.2s. Verified Game Pak Check:
+         `03_gamepak_check.png`.
+      4. Press `A`, wait ~4.2s. Verified main select:
+         `04_main_select.png`.
+      5. Press `A` on default `POKEMON STADIUM`, wait ~5s. Verified
+         Stadium map: `05_stadium_overworld.png`.
+      6. Press `DRight`, wait ~1.5s. Verified GB Tower highlighted:
+         `06_gbtower_highlighted.png`.
+      7. Press `A`, wait ~2.5s. Verified GB cart select:
+         `07_cart_select.png`.
+      8. Press `DRight`, wait ~1.0s. Verified Red/2P selected:
+         `08_red_selected.png`.
+      9. Press `A` to launch Red.
+
+      Notes for future scripted runs: the first `Start` may only advance the
+      boot/attract sequence; the second `Start` should land on the title
+      before pressing `A`.
+
+      2026-06-01 update: the original access violation and subsequent
+      runtime function lookup misses are fixed. The fix chain was:
+      normalize static `jr $ra` return links; seed static entries from
+      relocation targets, indirect-dispatch fallthroughs, branch
+      fallthroughs, link targets, and bounded raw fallthrough windows;
+      fix orphan LO16/HI16 relocation pairing; and add the GB Tower custom
+      RSP task path. Confirmed resolved misses included link/runtime
+      targets `0x8120B04C`/`0x80128B9C`, `0x8120B6E8`/`0x80129238`,
+      `0x8120B6F4`, and `0x8120A9DC`/`0x8012852C`.
+
+      2026-06-02 note: the post-navigation black-screen blocker described
+      in the 2026-06-01 update is superseded by the current fixed status
+      above. The missing piece was the CGB GB Tower ucode path: Yellow uses
+      a second boot blob (`0x9E4`) that must be selected before the generic
+      `M_AUDTASK -> aspMain` fallback.
 
 - [x] **Active per-site workarounds in `extras.c` / `game.toml`
       should migrate to proper runtime fixes.** ~~Tracked in

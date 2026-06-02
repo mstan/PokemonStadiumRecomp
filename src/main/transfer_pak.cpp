@@ -14,6 +14,8 @@
 
 #include <librecomp/helpers.hpp>
 
+#include "ultramodern/ultramodern.hpp"
+
 namespace pkmnstadium::transfer_pak {
 namespace {
     constexpr int port_count = 4;
@@ -355,6 +357,43 @@ namespace {
     std::mutex port_mutex;
     bool debug_enabled = false;
 
+    uint32_t si_dma_latency_us() {
+        static uint32_t value = []() {
+            constexpr uint32_t default_latency_us = 50;
+            const char* env = std::getenv("N64RECOMP_SI_DMA_US");
+            if (env == nullptr || env[0] == '\0') {
+                return default_latency_us;
+            }
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(env, &end, 10);
+            if (end == env) {
+                return default_latency_us;
+            }
+            return static_cast<uint32_t>(parsed);
+        }();
+        return value;
+    }
+
+    void wait_for_si_dma(uint8_t* rdram, PTR(OSMesgQueue) mq) {
+        const uint32_t latency_us = si_dma_latency_us();
+        if (latency_us == 0 || mq == NULLPTR || !ultramodern::is_game_thread()) {
+            return;
+        }
+
+        if (ultramodern::thread_queue_empty(PASS_RDRAM ultramodern::running_queue)) {
+            ultramodern::sleep_milliseconds((latency_us + 999) / 1000);
+            return;
+        }
+
+        ultramodern::send_external_message_after(PASS_RDRAM mq, (OSMesg)0, latency_us);
+        osRecvMesg(PASS_RDRAM mq, NULLPTR, OS_MESG_BLOCK);
+    }
+
+    void wait_for_cont_ram_transfer(uint8_t* rdram, PTR(OSMesgQueue) mq) {
+        wait_for_si_dma(rdram, mq);
+        wait_for_si_dma(rdram, mq);
+    }
+
     std::unordered_map<std::string, std::string> read_config_file(
         const std::filesystem::path& path) {
         std::unordered_map<std::string, std::string> values;
@@ -506,10 +545,13 @@ int write_block(int port, uint16_t block_address, const uint8_t* data) {
 }
 
 extern "C" void __osContRamRead_recomp(uint8_t* rdram, recomp_context* ctx) {
+    const PTR(OSMesgQueue) mq = _arg<0, PTR(OSMesgQueue)>(rdram, ctx);
     const int channel = _arg<1, s32>(rdram, ctx);
     const uint16_t address = _arg<2, u16>(rdram, ctx);
     const gpr buffer = ctx->r7;
     std::array<uint8_t, pkmnstadium::transfer_pak::block_size> block{};
+
+    pkmnstadium::transfer_pak::wait_for_cont_ram_transfer(rdram, mq);
 
     const int ret = pkmnstadium::transfer_pak::read_block(channel, address, block.data());
     if (ret == 0) {
@@ -521,6 +563,7 @@ extern "C" void __osContRamRead_recomp(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void __osContRamWrite_recomp(uint8_t* rdram, recomp_context* ctx) {
+    const PTR(OSMesgQueue) mq = _arg<0, PTR(OSMesgQueue)>(rdram, ctx);
     const int channel = _arg<1, s32>(rdram, ctx);
     const uint16_t address = _arg<2, u16>(rdram, ctx);
     const gpr buffer = ctx->r7;
@@ -529,11 +572,15 @@ extern "C" void __osContRamWrite_recomp(uint8_t* rdram, recomp_context* ctx) {
     for (int i = 0; i < pkmnstadium::transfer_pak::block_size; i++) {
         block[i] = MEM_BU(i, buffer);
     }
+    pkmnstadium::transfer_pak::wait_for_cont_ram_transfer(rdram, mq);
+
     const int ret = pkmnstadium::transfer_pak::write_block(channel, address, block.data());
     _return<s32>(ctx, ret);
 }
 
 extern "C" void __osPfsGetStatus_recomp(uint8_t* rdram, recomp_context* ctx) {
+    const PTR(OSMesgQueue) mq = _arg<0, PTR(OSMesgQueue)>(rdram, ctx);
     const int channel = _arg<1, s32>(rdram, ctx);
+    pkmnstadium::transfer_pak::wait_for_cont_ram_transfer(rdram, mq);
     _return<s32>(ctx, pkmnstadium::transfer_pak::has_transfer_pak(channel) ? 0 : 1);
 }

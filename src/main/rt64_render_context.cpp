@@ -36,6 +36,7 @@
 
 #include "ultramodern/ultramodern.hpp"
 #include "ultramodern/config.hpp"
+#include "librecomp/rdp.hpp"
 
 #include "pokestadium_render.h"
 #include "debug_server.h"
@@ -48,15 +49,6 @@ static uint8_t DMEM[0x1000];
 static uint8_t IMEM[0x1000];
 
 unsigned int MI_INTR_REG = 0;
-
-unsigned int DPC_START_REG = 0;
-unsigned int DPC_END_REG = 0;
-unsigned int DPC_CURRENT_REG = 0;
-unsigned int DPC_STATUS_REG = 0;
-unsigned int DPC_CLOCK_REG = 0;
-unsigned int DPC_BUFBUSY_REG = 0;
-unsigned int DPC_PIPEBUSY_REG = 0;
-unsigned int DPC_TMEM_REG = 0;
 
 static void dummy_check_interrupts() {}
 
@@ -258,14 +250,15 @@ pokestadium::renderer::RT64Context::RT64Context(uint8_t* rdram,
 
     appCore.MI_INTR_REG = &MI_INTR_REG;
 
-    appCore.DPC_START_REG = &DPC_START_REG;
-    appCore.DPC_END_REG = &DPC_END_REG;
-    appCore.DPC_CURRENT_REG = &DPC_CURRENT_REG;
-    appCore.DPC_STATUS_REG = &DPC_STATUS_REG;
-    appCore.DPC_CLOCK_REG = &DPC_CLOCK_REG;
-    appCore.DPC_BUFBUSY_REG = &DPC_BUFBUSY_REG;
-    appCore.DPC_PIPEBUSY_REG = &DPC_PIPEBUSY_REG;
-    appCore.DPC_TMEM_REG = &DPC_TMEM_REG;
+    auto& dpc_regs = recomp::rdp::dp_registers();
+    appCore.DPC_START_REG = &dpc_regs.start;
+    appCore.DPC_END_REG = &dpc_regs.end;
+    appCore.DPC_CURRENT_REG = &dpc_regs.current;
+    appCore.DPC_STATUS_REG = &dpc_regs.status;
+    appCore.DPC_CLOCK_REG = &dpc_regs.clock;
+    appCore.DPC_BUFBUSY_REG = &dpc_regs.bufbusy;
+    appCore.DPC_PIPEBUSY_REG = &dpc_regs.pipebusy;
+    appCore.DPC_TMEM_REG = &dpc_regs.tmem;
 
     ultramodern::renderer::ViRegs* vi_regs = ultramodern::renderer::get_vi_regs();
     appCore.VI_STATUS_REG        = &vi_regs->VI_STATUS_REG;

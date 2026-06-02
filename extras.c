@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef _WIN32
 /* Defined here (top of file) rather than before its sole use site
@@ -38,6 +39,7 @@
  * it (Memmap_ClearFragmentMemmap), resetting section_addresses[] to the
  * link literal. Defined in lib/N64ModernRuntime/librecomp/src/overlays.cpp. */
 extern void recomp_unregister_runtime_fragment(uint32_t id);
+extern int32_t* section_addresses;
 
 /* Read a 32-bit big-endian value from rdram. rdram on the host
  * side stores BE words in word-swapped (per-byte XOR-3) order, so
@@ -158,7 +160,6 @@ UNIMPL_LIBULTRA(__osSetSR)
 UNIMPL_LIBULTRA(__osSetCause)
 UNIMPL_LIBULTRA(__osSetCount)
 UNIMPL_LIBULTRA(__osSetCompare)
-UNIMPL_LIBULTRA(osDpGetCounters)
 UNIMPL_LIBULTRA(rmonPrintf)
 
 /* ------------------------------------------------------------------ */
@@ -183,8 +184,7 @@ static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
  * Stderr-prints the FIRST entry per function, then keeps counting
  * silently (avoids flooding stderr while still surfacing rare events).
  */
-#define INTERESTING_FN_COUNT 48
-static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
+static const char* const k_interesting_fns[] = {
     "func_80005084",        /* SP DONE handler (case 0x64) */
     "func_80005148",        /* RDP DONE handler (case 0x65) */
     "func_80004B0C",        /* SP DONE inner (calls task->queue) */
@@ -233,8 +233,43 @@ static const char* const k_interesting_fns[INTERESTING_FN_COUNT] = {
     "func_8004FF20",        /* fragment36 cleanup callee */
     "func_80005EAC",        /* fragment36 cleanup callee */
     "main_pool_pop_state",  /* fragment36 last cleanup */
+    "func_8000D5C0",        /* GB Tower helper thread */
+    "func_8000D678",        /* GB Tower main thread */
+    "func_81200AA8",        /* GB Tower Transfer Pak init thread */
+    "func_812011D0",        /* GB Tower init continuation */
+    "func_81202210",        /* GB Tower framebuffer helper */
+    "func_8120241C",        /* GB Tower framebuffer helper */
+    "func_81202EA8",        /* GB Tower display-list helper */
+    "func_81202FCC",        /* GB Tower display-list submit helper */
+    "func_812033F4",        /* GB Tower startup / state driver */
+    "func_81203F3C",        /* GB Tower update helper */
+    "func_81204A84",        /* GB Tower state transition helper */
+    "func_8120572C",        /* GB Tower per-frame state machine */
+    "func_81206D9C",        /* GB Tower main-thread init */
+    "func_81206E64",        /* GB Tower main-thread tick */
+    "func_81206F38",        /* GB Tower helper-thread tick */
+    "func_81209078",        /* GB Tower audio buffer pump */
+    "func_81209870",        /* GB Tower GB CPU/emulator init/reset */
+    "func_81209EB4",        /* GB Tower GB CPU step entry */
+    "func_8120A660",        /* GB Tower GB CPU memory fetch helper */
+    "func_8120A69C",        /* GB Tower GB CPU memory fetch helper */
+    "func_8120A6A0",        /* GB Tower GB CPU memory fetch helper */
+    "func_8120A73C",        /* GB Tower GB CPU dispatch loop */
+    "static_9_81209FBC",    /* GB Tower GB CPU step exit continuation */
+    "static_9_8120ACC0",    /* GB Tower GB CPU yielded memory-map setup */
+    "static_9_8120ACD4",    /* GB Tower GB CPU yielded memory-map loop */
+    "static_9_8120ACDC",    /* GB Tower GB CPU yielded memory-map resume */
+    "func_8120B490",        /* GB Tower GB CPU save/yield helper */
+    "func_8120B4B8",        /* GB Tower GB CPU restore/resume helper */
+    "func_8120B4D8",        /* GB Tower GB CPU resume continuation */
+    "func_8120B4E4",        /* GB Tower GB CPU resume continuation */
+    "static_9_8120B424",    /* GB Tower GB CPU scanline/step continuation */
+    "func_81208828",        /* GB Tower audio sample fill */
+    "func_81209374",        /* GB Tower audio sample fill */
+    "osGbSetNextBuffer",    /* GB Tower direct AI buffer submit */
 };
-static volatile uint64_t k_interesting_counts[INTERESTING_FN_COUNT];
+#define INTERESTING_FN_COUNT ((int)(sizeof(k_interesting_fns) / sizeof(k_interesting_fns[0])))
+static volatile uint64_t k_interesting_counts[sizeof(k_interesting_fns) / sizeof(k_interesting_fns[0])];
 
 /* Voluntary-preemption fast-path entry. Declared here so we don't need
  * to pull in C++ headers from a C TU. Defined in
@@ -243,7 +278,144 @@ static volatile uint64_t k_interesting_counts[INTERESTING_FN_COUNT];
  * is pending. See scheduler_tick.hpp for the design rationale. */
 extern void ultramodern_scheduler_tick(void);
 
-void pkmnstadium_trace_entry(const char *func) {
+static void pkmnstadium_asset_wait_trace(const char *func,
+                                         const recomp_context *ctx,
+                                         int is_return) {
+    if (ctx == NULL || strcmp(func, "func_800484E0") != 0) {
+        return;
+    }
+
+    enum { ASSET_WAIT_CALLER_CAP = 64 };
+    static volatile uint32_t caller_pc[ASSET_WAIT_CALLER_CAP];
+    static volatile uint64_t caller_count[ASSET_WAIT_CALLER_CAP];
+    static volatile uint32_t next_slot = 0;
+
+    uint32_t ra = (uint32_t)ctx->r31;
+    uint32_t slot = ASSET_WAIT_CALLER_CAP;
+    for (uint32_t i = 0; i < ASSET_WAIT_CALLER_CAP; i++) {
+        if (__atomic_load_n(&caller_pc[i], __ATOMIC_RELAXED) == ra) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot == ASSET_WAIT_CALLER_CAP) {
+        uint32_t new_slot = __atomic_fetch_add(&next_slot, 1, __ATOMIC_RELAXED);
+        slot = new_slot & (ASSET_WAIT_CALLER_CAP - 1);
+        __atomic_store_n(&caller_pc[slot], ra, __ATOMIC_RELAXED);
+        __atomic_store_n(&caller_count[slot], 0, __ATOMIC_RELAXED);
+        fprintf(stderr, "[asset-wait] new caller ra=0x%08X slot=%u\n", ra, slot);
+        fflush(stderr);
+    }
+
+    if (!is_return) {
+        return;
+    }
+
+    uint64_t count = __atomic_add_fetch(&caller_count[slot], 1, __ATOMIC_RELAXED);
+    if (count <= 8 || (count & (count - 1)) == 0) {
+        fprintf(stderr,
+                "[asset-wait] caller=0x%08X count=%llu ret_v0=0x%08X\n",
+                ra,
+                (unsigned long long)count,
+                (uint32_t)ctx->r2);
+        fflush(stderr);
+    }
+}
+
+static int pkmnstadium_is_gb_fragment_trace_func(const char *func) {
+    if (func == NULL) {
+        return 0;
+    }
+
+    return strncmp(func, "func_812", 8) == 0 ||
+           strncmp(func, "static_9_812", 12) == 0 ||
+           strcmp(func, "fragment1_entry") == 0 ||
+           strncmp(func, "func_878", 8) == 0 ||
+           strncmp(func, "static_14_878", 13) == 0 ||
+           strcmp(func, "fragment2_entry") == 0;
+}
+
+static void pkmnstadium_gb_fragment_trace(const char *func,
+                                          const recomp_context *ctx,
+                                          int is_return) {
+    if (!pkmnstadium_is_gb_fragment_trace_func(func)) {
+        return;
+    }
+
+    static int trace_mode = -1;
+    if (trace_mode < 0) {
+        const char *env = getenv("PSR_GB_FRAG_TRACE");
+        if (env == NULL || env[0] == '\0' || strcmp(env, "0") == 0) {
+            trace_mode = 0;
+        } else if (strcmp(env, "full") == 0 || strcmp(env, "FULL") == 0) {
+            trace_mode = 2;
+        } else {
+            trace_mode = 1;
+        }
+    }
+    if (trace_mode == 0) {
+        return;
+    }
+    if (trace_mode == 1 &&
+        (strcmp(func, "func_812015E0") == 0 ||
+         strcmp(func, "func_81201560") == 0 ||
+         strcmp(func, "func_8120157C") == 0 ||
+         strcmp(func, "func_81201598") == 0)) {
+        return;
+    }
+
+    static volatile uint64_t event_count = 0;
+    uint64_t event = __atomic_add_fetch(&event_count, 1, __ATOMIC_RELAXED);
+
+    /* The current GB Tower crash happens shortly after fragment 0x81200000
+     * registration. Keep the first large window complete; after that, avoid
+     * unbounded disk growth while still proving whether execution continues.
+     */
+    if (event > 250000 && (event & (event - 1)) != 0) {
+        return;
+    }
+
+    FILE *f = fopen(
+        "F:/Projects/n64recomp/PokemonStadiumRecomp/build/gb_frag_trace.log",
+        event == 1 ? "w" : "a");
+    if (f == NULL) {
+        return;
+    }
+
+    fprintf(f,
+        "%c #%llu %s",
+        is_return ? 'R' : 'E',
+        (unsigned long long)event,
+        func);
+    if (ctx != NULL) {
+        fprintf(f,
+            " ra=0x%08X sp=0x%08X v0=0x%08X v1=0x%08X "
+            "a0=0x%08X a1=0x%08X a2=0x%08X a3=0x%08X "
+            "gp=0x%08X t7=0x%08X t8=0x%08X t9=0x%08X "
+            "s0=0x%08X s1=0x%08X s6=0x%08X",
+            (uint32_t)ctx->r31,
+            (uint32_t)ctx->r29,
+            (uint32_t)ctx->r2,
+            (uint32_t)ctx->r3,
+            (uint32_t)ctx->r4,
+            (uint32_t)ctx->r5,
+            (uint32_t)ctx->r6,
+            (uint32_t)ctx->r7,
+            (uint32_t)ctx->r28,
+            (uint32_t)ctx->r15,
+            (uint32_t)ctx->r24,
+            (uint32_t)ctx->r25,
+            (uint32_t)ctx->r16,
+            (uint32_t)ctx->r17,
+            (uint32_t)ctx->r22);
+    }
+    fputc('\n', f);
+    fclose(f);
+}
+
+static void pkmnstadium_trace_entry_common(const char *func,
+                                           const recomp_context *ctx) {
     uint64_t idx = __atomic_fetch_add(&trace_ring_write_idx, 1, __ATOMIC_RELAXED);
     trace_ring[idx & (TRACE_RING_CAP - 1)] = func;
 
@@ -257,6 +429,9 @@ void pkmnstadium_trace_entry(const char *func) {
         }
     }
 
+    pkmnstadium_asset_wait_trace(func, ctx, 0);
+    pkmnstadium_gb_fragment_trace(func, ctx, 0);
+
     /* Voluntary-preemption check. Almost always returns immediately
      * after a single relaxed atomic load. Fires the slow path only
      * when the ultramodern host monitor has decided the current game
@@ -266,6 +441,14 @@ void pkmnstadium_trace_entry(const char *func) {
      * progress. Retires the free-battle-modal, petit-cup, and
      * asset-pending-bypass per-site hacks. */
     ultramodern_scheduler_tick();
+}
+
+void pkmnstadium_trace_entry(const char *func) {
+    pkmnstadium_trace_entry_common(func, NULL);
+}
+
+void pkmnstadium_trace_entry_ctx(const char *func, const void *ctx) {
+    pkmnstadium_trace_entry_common(func, (const recomp_context *)ctx);
 }
 
 /* Public accessor used by debug_server's "interesting_fns" command. */
@@ -278,6 +461,314 @@ const char* pkmnstadium_interesting_fn_name(int idx) {
     return k_interesting_fns[idx];
 }
 int pkmnstadium_interesting_fn_total(void) { return INTERESTING_FN_COUNT; }
+
+/* ------------------------------------------------------------------ */
+/* GB Tower state-machine trace.                                      */
+/*                                                                    */
+/* The embedded GB runtime is a two-thread fragment with most control */
+/* flow in func_8120572C. These hooks record the branch checkpoints    */
+/* that decide whether the GB core advances and whether a framebuffer */
+/* display list is submitted. They are diagnostics only and are        */
+/* queried through debug_server's gbtower_trace command.              */
+/* ------------------------------------------------------------------ */
+
+struct gbtower_trace_ev {
+    uint64_t seq;
+    uint32_t tag;
+    uint32_t s0;
+    uint32_t ra;
+    uint32_t sp;
+    uint32_t r2, r3, r4, r5, r6, r7, r8;
+    uint32_t r9, r10, r11, r12, r13, r14, r15;
+    uint32_t r16, r17, r18, r19, r20, r21, r22, r23, r24, r25;
+    uint32_t state;
+    uint32_t phase;
+    uint32_t g_c4f4;
+    uint32_t g_c4f8;
+    uint32_t g_c4e0;
+    uint32_t g_c4e4;
+    uint32_t g_c4e8;
+    uint32_t g_c4ec;
+    uint32_t g_c4f0;
+    uint32_t g_c4fc;
+    uint32_t g_b2b8;
+    uint32_t s_ctrl0;
+    uint32_t s_ctrl1;
+    uint32_t s_ctrl2;
+    uint32_t s_5dd0;
+    uint32_t s_hdr0;
+    uint32_t s_hdr1;
+    uint32_t s_hdr2;
+    uint32_t s_ready0;
+    uint32_t s_ready1;
+    uint32_t s_pad0;
+    uint32_t w5390, w5394, w5398;
+    uint32_t w53a4, w53b4, w53bc;
+    uint32_t rom_0140, rom_0144, rom_0148, rom_014c;
+    uint32_t rom_type;
+    uint32_t w5d64, w5d68, w5d6c, w5d70, w5d74, w5d78, w5d7c;
+    uint32_t ctx_r2_byte;
+    uint32_t gb_pc;
+    uint32_t gb_pc_base;
+    uint32_t gb_pc_addr;
+    uint32_t gb_pc_byte;
+    uint32_t op_table0;
+    uint32_t op_handler;
+    uint32_t io_ff40_43;
+    uint32_t io_ff44_47;
+    uint32_t io_ff00_03, io_ff04_07, io_ff0c_0f;
+    uint32_t io_ff4c_4f, io_ff50_53, io_ff54_57;
+    uint32_t hram_ff80_83, hram_ff84_87, hram_ff88_8b;
+    uint32_t hram_ffd4_d7, hram_fffc_ff;
+    uint32_t h53d6, h53d8, h53da, h53dc, h53de;
+    uint32_t w53c0, w53c4, w53c8;
+    uint32_t saved_5c44, saved_5c48, saved_5c4c, saved_5c50, saved_5c54;
+    uint32_t w5388, w538c, w53b8, w53cc, w53d0, w53f0, w53f2_53f5;
+    uint32_t w5484, w5488, w548c;
+    uint32_t w55ac, w55b0, w55b4, w55b8, w55bc, w55c0, w55c4, w55c8;
+    uint32_t w55ec, w55f0, w55f4, w55f8, w55fc, w5600, w5604, w5608;
+    uint32_t w576c;
+    uint32_t g_c4e2, g_c4f6, g_c4f7, g_c4f9;
+    uint32_t cart_type_flags;
+};
+
+#define GBTOWER_TRACE_CAP 32768
+static struct gbtower_trace_ev s_gbtower_trace[GBTOWER_TRACE_CAP];
+static volatile uint64_t s_gbtower_trace_seq = 0;
+
+static int vaddr_to_paddr32(uint32_t vaddr, uint32_t* out_paddr) {
+    uint32_t paddr;
+    if ((vaddr >= 0x80000000u && vaddr < 0x80800000u) ||
+        (vaddr >= 0xA0000000u && vaddr < 0xA0800000u)) {
+        paddr = vaddr & 0x7FFFFFu;
+    } else if (vaddr < 0x800000u) {
+        paddr = vaddr;
+    } else {
+        return 0;
+    }
+    if (paddr >= 0x800000u) {
+        return 0;
+    }
+    *out_paddr = paddr;
+    return 1;
+}
+
+static uint8_t load_be8_v(uint8_t* rdram, uint32_t vaddr) {
+    uint32_t paddr = 0;
+    if (!vaddr_to_paddr32(vaddr, &paddr)) {
+        return 0;
+    }
+    return rdram[paddr ^ 3u];
+}
+
+static uint16_t load_be16_v(uint8_t* rdram, uint32_t vaddr) {
+    uint32_t paddr = 0;
+    if (!vaddr_to_paddr32(vaddr, &paddr) || paddr + 1u >= 0x800000u) {
+        return 0;
+    }
+    return (uint16_t)(((uint16_t)rdram[paddr ^ 3u] << 8) |
+                      (uint16_t)rdram[(paddr + 1u) ^ 3u]);
+}
+
+static uint32_t load_be32_v(uint8_t* rdram, uint32_t vaddr) {
+    uint32_t paddr = 0;
+    if (!vaddr_to_paddr32(vaddr, &paddr) || paddr + 3u >= 0x800000u) {
+        return 0;
+    }
+    return MEM_LOAD_BE32(rdram, paddr);
+}
+
+static uint32_t frag9_runtime_vaddr(uint32_t link_offset) {
+    uint32_t base = 0x81200000u;
+    if (section_addresses != NULL && section_addresses[9] != 0) {
+        base = (uint32_t)section_addresses[9];
+    }
+    return base + link_offset;
+}
+
+static uint32_t frag9_load32(uint8_t* rdram, uint32_t link_offset) {
+    return load_be32_v(rdram, frag9_runtime_vaddr(link_offset));
+}
+
+static uint8_t frag9_load8(uint8_t* rdram, uint32_t link_offset) {
+    return load_be8_v(rdram, frag9_runtime_vaddr(link_offset));
+}
+
+void pkmnstadium_gbtower_state_trace(uint8_t* rdram, uint32_t tag,
+                                     uint32_t s0, const void* raw_ctx) {
+    static int trace_cpu_tags = -1;
+    if (trace_cpu_tags < 0) {
+        const char* env = getenv("PSR_GBTOWER_TRACE_CPU");
+        trace_cpu_tags = (env != NULL && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+    }
+    if (!trace_cpu_tags && (tag == 0x8120A73Cu || tag == 0x81209FB4u)) {
+        return;
+    }
+
+    const recomp_context* ctx = (const recomp_context*)raw_ctx;
+    if (s0 == 0) {
+        s0 = frag9_load32(rdram, 0x2B2C0u);
+    }
+    uint64_t seq = __atomic_fetch_add(&s_gbtower_trace_seq, 1, __ATOMIC_RELAXED);
+    struct gbtower_trace_ev* ev = &s_gbtower_trace[seq % GBTOWER_TRACE_CAP];
+    memset(ev, 0, sizeof(*ev));
+
+    ev->seq = seq;
+    ev->tag = tag;
+    ev->s0 = s0;
+    if (ctx != NULL) {
+        ev->ra = (uint32_t)ctx->r31;
+        ev->sp = (uint32_t)ctx->r29;
+        ev->r2 = (uint32_t)ctx->r2;
+        ev->r3 = (uint32_t)ctx->r3;
+        ev->r4 = (uint32_t)ctx->r4;
+        ev->r5 = (uint32_t)ctx->r5;
+        ev->r6 = (uint32_t)ctx->r6;
+        ev->r7 = (uint32_t)ctx->r7;
+        ev->r8 = (uint32_t)ctx->r8;
+        ev->r9 = (uint32_t)ctx->r9;
+        ev->r10 = (uint32_t)ctx->r10;
+        ev->r11 = (uint32_t)ctx->r11;
+        ev->r12 = (uint32_t)ctx->r12;
+        ev->r13 = (uint32_t)ctx->r13;
+        ev->r14 = (uint32_t)ctx->r14;
+        ev->r15 = (uint32_t)ctx->r15;
+        ev->r16 = (uint32_t)ctx->r16;
+        ev->r17 = (uint32_t)ctx->r17;
+        ev->r18 = (uint32_t)ctx->r18;
+        ev->r19 = (uint32_t)ctx->r19;
+        ev->r20 = (uint32_t)ctx->r20;
+        ev->r21 = (uint32_t)ctx->r21;
+        ev->r22 = (uint32_t)ctx->r22;
+        ev->r23 = (uint32_t)ctx->r23;
+        ev->r24 = (uint32_t)ctx->r24;
+        ev->r25 = (uint32_t)ctx->r25;
+        ev->ctx_r2_byte = load_be8_v(rdram, (uint32_t)ctx->r2);
+        uint32_t op = ev->ctx_r2_byte & 0xFFu;
+        ev->op_table0 = load_be32_v(rdram, (uint32_t)ctx->r28 + 0x4B88u + op * 8u);
+        ev->op_handler = load_be32_v(rdram, (uint32_t)ctx->r28 + 0x4B8Cu + op * 8u);
+    }
+
+    ev->state = frag9_load32(rdram, 0x2C4DCu);
+    ev->phase = frag9_load8(rdram, 0x2C4FCu);
+    ev->g_c4e0 = frag9_load32(rdram, 0x2C4E0u);
+    ev->g_c4e4 = frag9_load32(rdram, 0x2C4E4u);
+    ev->g_c4e8 = frag9_load32(rdram, 0x2C4E8u);
+    ev->g_c4ec = frag9_load32(rdram, 0x2C4ECu);
+    ev->g_c4f0 = frag9_load32(rdram, 0x2C4F0u);
+    ev->g_c4f4 = frag9_load32(rdram, 0x2C4F4u);
+    ev->g_c4f8 = frag9_load32(rdram, 0x2C4F8u);
+    ev->g_c4fc = frag9_load32(rdram, 0x2C4FCu);
+    ev->g_c4e2 = frag9_load8(rdram, 0x2C4E2u);
+    ev->g_c4f6 = frag9_load8(rdram, 0x2C4F6u);
+    ev->g_c4f7 = frag9_load8(rdram, 0x2C4F7u);
+    ev->g_c4f9 = frag9_load8(rdram, 0x2C4F9u);
+    ev->g_b2b8 = frag9_load32(rdram, 0x2B2B8u);
+
+    if (s0 != 0) {
+        ev->s_ctrl0 = load_be32_v(rdram, s0 + 0x5DC4u);
+        ev->s_ctrl1 = load_be32_v(rdram, s0 + 0x5DC8u);
+        ev->s_ctrl2 = load_be32_v(rdram, s0 + 0x5DCCu);
+        ev->s_5dd0  = load_be32_v(rdram, s0 + 0x5DD0u);
+        ev->s_hdr0  = load_be32_v(rdram, s0 + 0x5CA8u);
+        ev->s_hdr1  = load_be32_v(rdram, s0 + 0x5DA4u);
+        ev->s_hdr2  = load_be32_v(rdram, s0 + 0x5DA8u);
+        ev->s_ready0 = load_be32_v(rdram, s0 + 0x549Cu);
+        ev->s_ready1 = load_be32_v(rdram, s0 + 0x559Cu);
+        ev->s_pad0 = load_be32_v(rdram, s0 + 0x53E8u);
+        ev->gb_pc = load_be16_v(rdram, s0 + 0x53E8u);
+        ev->gb_pc_base = load_be32_v(rdram, s0 + 0x55ACu + ((ev->gb_pc >> 10) & 0x3Cu));
+        ev->gb_pc_addr = ev->gb_pc_base + ev->gb_pc;
+        ev->gb_pc_byte = load_be8_v(rdram, ev->gb_pc_addr);
+        ev->io_ff00_03 = load_be32_v(rdram, s0 + 0x100u);
+        ev->io_ff04_07 = load_be32_v(rdram, s0 + 0x104u);
+        ev->io_ff0c_0f = load_be32_v(rdram, s0 + 0x10Cu);
+        ev->io_ff40_43 = load_be32_v(rdram, s0 + 0x140u);
+        ev->io_ff44_47 = load_be32_v(rdram, s0 + 0x144u);
+        ev->io_ff4c_4f = load_be32_v(rdram, s0 + 0x14Cu);
+        ev->io_ff50_53 = load_be32_v(rdram, s0 + 0x150u);
+        ev->io_ff54_57 = load_be32_v(rdram, s0 + 0x154u);
+        ev->hram_ff80_83 = load_be32_v(rdram, s0 + 0x180u);
+        ev->hram_ff84_87 = load_be32_v(rdram, s0 + 0x184u);
+        ev->hram_ff88_8b = load_be32_v(rdram, s0 + 0x188u);
+        ev->hram_ffd4_d7 = load_be32_v(rdram, s0 + 0x1D4u);
+        ev->hram_fffc_ff = load_be32_v(rdram, s0 + 0x1FCu);
+        ev->h53d6 = load_be16_v(rdram, s0 + 0x53D6u);
+        ev->h53d8 = load_be16_v(rdram, s0 + 0x53D8u);
+        ev->h53da = load_be16_v(rdram, s0 + 0x53DAu);
+        ev->h53dc = load_be16_v(rdram, s0 + 0x53DCu);
+        ev->h53de = load_be16_v(rdram, s0 + 0x53DEu);
+        ev->w5388 = load_be32_v(rdram, s0 + 0x5388u);
+        ev->w538c = load_be32_v(rdram, s0 + 0x538Cu);
+        ev->w53b8 = load_be32_v(rdram, s0 + 0x53B8u);
+        ev->w53c0 = load_be32_v(rdram, s0 + 0x53C0u);
+        ev->w53c4 = load_be32_v(rdram, s0 + 0x53C4u);
+        ev->w53c8 = load_be32_v(rdram, s0 + 0x53C8u);
+        ev->w53cc = load_be32_v(rdram, s0 + 0x53CCu);
+        ev->w53d0 = load_be32_v(rdram, s0 + 0x53D0u);
+        ev->w53f0 = load_be32_v(rdram, s0 + 0x53F0u);
+        ev->w53f2_53f5 = load_be32_v(rdram, s0 + 0x53F2u);
+        ev->saved_5c44 = load_be32_v(rdram, s0 + 0x5C44u);
+        ev->saved_5c48 = load_be32_v(rdram, s0 + 0x5C48u);
+        ev->saved_5c4c = load_be32_v(rdram, s0 + 0x5C4Cu);
+        ev->saved_5c50 = load_be32_v(rdram, s0 + 0x5C50u);
+        ev->saved_5c54 = load_be32_v(rdram, s0 + 0x5C54u);
+        ev->w5390 = load_be32_v(rdram, s0 + 0x5390u);
+        ev->w5394 = load_be32_v(rdram, s0 + 0x5394u);
+        ev->w5398 = load_be32_v(rdram, s0 + 0x5398u);
+        ev->w53a4 = load_be32_v(rdram, s0 + 0x53A4u);
+        ev->w53b4 = load_be32_v(rdram, s0 + 0x53B4u);
+        ev->w53bc = load_be32_v(rdram, s0 + 0x53BCu);
+        ev->rom_0140 = load_be32_v(rdram, ev->w53bc + 0x140u);
+        ev->rom_0144 = load_be32_v(rdram, ev->w53bc + 0x144u);
+        ev->rom_0148 = load_be32_v(rdram, ev->w53bc + 0x148u);
+        ev->rom_014c = load_be32_v(rdram, ev->w53bc + 0x14Cu);
+        ev->rom_type = load_be8_v(rdram, ev->w53bc + 0x147u);
+        ev->cart_type_flags = frag9_load32(rdram, 0x0D90Cu + ev->rom_type * 4u);
+        ev->w5484 = load_be32_v(rdram, s0 + 0x5484u);
+        ev->w5488 = load_be32_v(rdram, s0 + 0x5488u);
+        ev->w548c = load_be32_v(rdram, s0 + 0x548Cu);
+        ev->w55ac = load_be32_v(rdram, s0 + 0x55ACu);
+        ev->w55b0 = load_be32_v(rdram, s0 + 0x55B0u);
+        ev->w55b4 = load_be32_v(rdram, s0 + 0x55B4u);
+        ev->w55b8 = load_be32_v(rdram, s0 + 0x55B8u);
+        ev->w55bc = load_be32_v(rdram, s0 + 0x55BCu);
+        ev->w55c0 = load_be32_v(rdram, s0 + 0x55C0u);
+        ev->w55c4 = load_be32_v(rdram, s0 + 0x55C4u);
+        ev->w55c8 = load_be32_v(rdram, s0 + 0x55C8u);
+        ev->w55ec = load_be32_v(rdram, s0 + 0x55ECu);
+        ev->w55f0 = load_be32_v(rdram, s0 + 0x55F0u);
+        ev->w55f4 = load_be32_v(rdram, s0 + 0x55F4u);
+        ev->w55f8 = load_be32_v(rdram, s0 + 0x55F8u);
+        ev->w55fc = load_be32_v(rdram, s0 + 0x55FCu);
+        ev->w5600 = load_be32_v(rdram, s0 + 0x5600u);
+        ev->w5604 = load_be32_v(rdram, s0 + 0x5604u);
+        ev->w5608 = load_be32_v(rdram, s0 + 0x5608u);
+        ev->w576c = load_be32_v(rdram, s0 + 0x576Cu);
+        ev->w5d64 = load_be32_v(rdram, s0 + 0x5D64u);
+        ev->w5d68 = load_be32_v(rdram, s0 + 0x5D68u);
+        ev->w5d6c = load_be32_v(rdram, s0 + 0x5D6Cu);
+        ev->w5d70 = load_be32_v(rdram, s0 + 0x5D70u);
+        ev->w5d74 = load_be32_v(rdram, s0 + 0x5D74u);
+        ev->w5d78 = load_be32_v(rdram, s0 + 0x5D78u);
+        ev->w5d7c = load_be32_v(rdram, s0 + 0x5D7Cu);
+    }
+}
+
+uint64_t pkmnstadium_gbtower_trace_seq(void) {
+    return __atomic_load_n(&s_gbtower_trace_seq, __ATOMIC_RELAXED);
+}
+
+uint32_t pkmnstadium_gbtower_trace_cap(void) {
+    return GBTOWER_TRACE_CAP;
+}
+
+void pkmnstadium_gbtower_trace_get(uint32_t i, struct gbtower_trace_ev* out) {
+    if (out == NULL) {
+        return;
+    }
+    *out = s_gbtower_trace[i % GBTOWER_TRACE_CAP];
+}
 
 /* ------------------------------------------------------------------ */
 /* Memmap segment/fragment binding ring.                              */
@@ -2277,11 +2768,22 @@ void pkmnstadium_pers_exit(uint8_t* rdram, uint32_t v0) {
     fflush(stderr);
 }
 
-void pkmnstadium_trace_return(const char *func) {
+static void pkmnstadium_trace_return_common(const char *func,
+                                            const recomp_context *ctx) {
     /* For "where are we stuck?" the entry log is what matters; returns
      * are recorded too in case we need to reconstruct a call stack. */
     uint64_t idx = __atomic_fetch_add(&trace_ring_write_idx, 1, __ATOMIC_RELAXED);
     trace_ring[idx & (TRACE_RING_CAP - 1)] = func;  /* same slot semantics */
+    pkmnstadium_asset_wait_trace(func, ctx, 1);
+    pkmnstadium_gb_fragment_trace(func, ctx, 1);
+}
+
+void pkmnstadium_trace_return(const char *func) {
+    pkmnstadium_trace_return_common(func, NULL);
+}
+
+void pkmnstadium_trace_return_ctx(const char *func, const void *ctx) {
+    pkmnstadium_trace_return_common(func, (const recomp_context *)ctx);
 }
 
 /* Public queries used by debug_server.cpp. Returning const char* from a
@@ -2299,4 +2801,3 @@ const char* pkmnstadium_trace_at(uint64_t idx) {
 uint32_t pkmnstadium_trace_capacity(void) {
     return TRACE_RING_CAP;
 }
-

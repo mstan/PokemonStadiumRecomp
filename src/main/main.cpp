@@ -71,9 +71,44 @@ namespace pokestadium::rsp { void register_pre_task_hooks(); }
 // referenced by CMakeLists). These implement the libultra standard
 // audio/JPEG microcodes that ship with Pokemon Stadium-era N64 games.
 extern RspUcodeFunc aspMain;
+extern RspUcodeFunc gbTowerMain;
+extern RspUcodeFunc gbTowerColorMain;
 extern RspUcodeFunc njpgdspMain;
 
-static RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
+static bool rdram_be_word_matches(uint8_t* rdram, uint32_t vaddr, uint32_t expected) {
+    constexpr uint32_t kRdramSize = 0x800000u;
+    if (rdram == nullptr) {
+        return false;
+    }
+    uint32_t paddr = vaddr & 0x1FFFFFFFu;
+    if (paddr > kRdramSize - sizeof(uint32_t)) {
+        return false;
+    }
+    uint32_t actual = (uint32_t(rdram[(paddr + 0) ^ 3]) << 24) |
+                      (uint32_t(rdram[(paddr + 1) ^ 3]) << 16) |
+                      (uint32_t(rdram[(paddr + 2) ^ 3]) << 8) |
+                      (uint32_t(rdram[(paddr + 3) ^ 3]) << 0);
+    return actual == expected;
+}
+
+static bool task_boot_matches(uint8_t* rdram, const OSTask* task,
+                              uint32_t boot_size,
+                              uint32_t word0, uint32_t word1) {
+    uint32_t boot = (uint32_t)task->t.ucode_boot;
+    return boot != 0 &&
+           (uint32_t)task->t.ucode_boot_size == boot_size &&
+           rdram_be_word_matches(rdram, boot + 0, word0) &&
+           rdram_be_word_matches(rdram, boot + 4, word1);
+}
+
+static RspUcodeFunc* get_rsp_microcode(uint8_t* rdram, const OSTask* task) {
+    if (task_boot_matches(rdram, task, 0xA40, 0x401A6000u, 0xC800207Cu)) {
+        return gbTowerMain;
+    }
+    if (task_boot_matches(rdram, task, 0x9E4, 0x401A6000u, 0xC800207Cu)) {
+        return gbTowerColorMain;
+    }
+
     switch (task->t.type) {
         case M_AUDTASK:   return aspMain;
         case M_NJPEGTASK: return njpgdspMain;
@@ -408,7 +443,20 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
     *x_out = 0.0f;
     *y_out = 0.0f;
 
-    if (controller_num != 0) return false;
+    // A controller "responds" to a read iff get_connected_device_info()
+    // reports it connected — the two must agree or libultra sees an
+    // inconsistent bus. Port 0 is always present (keyboard/pad/TCP); ports
+    // 1-3 are present only when a Transfer Pak is configured there (P2/P3
+    // carts). osContGetReadData() turns a `false` return into
+    // CONT_NO_RESPONSE_ERROR, so if the presence query said "connected" but
+    // this returned false, Stadium would see a controller that never answers
+    // a read and show the "plug Controller 1 into Socket 1" hardware-fault
+    // prompt. Transfer-Pak ports therefore answer reads with idle input:
+    // they are present but no live device drives them (the human is on
+    // port 1). Their button/stick fields stay zeroed (already cleared above).
+    if (controller_num != 0) {
+        return pkmnstadium::transfer_pak::has_transfer_pak(controller_num);
+    }
 
     // TCP override is OR'd in (not exclusive). claim_input arms the
     // override so libultra's osContInit reports port 1 connected,
@@ -634,14 +682,12 @@ extern "C" void psr_post_mortem_dump(const char* reason,
                                      EXCEPTION_POINTERS* fault_info);
 
 static LONG WINAPI psr_crash_filter(EXCEPTION_POINTERS* info) {
-    // Unified post-mortem dump first (writes build/last_run_report.json).
-    // The legacy last_error.log path below is preserved for back-compat
-    // with existing tooling; remove it once everything reads
-    // last_run_report.json.
-    psr_post_mortem_dump("seh", info);
-
+    // Write the compact stack log before the larger post-mortem dump.
+    // If the process is already corrupt enough for the full JSON dump to
+    // fault, this path still leaves a durable fault address and trace tail.
     FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
     if (f) {
+        setvbuf(f, nullptr, _IONBF, 0);
         fprintf(f, "\n=== UNHANDLED EXCEPTION ===\n");
         fprintf(f, "  code:    0x%08lX\n", info->ExceptionRecord->ExceptionCode);
         fprintf(f, "  address: %p\n",      info->ExceptionRecord->ExceptionAddress);
@@ -705,7 +751,30 @@ static LONG WINAPI psr_crash_filter(EXCEPTION_POINTERS* info) {
         }
         fclose(f);
     }
+
+    // Unified post-mortem dump (writes build/last_run_report.json).
+    psr_post_mortem_dump("seh", info);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+static LONG CALLBACK psr_vectored_exception_logger(EXCEPTION_POINTERS* info) {
+    if (info == nullptr || info->ExceptionRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION &&
+        code != EXCEPTION_ILLEGAL_INSTRUCTION &&
+        code != EXCEPTION_STACK_OVERFLOW) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    static volatile LONG logged = 0;
+    if (InterlockedExchange(&logged, 1) == 0) {
+        psr_crash_filter(info);
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
 
@@ -746,11 +815,15 @@ int main(int argc, char** argv) {
     // Catch unhandled SEH exceptions from any thread (incl. game thread)
     // so silent crashes get diagnosed. Disable the Win32 error dialog
     // so the process exits immediately into our handler.
-    SetUnhandledExceptionFilter(psr_crash_filter);
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-    // Also dump on clean exit so last_run_report.json reflects the
-    // final state regardless of how the runner exited.
-    std::atexit([]() { psr_post_mortem_dump("atexit", nullptr); });
+    const bool crash_handler_disabled = std::getenv("PSR_DISABLE_CRASH_HANDLER") != nullptr;
+    if (!crash_handler_disabled) {
+        SetUnhandledExceptionFilter(psr_crash_filter);
+        AddVectoredExceptionHandler(1, psr_vectored_exception_logger);
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+        // Also dump on clean exit so last_run_report.json reflects the
+        // final state regardless of how the runner exited.
+        std::atexit([]() { psr_post_mortem_dump("atexit", nullptr); });
+    }
 #endif
 
 #ifdef _WIN32

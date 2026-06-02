@@ -27,6 +27,16 @@ extern "C" {
 
 void pkmnstadium_trace_entry(const char *func);
 void pkmnstadium_trace_return(const char *func);
+void pkmnstadium_trace_entry_ctx(const char *func, const void *ctx);
+void pkmnstadium_trace_return_ctx(const char *func, const void *ctx);
+void pkmnstadium_gbtower_state_trace(unsigned char *rdram, unsigned int tag,
+                                     unsigned int s0, const void *ctx);
+
+/* Voluntary-preemption tick (defined in N64ModernRuntime
+ * ultramodern/src/scheduler_tick.cpp, extern "C"). One relaxed atomic
+ * load on the fast path; yields only when the host monitor has flagged
+ * the current game thread as stuck >200ms. */
+void ultramodern_scheduler_tick(void);
 
 #ifdef __cplusplus
 }
@@ -37,7 +47,22 @@ void pkmnstadium_trace_return(const char *func);
 // so each expansion is a complete statement on its own. (do/while(0)
 // would still need an outer `;`.) Trailing `;` is fine even if
 // the engine ever does emit one — `;;` is a valid empty statement.
-#define TRACE_ENTRY()  pkmnstadium_trace_entry(__func__);
-#define TRACE_RETURN() pkmnstadium_trace_return(__func__);
+#ifndef PKMNSTADIUM_TRACE_HOOKS
+#define PKMNSTADIUM_TRACE_HOOKS 0
+#endif
+
+#if PKMNSTADIUM_TRACE_HOOKS
+#define TRACE_ENTRY()  pkmnstadium_trace_entry_ctx(__func__, ctx);
+#define TRACE_RETURN() pkmnstadium_trace_return_ctx(__func__, ctx);
+#else
+#define TRACE_ENTRY()
+#define TRACE_RETURN()
+#endif
+
+// Emitted by the recompiler on loop back-edges (trace_mode). Pure
+// preemption checkpoint — NO ring logging (a hot loop would flood the
+// trace ring); just the cheap scheduler tick so tight intra-function
+// spin loops become yield points.
+#define TRACE_LOOP()   ultramodern_scheduler_tick();
 
 #endif

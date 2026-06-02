@@ -60,7 +60,7 @@ target_include_directories(RecompiledFuncs PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/librecomp/include
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
 )
-file(GLOB FUNC_C_SOURCES ${CMAKE_SOURCE_DIR}/generated/*.c)
+file(GLOB FUNC_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/generated/*.c)
 target_sources(RecompiledFuncs PRIVATE ${FUNC_C_SOURCES})
 
 # ---- Runner executable ------------------------------------------------------
@@ -78,6 +78,9 @@ add_executable(PokemonStadiumRecomp
     generated/lookup.cpp
     # Pokemon Stadium's own aspMain (recompiled from baserom @ 0x68020, 0xC60 bytes).
     ${CMAKE_SOURCE_DIR}/rsp/aspMain.cpp
+    # GB Tower display/copy microcode from fragment 1 (selected by ucode boot signature).
+    ${CMAKE_SOURCE_DIR}/rsp/gbTowerMain.cpp
+    ${CMAKE_SOURCE_DIR}/rsp/gbTowerColorMain.cpp
     # njpgdspMain is the standard libultra JPEG ucode — borrow Zelda's recompiled output.
     ${CMAKE_SOURCE_DIR}/../Zelda64Recomp/rsp/njpgdspMain.cpp
 )

@@ -2939,6 +2939,276 @@ text = "pkmnstadium_memmap_clear_fragment(rdram, ctx->r4, ctx->r31);"
 # kids-club SIGSEGV. Without the probe we have no way to identify
 # which voice descriptor v0 came from.
 [[patches.hook]]
+func = "func_81206D9C"
+before_vram = 0x81206D9C
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206D9C, (uint32_t)ctx->r4, ctx);"
+
+[[patches.hook]]
+func = "func_81206E64"
+before_vram = 0x81206E64
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206E64, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81206E64"
+before_vram = 0x81206E78
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206E78, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81206E64"
+before_vram = 0x81206EC4
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206EC4, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81206E64"
+before_vram = 0x81206EF8
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206EF8, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81206E64"
+before_vram = 0x81206F08
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206F08, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81206E64"
+before_vram = 0x81206F28
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206F28, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81206F38"
+before_vram = 0x81206F38
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206F38, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81206F38"
+before_vram = 0x81206F80
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206F80, 0, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x8120583C
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120583C, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205A3C
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205A3C, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205B80
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205B80, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205C30
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205C30, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205DD8
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205DD8, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205E68
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205E68, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205E94
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205E94, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205EA0
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205EA0, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81205EEC
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81205EEC, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x812062C0
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x812062C0, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206434
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206434, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x812064B8
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x812064B8, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206518
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206518, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206620
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206620, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206648
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206648, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x812066E4
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x812066E4, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x812066EC
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x812066EC, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206758
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206758, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x812069F8
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x812069F8, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206AAC
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206AAC, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206B24
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206B24, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206CD4
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206CD4, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206CDC
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206CDC, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206D10
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206D10, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_8120572C"
+before_vram = 0x81206D84
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206D84, (uint32_t)ctx->r16, ctx);"
+
+[[patches.hook]]
+func = "func_81209078"
+before_vram = 0x81209078
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81209078, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81209870"
+before_vram = 0x81209870
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81209870, (uint32_t)ctx->r4, ctx);"
+
+[[patches.hook]]
+func = "func_81209EB4"
+before_vram = 0x81209FB4
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81209FB4, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_8120A73C"
+before_vram = 0x8120A73C
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120A73C, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_8120B490"
+before_vram = 0x8120B490
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120B490, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_8120B4B8"
+before_vram = 0x8120B4B8
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120B4B8, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_8120B4B8"
+before_vram = 0x8120B4D0
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120B4D0, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_8120B4D8"
+before_vram = 0x8120B4D8
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120B4D8, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_8120B4E4"
+before_vram = 0x8120B4E4
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120B4E4, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_8120B4EC"
+before_vram = 0x8120B4EC
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120B4EC, (uint32_t)ctx->r28, ctx);"
+
+[[patches.hook]]
+func = "func_81202FCC"
+before_vram = 0x81202FCC
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81202FCC, 0, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81200B88
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81200B88, (uint32_t)ctx->r14, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81200B90
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81200B90, (uint32_t)ctx->r15, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81200CB4
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81200CB4, (uint32_t)ctx->r15, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81200E80
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81200E80, (uint32_t)ctx->r9, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81200EE8
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81200EE8, (uint32_t)ctx->r4, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81200F88
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81200F88, (uint32_t)ctx->r9, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81201018
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81201018, (uint32_t)ctx->r9, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81201144
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81201144, (uint32_t)ctx->r8, ctx);"
+
+[[patches.hook]]
+func = "func_81200AA8"
+before_vram = 0x81201180
+text = "pkmnstadium_gbtower_state_trace(rdram, 0x81201180, (uint32_t)ctx->r9, ctx);"
+
+[[patches.hook]]
 func = "n_alLoadParam"
 before_vram = 0x8004FAE4
 text = "pkmnstadium_audio_voice_check(ctx->r7, ctx->r2, ctx->r3);"

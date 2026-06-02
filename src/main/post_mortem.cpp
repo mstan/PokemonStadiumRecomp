@@ -140,6 +140,8 @@ struct SpTaskEvent {
     uint64_t send_dl;
     uint32_t mips_ra;
     uint32_t task_ptr;
+    uint32_t wrapper_ptr;
+    uint32_t suspect;
     uint32_t task_type;
     uint32_t task_flags;
     uint32_t ucode;
@@ -147,6 +149,8 @@ struct SpTaskEvent {
     uint32_t data_size;
     uint32_t output_buff;
     uint32_t output_buff_size;
+    uint32_t wrapper_words[12];
+    uint32_t task_words[16];
 };
 
 const char* sp_task_type_name(uint32_t t) {
@@ -594,15 +598,28 @@ void dump_sp_task_json(FILE* f, int n_max) {
         const auto& e = buf[i];
         std::fprintf(f,
             "%s{\"seq\":%llu,\"ms\":%llu,\"frame\":%llu,\"send_dl\":%llu,"
-            "\"type\":\"%s\",\"task_ptr\":%u,\"mips_ra\":%u,"
+            "\"type\":\"%s\",\"task_ptr\":%u,\"wrapper_ptr\":%u,\"mips_ra\":%u,"
             "\"ucode\":%u,\"data_ptr\":%u,\"data_size\":%u,"
-            "\"output_buff\":%u,\"output_buff_size\":%u,\"flags\":%u}",
+            "\"output_buff\":%u,\"output_buff_size\":%u,\"flags\":%u,"
+            "\"suspect\":%u",
             (i ? "," : ""),
             (unsigned long long)e.seq, (unsigned long long)e.ms,
             (unsigned long long)e.frame, (unsigned long long)e.send_dl,
-            sp_task_type_name(e.task_type), e.task_ptr, e.mips_ra,
+            sp_task_type_name(e.task_type), e.task_ptr, e.wrapper_ptr, e.mips_ra,
             e.ucode, e.data_ptr, e.data_size,
-            e.output_buff, e.output_buff_size, e.task_flags);
+            e.output_buff, e.output_buff_size, e.task_flags, e.suspect);
+        if (e.suspect != 0) {
+            std::fprintf(f, ",\"wrapper_words\":[");
+            for (size_t j = 0; j < 12; j++) {
+                std::fprintf(f, "%s%u", (j ? "," : ""), e.wrapper_words[j]);
+            }
+            std::fprintf(f, "],\"task_words\":[");
+            for (size_t j = 0; j < 16; j++) {
+                std::fprintf(f, "%s%u", (j ? "," : ""), e.task_words[j]);
+            }
+            std::fprintf(f, "]");
+        }
+        std::fprintf(f, "}");
     }
     std::fprintf(f, "]},\n");
 }

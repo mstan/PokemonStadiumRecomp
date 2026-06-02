@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -50,12 +51,75 @@
 
 // Function-trace ring queries (definitions in extras.c).
 extern "C" {
+    struct GBTowerTraceEvent {
+        uint64_t seq;
+        uint32_t tag;
+        uint32_t s0;
+        uint32_t ra;
+        uint32_t sp;
+        uint32_t r2, r3, r4, r5, r6, r7, r8;
+        uint32_t r9, r10, r11, r12, r13, r14, r15;
+        uint32_t r16, r17, r18, r19, r20, r21, r22, r23, r24, r25;
+        uint32_t state;
+        uint32_t phase;
+        uint32_t g_c4f4;
+        uint32_t g_c4f8;
+        uint32_t g_c4e0;
+        uint32_t g_c4e4;
+        uint32_t g_c4e8;
+        uint32_t g_c4ec;
+        uint32_t g_c4f0;
+        uint32_t g_c4fc;
+        uint32_t g_b2b8;
+        uint32_t s_ctrl0;
+        uint32_t s_ctrl1;
+        uint32_t s_ctrl2;
+        uint32_t s_5dd0;
+        uint32_t s_hdr0;
+        uint32_t s_hdr1;
+        uint32_t s_hdr2;
+        uint32_t s_ready0;
+        uint32_t s_ready1;
+        uint32_t s_pad0;
+        uint32_t w5390, w5394, w5398;
+        uint32_t w53a4, w53b4, w53bc;
+        uint32_t rom_0140, rom_0144, rom_0148, rom_014c;
+        uint32_t rom_type;
+        uint32_t w5d64, w5d68, w5d6c, w5d70, w5d74, w5d78, w5d7c;
+        uint32_t ctx_r2_byte;
+        uint32_t gb_pc;
+        uint32_t gb_pc_base;
+        uint32_t gb_pc_addr;
+        uint32_t gb_pc_byte;
+        uint32_t op_table0;
+        uint32_t op_handler;
+        uint32_t io_ff40_43;
+        uint32_t io_ff44_47;
+        uint32_t io_ff00_03, io_ff04_07, io_ff0c_0f;
+        uint32_t io_ff4c_4f, io_ff50_53, io_ff54_57;
+        uint32_t hram_ff80_83, hram_ff84_87, hram_ff88_8b;
+        uint32_t hram_ffd4_d7, hram_fffc_ff;
+        uint32_t h53d6, h53d8, h53da, h53dc, h53de;
+        uint32_t w53c0, w53c4, w53c8;
+        uint32_t saved_5c44, saved_5c48, saved_5c4c, saved_5c50, saved_5c54;
+        uint32_t w5388, w538c, w53b8, w53cc, w53d0, w53f0, w53f2_53f5;
+        uint32_t w5484, w5488, w548c;
+        uint32_t w55ac, w55b0, w55b4, w55b8, w55bc, w55c0, w55c4, w55c8;
+        uint32_t w55ec, w55f0, w55f4, w55f8, w55fc, w5600, w5604, w5608;
+        uint32_t w576c;
+        uint32_t g_c4e2, g_c4f6, g_c4f7, g_c4f9;
+        uint32_t cart_type_flags;
+    };
+
     uint64_t pkmnstadium_trace_write_idx(void);
     const char* pkmnstadium_trace_at(uint64_t idx);
     uint32_t pkmnstadium_trace_capacity(void);
     uint64_t pkmnstadium_interesting_fn_count(int idx);
     const char* pkmnstadium_interesting_fn_name(int idx);
     int pkmnstadium_interesting_fn_total(void);
+    uint64_t pkmnstadium_gbtower_trace_seq(void);
+    uint32_t pkmnstadium_gbtower_trace_cap(void);
+    void pkmnstadium_gbtower_trace_get(uint32_t i, GBTowerTraceEvent* out);
     int pkmnstadium_resolver_log_total(void);
     void pkmnstadium_resolver_log_get(int idx, uint32_t* arr, uint32_t* base, uint32_t* count);
     uint64_t pkmnstadium_memmap_seq(void);
@@ -198,14 +262,33 @@ extern "C" uint64_t ultramodern_submit_audio_count(void);
 extern "C" uint64_t ultramodern_submit_other_count(void);
 extern "C" uint64_t ultramodern_sp_complete_count(void);
 extern "C" uint64_t ultramodern_dp_complete_count(void);
+extern "C" uint32_t recomp_rsp_get_sp_status(void);
 extern "C" void ultramodern_get_current_dl_state(
     uint64_t* entry_seq, uint64_t* exit_seq,
     uint64_t* entry_ms,  uint64_t* exit_ms,
     uint32_t* data_ptr,  uint32_t* data_size,
     uint32_t* ucode_ptr);
+extern "C" void ultramodern_get_vi_debug_state(
+    uint32_t* cur_flags, uint32_t* next_flags,
+    uint32_t* cur_fb,    uint32_t* next_fb,
+    uint32_t* origin,    uint32_t* h_start,
+    uint32_t* y_scale,   uint32_t* status);
 extern "C" void recomp_sp_task_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_sp_task_event_size(void);
+struct RspDmaTraceEvent {
+    uint64_t seq;
+    uint32_t write;
+    uint32_t dmem_addr;
+    uint32_t dram_addr;
+    uint32_t byte_count;
+    uint32_t nonzero_bytes;
+    int32_t first_nonzero;
+    uint8_t first16[16];
+};
+extern "C" void recomp_rsp_dma_recent_copy(
+    RspDmaTraceEvent* out, uint32_t out_cap,
+    uint32_t* out_count, uint64_t* out_write_index);
 extern "C" void recomp_voice_events_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_voice_event_size(void);
@@ -327,13 +410,18 @@ static std::string handle_command(const std::string& line) {
         // linkage. A sustained nonzero value means some target
         // OSMesgQueue's receiver is being starved relative to
         // host-thread event posts.
-        char buf[1024];
+        uint8_t* rdram = recomp_runtime_get_rdram();
+        uint32_t sp_status_mem = rdram
+            ? (uint32_t)MEM_W(0, 0xFFFFFFFFA4040010ull)
+            : 0;
+        char buf[1200];
         std::snprintf(buf, sizeof(buf),
             "{\"ok\":true,\"frame\":%llu,\"vi\":%llu,\"fast_forward\":%s,\"input_override\":%s,\"buttons\":%u,\"sx\":%d,\"sy\":%d,"
             "\"send_dl\":%llu,\"send_dl_gfx\":%llu,\"send_dl_audio\":%llu,\"send_dl_other\":%llu,\"update_screen\":%llu,"
             "\"external_requeues\":%llu,"
             "\"submit_gfx\":%llu,\"submit_audio\":%llu,\"submit_other\":%llu,"
-            "\"sp_complete\":%llu,\"dp_complete\":%llu}",
+            "\"sp_complete\":%llu,\"dp_complete\":%llu,"
+            "\"sp_status_atomic\":%u,\"sp_status_mem\":%u}",
             (unsigned long long)g_frame_count.load(),
             (unsigned long long)g_vi_ticks.load(),
             g_fast_forward.load() ? "true" : "false",
@@ -351,7 +439,9 @@ static std::string handle_command(const std::string& line) {
             (unsigned long long)ultramodern_submit_audio_count(),
             (unsigned long long)ultramodern_submit_other_count(),
             (unsigned long long)ultramodern_sp_complete_count(),
-            (unsigned long long)ultramodern_dp_complete_count()
+            (unsigned long long)ultramodern_dp_complete_count(),
+            (unsigned)recomp_rsp_get_sp_status(),
+            (unsigned)sp_status_mem
         );
         return buf;
     }
@@ -382,6 +472,23 @@ static std::string handle_command(const std::string& line) {
             (unsigned long long)entry_ms,  (unsigned long long)exit_ms,
             (unsigned long long)now_ms,    (unsigned long long)elapsed_ms,
             (unsigned)data_ptr, (unsigned)data_size, (unsigned)ucode_ptr);
+        return buf;
+    }
+    if (cmd == "vi_state") {
+        uint32_t cur_flags = 0, next_flags = 0, cur_fb = 0, next_fb = 0;
+        uint32_t origin = 0, h_start = 0, y_scale = 0, status = 0;
+        ultramodern_get_vi_debug_state(&cur_flags, &next_flags,
+                                       &cur_fb, &next_fb,
+                                       &origin, &h_start, &y_scale, &status);
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"cur_flags\":%u,\"next_flags\":%u,"
+            "\"cur_fb\":%u,\"next_fb\":%u,\"origin\":%u,"
+            "\"h_start\":%u,\"y_scale\":%u,\"status\":%u,"
+            "\"cur_black\":%s,\"next_black\":%s}",
+            cur_flags, next_flags, cur_fb, next_fb, origin, h_start, y_scale, status,
+            (cur_flags & 0x20u) ? "true" : "false",
+            (next_flags & 0x20u) ? "true" : "false");
         return buf;
     }
     if (cmd == "vtx_ring") {
@@ -731,6 +838,86 @@ static std::string handle_command(const std::string& line) {
         out += "]}";
         return out;
     }
+    if (cmd == "gbtower_trace") {
+        // Returns the last N GB Tower state-machine checkpoints captured
+        // from func_8120572C and its helper calls. Tags are the original
+        // MIPS PCs of the hook points.
+        int n = get_int(line, "n", 128);
+        if (n < 1) n = 1;
+        uint64_t widx = pkmnstadium_gbtower_trace_seq();
+        uint32_t cap = pkmnstadium_gbtower_trace_cap();
+        if ((uint32_t)n > cap) n = (int)cap;
+        if ((uint64_t)n > widx) n = (int)widx;
+
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx) +
+                          R"(,"cap":)" + std::to_string(cap) + R"(,"events":[)";
+        for (int i = 0; i < n; i++) {
+            uint64_t off = widx - n + i;
+            GBTowerTraceEvent ev{};
+            pkmnstadium_gbtower_trace_get((uint32_t)off, &ev);
+            char buf[16384];
+            std::snprintf(buf, sizeof(buf),
+                "%s{\"seq\":%llu,\"tag\":%u,\"s0\":%u,\"ra\":%u,\"sp\":%u,"
+                "\"regs\":[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u],"
+                "\"state\":%u,\"phase\":%u,"
+                "\"globals\":[%u,%u,%u,%u,%u,%u],"
+                "\"global_extra\":[%u,%u,%u],"
+                "\"global_bytes\":[%u,%u,%u,%u],"
+                "\"ctrl\":[%u,%u,%u,%u],"
+                "\"hdr\":[%u,%u,%u],"
+                "\"ready\":[%u,%u],"
+                "\"pad\":%u,"
+                "\"words\":[%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u],"
+                "\"rom\":{\"w0140\":%u,\"w0144\":%u,\"w0148\":%u,\"w014c\":%u,\"type\":%u,\"type_flags\":%u},"
+                "\"cpu\":{\"r2_byte\":%u,\"pc\":%u,\"pc_base\":%u,"
+                "\"pc_addr\":%u,\"pc_byte\":%u,\"op_table0\":%u,\"op_handler\":%u},"
+                "\"gbio\":{\"ff00_03\":%u,\"ff04_07\":%u,\"ff0c_0f\":%u,"
+                "\"ff40_43\":%u,\"ff44_47\":%u,\"ff4c_4f\":%u,\"ff50_53\":%u,\"ff54_57\":%u,"
+                "\"hram80_83\":%u,\"hram84_87\":%u,\"hram88_8b\":%u,\"hramd4_d7\":%u,\"hramfc_ff\":%u,"
+                "\"h53d6\":%u,\"h53d8\":%u,\"h53da\":%u,\"h53dc\":%u,\"h53de\":%u,"
+                "\"w53c0\":%u,\"w53c4\":%u,\"w53c8\":%u,"
+                "\"save5c44\":%u,\"save5c48\":%u,\"save5c4c\":%u,\"save5c50\":%u,\"save5c54\":%u},"
+                "\"gbstate\":{\"w5388\":%u,\"w538c\":%u,\"w53b8\":%u,\"w53cc\":%u,\"w53d0\":%u,"
+                "\"w53f0\":%u,\"w53f2_53f5\":%u,\"w5484\":%u,\"w5488\":%u,\"w548c\":%u,"
+                "\"map55ac\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+                "\"handlers55ec\":[%u,%u,%u,%u,%u,%u,%u,%u],\"w576c\":%u}}",
+                (i ? "," : ""),
+                (unsigned long long)ev.seq,
+                ev.tag, ev.s0, ev.ra, ev.sp,
+                ev.r2, ev.r3, ev.r4, ev.r5, ev.r6, ev.r7, ev.r8,
+                ev.r9, ev.r10, ev.r11, ev.r12, ev.r13, ev.r14, ev.r15,
+                ev.r16, ev.r17, ev.r18, ev.r19, ev.r20, ev.r21, ev.r22,
+                ev.r23, ev.r24, ev.r25,
+                ev.state, ev.phase,
+                ev.g_c4e0, ev.g_c4e4, ev.g_c4f0, ev.g_b2b8, ev.g_c4f4, ev.g_c4f8,
+                ev.g_c4e8, ev.g_c4ec, ev.g_c4fc,
+                ev.g_c4e2, ev.g_c4f6, ev.g_c4f7, ev.g_c4f9,
+                ev.s_ctrl0, ev.s_ctrl1, ev.s_ctrl2, ev.s_5dd0,
+                ev.s_hdr0, ev.s_hdr1, ev.s_hdr2,
+                ev.s_ready0, ev.s_ready1,
+                ev.s_pad0,
+                ev.w5390, ev.w5394, ev.w5398,
+                ev.w53a4, ev.w53b4, ev.w53bc,
+                ev.w5d64, ev.w5d68, ev.w5d6c, ev.w5d70, ev.w5d74, ev.w5d78, ev.w5d7c,
+                ev.rom_0140, ev.rom_0144, ev.rom_0148, ev.rom_014c, ev.rom_type, ev.cart_type_flags,
+                ev.ctx_r2_byte, ev.gb_pc, ev.gb_pc_base, ev.gb_pc_addr,
+                ev.gb_pc_byte, ev.op_table0, ev.op_handler,
+                ev.io_ff00_03, ev.io_ff04_07, ev.io_ff0c_0f,
+                ev.io_ff40_43, ev.io_ff44_47, ev.io_ff4c_4f, ev.io_ff50_53, ev.io_ff54_57,
+                ev.hram_ff80_83, ev.hram_ff84_87, ev.hram_ff88_8b, ev.hram_ffd4_d7, ev.hram_fffc_ff,
+                ev.h53d6, ev.h53d8, ev.h53da, ev.h53dc, ev.h53de,
+                ev.w53c0, ev.w53c4, ev.w53c8,
+                ev.saved_5c44, ev.saved_5c48, ev.saved_5c4c, ev.saved_5c50, ev.saved_5c54,
+                ev.w5388, ev.w538c, ev.w53b8, ev.w53cc, ev.w53d0, ev.w53f0, ev.w53f2_53f5,
+                ev.w5484, ev.w5488, ev.w548c,
+                ev.w55ac, ev.w55b0, ev.w55b4, ev.w55b8, ev.w55bc, ev.w55c0, ev.w55c4, ev.w55c8,
+                ev.w55ec, ev.w55f0, ev.w55f4, ev.w55f8, ev.w55fc, ev.w5600, ev.w5604, ev.w5608,
+                ev.w576c);
+            out += buf;
+        }
+        out += "]}";
+        return out;
+    }
     if (cmd == "resolver_log") {
         // Returns the first N captured (arr, base, count) triplets from
         // libnaudio's offset->absolute lazy-resolver func_8003C204.
@@ -887,6 +1074,8 @@ static std::string handle_command(const std::string& line) {
             uint64_t send_dl;
             uint32_t mips_ra;
             uint32_t task_ptr;
+            uint32_t wrapper_ptr;
+            uint32_t suspect;
             uint32_t task_type;
             uint32_t task_flags;
             uint32_t ucode;
@@ -894,6 +1083,8 @@ static std::string handle_command(const std::string& line) {
             uint32_t data_size;
             uint32_t output_buff;
             uint32_t output_buff_size;
+            uint32_t wrapper_words[12];
+            uint32_t task_words[16];
         };
         if (recomp_sp_task_event_size() != sizeof(SpTaskEvent)) {
             return R"({"ok":false,"error":"sp_task event size mismatch"})";
@@ -917,20 +1108,70 @@ static std::string handle_command(const std::string& line) {
         };
         std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
                         + R"(,"events":[)";
+        auto append_words = [](std::string& dst, const char* key,
+                               const uint32_t* words, size_t count) {
+            dst += ",\"";
+            dst += key;
+            dst += "\":[";
+            for (size_t j = 0; j < count; j++) {
+                if (j) dst += ",";
+                dst += std::to_string(words[j]);
+            }
+            dst += "]";
+        };
         for (size_t i = 0; i < got; i++) {
             const auto& e = buf[i];
-            char b[384];
+            char b[512];
             std::snprintf(b, sizeof(b),
                 "%s{\"seq\":%llu,\"ms\":%llu,\"frame\":%llu,\"send_dl\":%llu,"
-                "\"type\":\"%s\",\"task_ptr\":%u,\"mips_ra\":%u,"
+                "\"type\":\"%s\",\"task_ptr\":%u,\"wrapper_ptr\":%u,\"mips_ra\":%u,"
                 "\"ucode\":%u,\"data_ptr\":%u,\"data_size\":%u,"
-                "\"output_buff\":%u,\"output_buff_size\":%u,\"flags\":%u}",
+                "\"output_buff\":%u,\"output_buff_size\":%u,\"flags\":%u,"
+                "\"suspect\":%u",
                 (i ? "," : ""),
                 (unsigned long long)e.seq, (unsigned long long)e.ms,
                 (unsigned long long)e.frame, (unsigned long long)e.send_dl,
-                type_name(e.task_type), e.task_ptr, e.mips_ra,
+                type_name(e.task_type), e.task_ptr, e.wrapper_ptr, e.mips_ra,
                 e.ucode, e.data_ptr, e.data_size,
-                e.output_buff, e.output_buff_size, e.task_flags);
+                e.output_buff, e.output_buff_size, e.task_flags, e.suspect);
+            out += b;
+            if (e.suspect != 0) {
+                append_words(out, "wrapper_words", e.wrapper_words, 12);
+                append_words(out, "task_words", e.task_words, 16);
+            }
+            out += "}";
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "rsp_dma_recent") {
+        // Optional ring from librecomp/rsp.cpp. Enable with
+        // PSR_RSP_DMA_TRACE=1 before launching the runner.
+        int n = get_int(line, "n", 256);
+        if (n < 1) n = 1;
+        if (n > 4096) n = 4096;
+        std::vector<RspDmaTraceEvent> buf((size_t)n);
+        uint32_t got = 0;
+        uint64_t widx = 0;
+        recomp_rsp_dma_recent_copy(buf.data(), (uint32_t)buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (uint32_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char first_hex[33];
+            for (int j = 0; j < 16; j++) {
+                std::snprintf(first_hex + j * 2, 3, "%02x", e.first16[j]);
+            }
+            char b[384];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"dir\":\"%s\",\"dmem\":%u,\"dram\":%u,"
+                "\"len\":%u,\"nonzero\":%u,\"first_nonzero\":%d,"
+                "\"first16\":\"%s\"}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq,
+                e.write ? "write" : "read",
+                e.dmem_addr, e.dram_addr, e.byte_count,
+                e.nonzero_bytes, e.first_nonzero, first_hex);
             out += b;
         }
         out += "]}";
@@ -1243,6 +1484,68 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"addr":)" + std::to_string(addr) +
                R"(,"n":)" + std::to_string(n) +
                R"(,"hex":")" + hex + R"("})";
+    }
+    if (cmd == "rdram_digest") {
+        // Summarize a larger RDRAM range without returning the whole
+        // payload. Args: {"addr": <vaddr>, "n": <count>} with n capped
+        // to 256 KiB so route probes stay cheap and bounded.
+        uint32_t addr = get_uint(line, "addr", 0);
+        int n = get_int(line, "n", 4);
+        if (n < 1) n = 1;
+        if (n > 0x40000) n = 0x40000;
+
+        uint32_t paddr = addr & 0x1FFFFFFFu;
+        constexpr uint32_t kRdramSize = 8u * 1024u * 1024u;
+        if (paddr + (uint32_t)n > kRdramSize) {
+            return R"({"ok":false,"error":"oob"})";
+        }
+
+        uint8_t* rdram = recomp_runtime_get_rdram();
+        if (rdram == nullptr) {
+            return R"({"ok":false,"error":"rdram not yet captured"})";
+        }
+
+        bool seen[256] = {};
+        uint32_t unique = 0;
+        uint32_t nonzero = 0;
+        int first_nonzero = -1;
+        int last_nonzero = -1;
+        uint64_t fnv = 1469598103934665603ull;
+
+        std::string first_hex;
+        first_hex.reserve(128);
+        char tmp[4];
+        for (int i = 0; i < n; i++) {
+            uint8_t b = rdram[(paddr + (uint32_t)i) ^ 3];
+            if (i < 64) {
+                std::snprintf(tmp, sizeof(tmp), "%02x", b);
+                first_hex += tmp;
+            }
+            if (!seen[b]) {
+                seen[b] = true;
+                unique++;
+            }
+            if (b != 0) {
+                nonzero++;
+                if (first_nonzero < 0) {
+                    first_nonzero = i;
+                }
+                last_nonzero = i;
+            }
+            fnv ^= b;
+            fnv *= 1099511628211ull;
+        }
+
+        char hash_buf[32];
+        std::snprintf(hash_buf, sizeof(hash_buf), "%016" PRIx64, fnv);
+        return R"({"ok":true,"addr":)" + std::to_string(addr) +
+               R"(,"n":)" + std::to_string(n) +
+               R"(,"nonzero_bytes":)" + std::to_string(nonzero) +
+               R"(,"unique_bytes":)" + std::to_string(unique) +
+               R"(,"first_nonzero":)" + std::to_string(first_nonzero) +
+               R"(,"last_nonzero":)" + std::to_string(last_nonzero) +
+               R"(,"fnv64":")" + hash_buf +
+               R"(","first64":")" + first_hex + R"("})";
     }
     if (cmd == "rdram_poke") {
         // Write N bytes to rdram at a virtual address. Companion to
