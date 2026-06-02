@@ -81,8 +81,8 @@ add_executable(PokemonStadiumRecomp
     # GB Tower display/copy microcode from fragment 1 (selected by ucode boot signature).
     ${CMAKE_SOURCE_DIR}/rsp/gbTowerMain.cpp
     ${CMAKE_SOURCE_DIR}/rsp/gbTowerColorMain.cpp
-    # njpgdspMain is the standard libultra JPEG ucode — borrow Zelda's recompiled output.
-    ${CMAKE_SOURCE_DIR}/../Zelda64Recomp/rsp/njpgdspMain.cpp
+    # njpgdspMain is the standard libultra JPEG ucode (vendored from Zelda64Recomp's recompiled output).
+    ${CMAKE_SOURCE_DIR}/rsp/njpgdspMain.cpp
 )
 
 target_include_directories(PokemonStadiumRecomp PRIVATE
