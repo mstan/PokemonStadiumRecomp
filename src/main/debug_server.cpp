@@ -1365,6 +1365,7 @@ static std::string handle_command(const std::string& line) {
             uint32_t max_abs_d1;
             uint32_t mean_abs_d2;
             uint32_t max_abs_d2;
+            uint32_t out_hf_milli;
             int16_t  window[32];
         };
         if (recomp_audio_pcm_event_size() != sizeof(AudioPcmEvent) ||
@@ -1387,11 +1388,12 @@ static std::string handle_command(const std::string& line) {
                 "%s{\"seq\":%llu,\"ms\":%llu,\"sample_count\":%u,"
                 "\"min\":%d,\"max\":%d,\"mean_abs\":%u,"
                 "\"mean_abs_d1\":%u,\"max_abs_d1\":%u,"
-                "\"mean_abs_d2\":%u,\"max_abs_d2\":%u,\"window\":[",
+                "\"mean_abs_d2\":%u,\"max_abs_d2\":%u,\"out_hf_milli\":%u,\"window\":[",
                 (i ? "," : ""),
                 (unsigned long long)e.seq, (unsigned long long)e.ms,
                 e.sample_count, e.min_sample, e.max_sample, e.mean_abs,
-                e.mean_abs_d1, e.max_abs_d1, e.mean_abs_d2, e.max_abs_d2);
+                e.mean_abs_d1, e.max_abs_d1, e.mean_abs_d2, e.max_abs_d2,
+                e.out_hf_milli);
             out += b;
             for (int w = 0; w < 32; w++) {
                 out += std::to_string((int)e.window[w]);

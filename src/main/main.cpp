@@ -234,6 +234,7 @@ struct AudioPcmEvent {
     uint32_t max_abs_d1;
     uint32_t mean_abs_d2;    // mean |x[n]-2x[n-1]+x[n-2]| — HF energy / static signature
     uint32_t max_abs_d2;
+    uint32_t out_hf_milli;   // (mean|d2|/mean|x|)*1000 on the RESAMPLED output (one ch)
     int16_t  window[PCM_WINDOW];
 };
 constexpr size_t APCM_RING_CAP = 4096;
@@ -284,7 +285,33 @@ void apcm_record(const int16_t* audio_data, size_t sample_count) {
     e.max_abs_d2  = max_d2;
     for (size_t i = 0; i < PCM_WINDOW; i++)
         e.window[i] = (2 * i < sample_count) ? audio_data[2 * i] : (int16_t)0;
+    e.out_hf_milli = 0;  // filled in by apcm_record_output after resampling
     g_apcm_seq.store(s + 1, std::memory_order_release);
+}
+
+// Second-pass: HF ratio of the RESAMPLED output buffer (float, one channel).
+// Updates the most-recent event (same chunk; queue_samples runs serially on
+// the audio thread). Lets us compare output HF vs the clean input HF — if the
+// resampler injects HF (imaging/aliasing), out_hf >> in_hf.
+void apcm_record_output(const float* out, size_t out_floats) {
+    if (!g_apcm_enabled || out == nullptr || out_floats < 12) return;
+    const size_t frames = out_floats / 2;
+    double sum_abs = 0.0, sum_d2 = 0.0;
+    for (size_t f = 0; f < frames; f++) {
+        double x = out[2 * f];
+        sum_abs += x < 0 ? -x : x;
+        if (f >= 2) {
+            double d2 = (double)out[2 * f] - 2.0 * out[2 * (f - 1)] + out[2 * (f - 2)];
+            sum_d2 += d2 < 0 ? -d2 : d2;
+        }
+    }
+    double mean_abs = frames     ? sum_abs / frames       : 0.0;
+    double mean_d2  = frames > 2 ? sum_d2 / (frames - 2)   : 0.0;
+    uint32_t hf_milli = mean_abs > 1e-9 ? (uint32_t)((mean_d2 / mean_abs) * 1000.0) : 0;
+    std::lock_guard<std::mutex> lk(g_apcm_mtx);
+    const uint64_t s = g_apcm_seq.load(std::memory_order_relaxed);
+    if (s == 0) return;
+    g_apcm_ring[(s - 1) % APCM_RING_CAP].out_hf_milli = hf_milli;
 }
 }  // namespace
 
@@ -384,6 +411,7 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
 
     aq_record((uint32_t)sample_count, sample_rate,
               (uint32_t)cur_queued_microseconds, skip_factor, num_bytes_to_queue);
+    apcm_record_output(samples_to_queue, num_bytes_to_queue / sizeof(swap_buffer[0]));
     SDL_QueueAudio(audio_device, samples_to_queue, num_bytes_to_queue);
 }
 
