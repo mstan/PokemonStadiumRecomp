@@ -298,6 +298,10 @@ extern "C" size_t recomp_adpcm_decode_event_size(void);
 extern "C" void recomp_audio_queue_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_audio_queue_event_size(void);
+extern "C" void recomp_audio_pcm_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_audio_pcm_event_size(void);
+extern "C" size_t recomp_audio_pcm_window(void);
 extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 extern "C" int psr_dump_current_dl(const char* path,
                                    uint32_t* out_addr,
@@ -1339,6 +1343,61 @@ static std::string handle_command(const std::string& line) {
                 e.sample_count, e.sample_rate, e.queued_us, e.skip_factor,
                 e.bytes_queued, e.decimated);
             out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "audio_pcm_recent") {
+        // Returns the last N synthesized-PCM events from the always-on
+        // ring in main.cpp — the RAW int16 audio the game produced before
+        // host conversion/volume. `mean_abs_d2`/`mean_abs` (HF ratio)
+        // localizes the "static": high jaggedness vs amplitude => the
+        // static is baked into the synthesized samples (aspMain/mixing),
+        // not the host path. `window` is a raw one-channel snapshot.
+        struct AudioPcmEvent {
+            uint64_t seq;
+            uint64_t ms;
+            uint32_t sample_count;
+            int32_t  min_sample;
+            int32_t  max_sample;
+            uint32_t mean_abs;
+            uint32_t mean_abs_d1;
+            uint32_t max_abs_d1;
+            uint32_t mean_abs_d2;
+            uint32_t max_abs_d2;
+            int16_t  window[32];
+        };
+        if (recomp_audio_pcm_event_size() != sizeof(AudioPcmEvent) ||
+            recomp_audio_pcm_window() != 32) {
+            return R"({"ok":false,"error":"audio pcm event size/window mismatch"})";
+        }
+        int n = get_int(line, "n", 128);
+        if (n < 1) n = 1;
+        if (n > 4096) n = 4096;
+        std::vector<AudioPcmEvent> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_audio_pcm_recent_copy(buf.data(), buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"window":32,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"sample_count\":%u,"
+                "\"min\":%d,\"max\":%d,\"mean_abs\":%u,"
+                "\"mean_abs_d1\":%u,\"max_abs_d1\":%u,"
+                "\"mean_abs_d2\":%u,\"max_abs_d2\":%u,\"window\":[",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                e.sample_count, e.min_sample, e.max_sample, e.mean_abs,
+                e.mean_abs_d1, e.max_abs_d1, e.mean_abs_d2, e.max_abs_d2);
+            out += b;
+            for (int w = 0; w < 32; w++) {
+                out += std::to_string((int)e.window[w]);
+                if (w != 31) out += ",";
+            }
+            out += "]}";
         }
         out += "]}";
         return out;

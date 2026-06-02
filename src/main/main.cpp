@@ -212,7 +212,107 @@ extern "C" size_t recomp_audio_queue_event_size(void) {
     return sizeof(AudioQueueEvent);
 }
 
+// ── Always-on synthesized-PCM ring ──────────────────────────────────
+// Records one event per queue_samples() call capturing the RAW int16
+// audio the game synthesized, BEFORE any host conversion/volume. Used to
+// localize the "static" artifact: high sample-to-sample jaggedness
+// (large 2nd-differences relative to amplitude) means the static is baked
+// into the synthesized PCM (aspMain / mixing), not introduced host-side.
+// Metrics are computed on ONE channel (even indices) so L/R interleave
+// doesn't inflate the diffs. Query backward via `audio_pcm_recent`.
+// Env-gate PSR_DISABLE_AUDIO_PCM_RING=1.
+namespace {
+constexpr size_t PCM_WINDOW = 32;  // raw int16 one-channel snapshot
+struct AudioPcmEvent {
+    uint64_t seq;
+    uint64_t ms;
+    uint32_t sample_count;   // int16 samples this chunk (L+R interleaved)
+    int32_t  min_sample;
+    int32_t  max_sample;
+    uint32_t mean_abs;       // mean |x| (one channel) — signal level reference
+    uint32_t mean_abs_d1;    // mean |x[n]-x[n-1]|  (consecutive frames)
+    uint32_t max_abs_d1;
+    uint32_t mean_abs_d2;    // mean |x[n]-2x[n-1]+x[n-2]| — HF energy / static signature
+    uint32_t max_abs_d2;
+    int16_t  window[PCM_WINDOW];
+};
+constexpr size_t APCM_RING_CAP = 4096;
+AudioPcmEvent g_apcm_ring[APCM_RING_CAP];
+std::atomic<uint64_t> g_apcm_seq{0};
+std::mutex g_apcm_mtx;
+bool g_apcm_enabled = [] {
+    const char* v = std::getenv("PSR_DISABLE_AUDIO_PCM_RING");
+    return !(v && v[0] != '\0' && v[0] != '0');
+}();
+
+inline uint32_t iabs32(int32_t v) { return (uint32_t)(v < 0 ? -v : v); }
+
+void apcm_record(const int16_t* audio_data, size_t sample_count) {
+    if (!g_apcm_enabled || audio_data == nullptr || sample_count < 6) return;
+    const size_t frames = sample_count / 2;  // one channel = even indices
+    int32_t mn = 32767, mx = -32768;
+    uint64_t sum_abs = 0, sum_d1 = 0, sum_d2 = 0;
+    uint32_t max_d1 = 0, max_d2 = 0;
+    for (size_t f = 0; f < frames; f++) {
+        int32_t x = audio_data[2 * f];
+        if (x < mn) mn = x;
+        if (x > mx) mx = x;
+        sum_abs += iabs32(x);
+        if (f >= 1) {
+            uint32_t d1 = iabs32(x - (int32_t)audio_data[2 * (f - 1)]);
+            sum_d1 += d1; if (d1 > max_d1) max_d1 = d1;
+        }
+        if (f >= 2) {
+            uint32_t d2 = iabs32(x - 2 * (int32_t)audio_data[2 * (f - 1)]
+                                   + (int32_t)audio_data[2 * (f - 2)]);
+            sum_d2 += d2; if (d2 > max_d2) max_d2 = d2;
+        }
+    }
+    std::lock_guard<std::mutex> lk(g_apcm_mtx);
+    const uint64_t s = g_apcm_seq.load(std::memory_order_relaxed);
+    AudioPcmEvent& e = g_apcm_ring[s % APCM_RING_CAP];
+    e.seq = s;
+    e.ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - g_aq_t0).count();
+    e.sample_count = (uint32_t)sample_count;
+    e.min_sample = mn;
+    e.max_sample = mx;
+    e.mean_abs    = frames     ? (uint32_t)(sum_abs / frames)       : 0;
+    e.mean_abs_d1 = frames > 1 ? (uint32_t)(sum_d1 / (frames - 1))  : 0;
+    e.max_abs_d1  = max_d1;
+    e.mean_abs_d2 = frames > 2 ? (uint32_t)(sum_d2 / (frames - 2))  : 0;
+    e.max_abs_d2  = max_d2;
+    for (size_t i = 0; i < PCM_WINDOW; i++)
+        e.window[i] = (2 * i < sample_count) ? audio_data[2 * i] : (int16_t)0;
+    g_apcm_seq.store(s + 1, std::memory_order_release);
+}
+}  // namespace
+
+extern "C" void recomp_audio_pcm_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out)
+{
+    std::lock_guard<std::mutex> lk(g_apcm_mtx);
+    const uint64_t s = g_apcm_seq.load(std::memory_order_relaxed);
+    if (next_seq_out) *next_seq_out = s;
+    if (cap == 0 || out_void == nullptr) { if (n_written) *n_written = 0; return; }
+    const size_t available = (s < APCM_RING_CAP) ? size_t(s) : APCM_RING_CAP;
+    const size_t want = (cap < available) ? cap : available;
+    AudioPcmEvent* out = static_cast<AudioPcmEvent*>(out_void);
+    const size_t start = (s - want) % APCM_RING_CAP;
+    for (size_t i = 0; i < want; i++) out[i] = g_apcm_ring[(start + i) % APCM_RING_CAP];
+    if (n_written) *n_written = want;
+}
+
+extern "C" size_t recomp_audio_pcm_event_size(void) {
+    return sizeof(AudioPcmEvent);
+}
+
+extern "C" size_t recomp_audio_pcm_window(void) {
+    return PCM_WINDOW;
+}
+
 static void queue_samples(int16_t* audio_data, size_t sample_count) {
+    apcm_record(audio_data, sample_count);
     static std::vector<float> swap_buffer;
     static std::array<float, duplicated_input_frames * input_channels> duplicated_sample_buffer{};
 
@@ -312,6 +412,61 @@ static void set_frequency(uint32_t freq) {
     update_audio_converter();
 }
 
+// Pick the output device. SDL's default (nullptr) follows the Windows
+// default endpoint, which gets hijacked by game-controller audio endpoints
+// (e.g. a DualSense's built-in speaker) — so the game audio plays through
+// the controller (tinny "static", inaudible on real speakers). Honor
+// PSR_AUDIO_DEVICE=<name substring> if set; otherwise pick the first device
+// that is NOT a known controller/virtual endpoint; fall back to SDL default.
+static const char* select_audio_device() {
+    const int count = SDL_GetNumAudioDevices(0 /* iscapture=0 -> output */);
+    if (count <= 0) return nullptr;  // can't enumerate — use SDL default
+
+    auto low = [](std::string s) {
+        for (auto& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        return s;
+    };
+    auto contains_ci = [&](const char* hay, const char* needle) {
+        if (!hay || !needle) return false;
+        return low(hay).find(low(needle)) != std::string::npos;
+    };
+
+    const char* want = std::getenv("PSR_AUDIO_DEVICE");
+    static const char* kAvoid[] = {
+        "dualsense", "dualshock", "wireless controller", "ps5", "ps4",
+        "steam streaming",
+    };
+
+    fprintf(stderr, "[PSR] audio output devices:\n");
+    for (int i = 0; i < count; i++) {
+        const char* nm = SDL_GetAudioDeviceName(i, 0);
+        fprintf(stderr, "[PSR]   [%d] %s\n", i, nm ? nm : "(null)");
+    }
+
+    const char* chosen = nullptr;
+    for (int i = 0; i < count; i++) {
+        const char* name = SDL_GetAudioDeviceName(i, 0);
+        if (!name) continue;
+        if (want && want[0]) {
+            if (contains_ci(name, want)) { chosen = name; break; }
+            continue;
+        }
+        bool avoid = false;
+        for (const char* a : kAvoid) if (contains_ci(name, a)) { avoid = true; break; }
+        if (!avoid) { chosen = name; break; }
+    }
+
+    if (chosen) {
+        fprintf(stderr, "[PSR] -> audio device: \"%s\" %s\n", chosen,
+                (want && want[0]) ? "(PSR_AUDIO_DEVICE match)"
+                                  : "(auto: skipped controller endpoints)");
+    } else {
+        fprintf(stderr, "[PSR] -> audio device: SDL default "
+                        "(no suitable named device; set PSR_AUDIO_DEVICE to override)\n");
+    }
+    return chosen;  // may be nullptr -> SDL default
+}
+
 static void reset_audio(uint32_t output_freq) {
     SDL_AudioSpec spec_desired{};
     spec_desired.freq    = (int)output_freq;
@@ -319,7 +474,8 @@ static void reset_audio(uint32_t output_freq) {
     spec_desired.channels = (Uint8)output_channels;
     spec_desired.samples = 0x100;
 
-    audio_device = SDL_OpenAudioDevice(nullptr, false, &spec_desired, nullptr, 0);
+    const char* dev_name = select_audio_device();
+    audio_device = SDL_OpenAudioDevice(dev_name, false, &spec_desired, nullptr, 0);
     if (audio_device == 0) {
         fprintf(stderr, "SDL error opening audio device: %s\n", SDL_GetError());
         std::exit(EXIT_FAILURE);
@@ -376,7 +532,7 @@ static ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callba
 // the TAB key driver mutates it back to the persistent value here.
 // TCP `fast_forward` toggles still update g_fast_forward directly,
 // which is consistent so long as TAB isn't being held at toggle time.
-static std::atomic<bool> s_turbo_persistent{true};
+static std::atomic<bool> s_turbo_persistent{false};
 
 static void update_gfx(void*) {
     SDL_Event ev;
@@ -846,11 +1002,12 @@ int main(int argc, char** argv) {
             "Set PSR_VOLUME=1.0 to unmute, or use TCP `set_volume`.\n");
     }
 
-    // PSR_TURBO env var: turbo (fast-forward) on by default while we're
-    // chasing softlocks; flip off with PSR_TURBO=0 for real-time
-    // playback. Reproducing attract takes ~1/4 the wallclock time
-    // with turbo on.
-    bool turbo_default = true;
+    // PSR_TURBO env var: turbo (fast-forward) now defaults OFF for
+    // real-time playback. Turbo makes the game over-produce audio (the
+    // empty-buffer report in get_frames_remaining), pushing the SDL queue
+    // past the 100ms decimation threshold -> sample-dropping -> audible
+    // clicks. Opt back in with PSR_TURBO=1 for fast softlock reproduction.
+    bool turbo_default = false;
     if (const char* turbo_env = std::getenv("PSR_TURBO")) {
         // Accept 0/1, false/true, off/on (case-insensitive first char).
         char c = turbo_env[0];
