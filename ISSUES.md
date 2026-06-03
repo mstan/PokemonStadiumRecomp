@@ -26,6 +26,109 @@ visible imperfections remain.
    scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
    See entry below.
 6. Latent Stadium-side gfx pool UAF / race — lowest (masked by RT64).
+7. Register Pokémon (Transfer Pak cart import) quit → softlock —
+   **RE-DIAGNOSED 2026-06-02** (pool-exhaustion theory REFUTED by measurement).
+   Real cause = a recompiler control-flow divergence on the registration-Quit
+   return (`func_80029008` post-fragment-call tail, in/after
+   `main_pool_try_free`) that terminates the main `Game_Thread` `while(1)`,
+   starving the dp_intro graphics producer → `send_dl` frozen. Exact diverging
+   instruction not yet pinned; fix is in N64Recomp (load-bearing). See entry
+   below. Branch `dev/register-quit-softlock`.
+8. Game Boy games have no audio (GB Tower / Transfer Pak cart import) —
+   **KNOWN GAP 2026-06-02.** Video + input work; the embedded GB sound is
+   silent (GB APU → N64 audio path not wired). See entry below.
+
+- [ ] **Register Pokémon quit → softlock (Transfer Pak cart import).**
+      **RE-DIAGNOSED 2026-06-02 — earlier "pool exhaustion" root cause is WRONG
+      (refuted by measurement). Real cause = a recompiler control-flow divergence
+      on the registration-Quit return path that terminates the main game thread.
+      Exact diverging instruction not yet pinned; fix is in N64Recomp (load-bearing).**
+      Branch `dev/register-quit-softlock`.
+
+      *Repro (USER-CONFIRMED; driven via debug-server input + screenshots).*
+      Game Pak Check →A→ Please Select (POKéMON STADIUM, A) →A(overworld STADIUM)→
+      A(POKé CUP)→A(POKé BALL)→ POKéMON STADIUM screen (Battle|Rules|Registration)
+      → DRight×2 to Registration, A → submenu (Register/Check/Delete/Quit) →
+      DDown×3 to **Quit**, A → wedge. Screen freezes on the POKéMON STADIUM screen
+      with the Battle/Rules/Registration buttons GONE (torn down mid-transition).
+      Process ALIVE: `frame`/`vi`/`submit_audio` climb; `send_dl`/`dp_complete`
+      frozen. Reliably reproducible.
+
+      *Visible mechanism (measured).* The graphics frame builder `dp_intro`
+      (thread `func_8000183C`, dp_intro.c:175) is a per-frame servant: it blocks
+      on `osRecvMesg(&D_8008468C)` for a render REQUEST, builds+submits the gfx
+      task, replies `'DONE'` to `D_800846A4`. At the wedge it is blocked on the
+      request queue with **both `D_8008468C` and `D_800846A4` empty** — i.e. the
+      PRODUCER stopped posting render requests. The producer is the main game
+      state machine `Game_Thread` (29BA0.c:776), which drives frames via
+      `func_80001BD4`/`func_80001BA8`. At the wedge **`Game_Thread` is GONE from
+      the thread dump** (funcs_68 absent on all 8 live guest threads). Its OSThread
+      `pThreads`@0x8007F730 exists but has no host thread and `queue=0` → its host
+      thread RETURNED. But `Game_Thread` is an infinite `while(1)` dispatch loop
+      with NO return path in C — so its termination is a recompiler control-flow
+      divergence, not game logic.
+
+      *Refuted hypotheses (all by direct measurement on the live wedged process):*
+      1. **Pool exhaustion — NO.** `sMemPool`@0x800A6070 `available`=0x34F640
+         (~3.45 MB free); the always-on `[pool] ALLOC FAIL` logger never fires;
+         `D_800AA660/664`=NULL is just the GB-emulator IDLE state (in a clean
+         repro `func_8000D738` never even runs — no GB threads). Pool is hardcoded
+         `POOL_END_6MB=0x80600000` in BOTH paths → 6 MB is the cap on hardware
+         too; "bump to 8 MB" was never valid.
+      2. **Voluntary preemption — NO.** `PSR_DISABLE_VOLUNTARY_PREEMPTION=1` still
+         wedges. (Tick CADENCE does shift WHERE it dies — more trace hooks → more
+         `ultramodern_scheduler_tick` calls → earlier death — so it's timing-
+         sensitive, but preemption is not the trigger.)
+      3. **`func_84203E6C` (frag61 registration menu) return — NO.** jrdiag at its
+         `TRACE_RETURN`: `ra=0x80029028 == host_return_target=0x80029028`,
+         `tailcall_pending=0`, SP balanced. It returns cleanly to `func_80029008`.
+      4. **`func_80029008`'s `jr $ra` section-reloc fixup (`section_addresses[5]`) —
+         NO.** jrdiag shows `sec5=0x80000400` (un-relocated), so the fixup is
+         skipped; `func_80029008` returns correctly many times during navigation.
+
+      *Localization (where it DOES diverge).* Call chain at divergence (from a
+      stack scan of `Game_Thread`'s stack 0x80080000–0x800818E0):
+      `Game_Thread → func_80029BC0 (STATE_STADIUM_MENU) → func_80029984 (Stadium
+      fragment loop) → func_80029008 (FRAGMENT_LOAD_AND_CALL, 29BA0.c:54) →
+      fragment 61 (func_84203E6C)`. After Quit, `func_84203E6C` returns correctly,
+      but **`func_80029008` never reaches its normal `TRACE_RETURN`** — it diverges
+      in its post-fragment-call tail: `result = func(...); main_pool_try_free(func);
+      return result;`, specifically in/after the **`main_pool_try_free(func)` call
+      (0x80002620)** that frees the just-exited fragment-61 block (which runs the
+      block's destructor func-pointer). The recomp control-flow machinery then
+      unwinds `Game_Thread` out of its `while(1)` via either the per-call
+      `if (ctx->r29 != recomp_call_sp) return;` SP-mismatch cascade or a
+      `recomp_request_tailcall` to a bad target → thread ends → producer dies →
+      dp_intro starves → `send_dl` frozen.
+
+      *Next step (FIX phase).* Pin the exact divergence inside `main_pool_try_free`
+      / the freed-block destructor dispatch / the indirect-fragment-call return
+      (extend the jrdiag to `main_pool_try_free` (funcs_87) and the destructor it
+      runs). The fix lives in **N64Recomp** codegen (the GB-Tower-era tailcall /
+      continuation / SP-mismatch `jr` machinery: `recomp_request_tailcall`,
+      `host_return_target`, `recomp_handle_tailcalls`) — load-bearing; DISCUSS
+      before editing. Memory: `project_register_quit_softlock_2026_06_02.md`.
+      Key addrs: `Game_Thread` OSThread `pThreads`@0x8007F730; scheduler
+      `D_800A62E0`@0x800A62E0; dp_intro client `D_80083CA0`@0x80083CA0, request
+      queue `D_8008468C`, reply `D_800846A4`. Funcs: `func_80029008` (funcs_44,
+      diverges), `func_84203E6C` (funcs_107, returns OK), `main_pool_try_free`
+      (funcs_87, 0x80002620, suspect), `func_8000183C` (dp_intro, funcs_137,
+      starved). **TEMP cleanup owed (all on branch, uncommitted):** CMakeLists
+      `set_source_files_properties` trace block (now funcs_68/75/97/44/107); the
+      `[jrdiag]` block + the `_n_` audio-skip filter in `extras.c`
+      (`pkmnstadium_trace_entry_common`/`_return_common`). Revert all after the fix.
+
+- [ ] **Game Boy games have no audio (GB Tower & Transfer Pak cart import).**
+      **KNOWN GAP — noted 2026-06-02, not yet investigated.** GB games launched
+      in the GB Tower boot and play (video + input work), but produce **no
+      sound**. The embedded Game Boy emulator's audio — GB APU emulation routed
+      into the N64 audio system — is not wired up in the recomp: during GB
+      Tower the RSP runs the `gbTowerMain` display/copy microcode (selected by
+      ucode boot signature), not `aspMain`, and no N64-side audio task carries
+      the emulated GB sound to the host output. Distinct from the (fixed) host
+      audio routing / decimation-click issues — those were Stadium's own N64
+      audio; this is the embedded GB sound never being produced at all. Lower
+      priority than the Register-quit softlock above; not yet root-caused.
 
 - [x] **Small clicking sound between audio chunks** during music
       sequences. **FIXED 2026-05-28** (runtime fork `N64ModernRuntime`,

@@ -63,6 +63,30 @@ target_include_directories(RecompiledFuncs PRIVATE
 file(GLOB FUNC_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/generated/*.c)
 target_sources(RecompiledFuncs PRIVATE ${FUNC_C_SOURCES})
 
+# TEMP (dev/register-quit-softlock diagnosis): enable the TRACE_ENTRY/RETURN
+# function-trace hooks for the registration-Quit RETURN CHAIN, to pin which
+# function diverges and lets Game_Thread exit its while(1) dispatch loop. The
+# stack-scan of the wedged process showed the chain at divergence is:
+#   Game_Thread -> func_80029BC0 -> func_80029984 -> func_80029008 -> fragment61.
+# TRACE_RETURN fires on each function return, so the last ENTRY without a
+# matching RETURN (or Game_Thread's TRACE_RETURN firing at all) localizes the
+# divergence. Scoped to these files; F70/D64/DBC dropped so the ring isn't
+# flooded by the per-frame scheduler tick after the wedge. REMOVE after diagnosis.
+set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/generated/funcs_68.c    # Game_Thread (main dispatch while(1))
+    ${CMAKE_SOURCE_DIR}/generated/funcs_75.c    # func_80029BC0 (STATE_STADIUM_MENU)
+    ${CMAKE_SOURCE_DIR}/generated/funcs_97.c    # func_80029984 (Stadium fragment loop)
+    ${CMAKE_SOURCE_DIR}/generated/funcs_44.c    # func_80029008 (FRAGMENT_LOAD_AND_CALL caller)
+    ${CMAKE_SOURCE_DIR}/generated/funcs_107.c   # func_84203E6C (jrdiag: log return decision); _n_ audio filtered
+    ${CMAKE_SOURCE_DIR}/generated/funcs_87.c    # main_pool_try_free (jrdiag enter/return) — post-frag-call suspect
+    ${CMAKE_SOURCE_DIR}/generated/funcs_81.c    # main_pool_free (jrdiag enter/return) — runs freed-block destructor
+    # (funcs_6 = frag61 input-loop dropped: they're grouped with
+    #  per-frame audio fns _n_loadOutputBuffer/func_800383C8 that flood the ring.
+    #  frag61 already confirmed to reach its normal TRACE_RETURN; we only need the
+    #  main-code return cascade above to see where it stops.)
+    PROPERTIES COMPILE_DEFINITIONS "PKMNSTADIUM_TRACE_HOOKS=1"
+)
+
 # ---- Runner executable ------------------------------------------------------
 add_executable(PokemonStadiumRecomp
     src/main/main.cpp

@@ -416,6 +416,28 @@ static void pkmnstadium_gb_fragment_trace(const char *func,
 
 static void pkmnstadium_trace_entry_common(const char *func,
                                            const recomp_context *ctx) {
+    /* DIAG (dev/register-quit-softlock): skip libnaudio per-audio-frame
+     * functions (e.g. _n_loadOutputBuffer) from the trace ring — they flood
+     * it at audio rate and bury the control-flow we care about. Still run the
+     * load-bearing preemption tick. Remove with the TEMP trace block. */
+    if (func[0] == '_' && func[1] == 'n' && func[2] == '_') {
+        ultramodern_scheduler_tick();
+        return;
+    }
+    /* DIAG (dev/register-quit-softlock): log ENTRY of the registration-Quit
+     * return chain + the pool-free path, so enter/return pairing pins which
+     * function is entered last without returning. Remove with the TEMP trace. */
+    if (ctx != NULL && (__builtin_strcmp(func, "func_80029008") == 0 ||
+                        __builtin_strcmp(func, "func_80029984") == 0 ||
+                        __builtin_strcmp(func, "func_80029BC0") == 0 ||
+                        __builtin_strcmp(func, "main_pool_try_free") == 0 ||
+                        __builtin_strcmp(func, "main_pool_free") == 0 ||
+                        __builtin_strcmp(func, "func_84203E6C") == 0)) {
+        fprintf(stderr,
+            "[jrdiag] %s ENTER: ra(r31)=0x%08X sp(r29)=0x%08X a0=0x%08X\n",
+            func, (uint32_t)ctx->r31, (uint32_t)ctx->r29, (uint32_t)ctx->r4);
+        fflush(stderr);
+    }
     uint64_t idx = __atomic_fetch_add(&trace_ring_write_idx, 1, __ATOMIC_RELAXED);
     trace_ring[idx & (TRACE_RING_CAP - 1)] = func;
 
@@ -2772,6 +2794,28 @@ static void pkmnstadium_trace_return_common(const char *func,
                                             const recomp_context *ctx) {
     /* For "where are we stuck?" the entry log is what matters; returns
      * are recorded too in case we need to reconstruct a call stack. */
+    /* DIAG: skip libnaudio (_n_*) returns — see pkmnstadium_trace_entry_common. */
+    if (func[0] == '_' && func[1] == 'n' && func[2] == '_') {
+        return;
+    }
+    /* DIAG (dev/register-quit-softlock): at func_84203E6C's return, log the
+     * jr-dispatch decision inputs. TRACE_RETURN fires in BOTH the tailcall and
+     * normal-return branches, so tailcall_pending tells us which was taken; r31
+     * ($ra = jr target) vs host_return_target tells us WHY. Remove with the
+     * TEMP trace block. */
+    if (ctx != NULL && (__builtin_strcmp(func, "func_84203E6C") == 0 ||
+                        __builtin_strcmp(func, "func_80029008") == 0 ||
+                        __builtin_strcmp(func, "func_80029984") == 0 ||
+                        __builtin_strcmp(func, "func_80029BC0") == 0 ||
+                        __builtin_strcmp(func, "main_pool_try_free") == 0 ||
+                        __builtin_strcmp(func, "main_pool_free") == 0)) {
+        fprintf(stderr,
+            "[jrdiag] %s RETURN: ra(r31)=0x%08X host_return_target=0x%08X "
+            "tailcall_pending=%u tailcall_target=0x%08X sp(r29)=0x%08X\n",
+            func, (uint32_t)ctx->r31, ctx->host_return_target,
+            ctx->tailcall_pending, ctx->tailcall_target, (uint32_t)ctx->r29);
+        fflush(stderr);
+    }
     uint64_t idx = __atomic_fetch_add(&trace_ring_write_idx, 1, __ATOMIC_RELAXED);
     trace_ring[idx & (TRACE_RING_CAP - 1)] = func;  /* same slot semantics */
     pkmnstadium_asset_wait_trace(func, ctx, 1);
