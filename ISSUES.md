@@ -12,16 +12,13 @@ the 2026-06-04 milestone snapshot reopens several items — a regression
 plus closures that turned out to be premature.
 
 **OPEN as of 2026-06-04 (milestone snapshot):**
-- **#3 POKéMON STADIUM card bottom border — STILL missing.** The
-  RT64-bilinear default did not resolve it; the closure was erroneous.
 - **#7 Register Pokémon "Quit" / backing out of that menu → softlock —
   REGRESSED.** Was user-confirmed fixed 2026-06-03; the bug has returned.
 - **#10 Occasional slight audio crackle (new).**
 
-**ACTIVE priority among OPEN issues:** none set — this is a milestone
-snapshot; the items above are documented, not yet re-investigated, and
-no fixes are attempted in this pass. The issue numbers are stable IDs
-(referenced across this doc, commits, and memory), not the work order.
+**ACTIVE priority among OPEN issues:** #7, the Registration Quit softlock
+regression. The issue numbers are stable IDs (referenced across this doc,
+commits, and memory), not the work order.
 
 **Original priority order (user-set 2026-05-28, superseded above for open work):**
 1. ~~Cursor / icon sprite corruption~~ — **FIXED 2026-05-28, user-confirmed.**
@@ -31,9 +28,8 @@ no fixes are attempted in this pass. The issue numbers are stable IDs
    user-confirmed.** Conservative raster double-blended the shared diagonal of
    alpha-blended fullscreen quads; rt64 per-PSO conservative raster (`edcb06f`).
    **Closed with a noted caveat — see the entry below.**
-3. POKéMON STADIUM panel bottom border missing — **OPEN (reopened 2026-06-04).**
-   The 2026-06-04 RT64-bilinear closure was premature — the bottom border is
-   STILL missing. See entry below.
+3. ~~POKéMON STADIUM panel bottom border missing~~ — **FIXED 2026-06-04.**
+   See entry below.
 4. ~~Selected Game Pak / Player 1 card strip-overlay lines~~ — **FIXED
    2026-06-04.** See entry below.
 5. ~~GB Tower "start GB game" hang~~ - **FIXED 2026-06-02.**
@@ -329,14 +325,20 @@ no fixes are attempted in this pass. The issue numbers are stable IDs
       precision, or texture-wrap-at-edge. Resolved by the RT64 bilinear
       default above.
 
-- [ ] **POKéMON STADIUM panel bottom border missing (main menu).**
-      **OPEN (reopened 2026-06-04 milestone).** The 2026-06-04 closure
-      (attributed to the same RT64 three-point→bilinear filtering change as
-      the Game Pak card streaks) was **premature — the selected STADIUM
-      card's bottom border is STILL missing.** Not re-investigated this pass.
-      The prior, detailed root-cause work (the oversized-tile / interior-
-      sampling RT64 under-fill hypothesis) is retained below and is the best
-      starting point for the re-investigation.
+- [x] **POKéMON STADIUM panel bottom border missing (main menu).**
+      **FIXED 2026-06-04.** The selected STADIUM card's source texture,
+      geometry, and TMEM load were correct. The missing lower frame came from
+      RT64 selecting a GPU framebuffer tile copy for the bottom strip even
+      when the requested tile was outside the framebuffer's recorded last
+      GPU-written rect. RT64 `e5d42d4` makes
+      `FramebufferManager::makeFramebufferTile` reject uncovered framebuffer
+      tiles, so these stale/partial matches fall back to the normal RDRAM/TMEM
+      texture path. Verified with five fresh boots:
+      the selected STADIUM lower edge is present, Player 1 strip rows remain
+      below the artifact threshold, and a 30-crop Event Battle sample shows no
+      intermittent yellow line artifacts.
+
+      The prior diagnostic notes are retained below as historical context.
 
       Historical diagnosis (pre-closure):
 
