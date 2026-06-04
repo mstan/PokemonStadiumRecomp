@@ -9,7 +9,14 @@ The base game runs end-to-end (Quick Battle, Free Battle, Stadium
 cups, Gym Leader Castle have been validated) but the following
 visible imperfections remain.
 
-**Priority order (user-set 2026-05-28):**
+**ACTIVE priority among OPEN issues (user-set 2026-06-03):**
+**#8** (GB games no audio) → **#9** (registered Pokémon don't persist) →
+**#4** (Game Pak card strip-overlay residual) → **#3** (STADIUM panel
+bottom border) → **#6** (latent gfx pool UAF) = lowest. The issue
+numbers below are stable IDs (referenced across this doc, commits, and
+memory), not the work order — this line is the work order.
+
+**Original priority order (user-set 2026-05-28, superseded above for open work):**
 1. ~~Cursor / icon sprite corruption~~ — **FIXED 2026-05-28, user-confirmed.**
    Recomp `section_addresses` not reset on fragment clear; librecomp
    `unregister_runtime_fragment` (N64MR PR #2 `5a3579c` + PSR PR #5 `58d34c4`).
