@@ -147,12 +147,15 @@ static void set_application_user_config(RT64::Application* application,
     application->userConfig.internalColorFormat = to_rt64(config.hpfb_option);
     application->userConfig.displayBuffering = RT64::UserConfiguration::DisplayBuffering::Triple;
 
+    // Three-point filtering produces horizontal color leaks on Stadium's
+    // clamped 2D menu panel textures. Keep the override below available for
+    // renderer A/B tests, but default this port to true bilinear sampling.
+    application->userConfig.threePointFiltering = false;
+
     // PSR diagnostic overrides for menu-sprite-corruption investigation
     // (dev/sprite-corruption-menu-borders branch). RT64's defaults are
     // filtering=AntiAliasedPixelScaling, upscale2D=ScaledOnly,
-    // threePointFiltering=true. The visible yellow dashed lines on
-    // stretched texrects (panel decorations) might come from any of
-    // these. Setting env vars short-circuits to specific values; an
+    // threePointFiltering=true. Setting env vars short-circuits to specific values; an
     // unset/empty env var leaves the default.
     if (const char* r = std::getenv("PSR_RT64_RES_MULT")) {
         char* end = nullptr;

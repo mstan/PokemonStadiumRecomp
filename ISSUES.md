@@ -10,8 +10,7 @@ cups, Gym Leader Castle have been validated) but the following
 visible imperfections remain.
 
 **ACTIVE priority among OPEN issues (user-set 2026-06-03):**
-**#4** (Game Pak card strip-overlay residual) → **#3** (STADIUM panel
-bottom border) → **#6** (latent gfx pool UAF) = lowest. The issue
+**#6** (latent gfx pool UAF). The issue
 numbers below are stable IDs (referenced across this doc, commits, and
 memory), not the work order — this line is the work order.
 
@@ -23,10 +22,11 @@ memory), not the work order — this line is the work order.
    user-confirmed.** Conservative raster double-blended the shared diagonal of
    alpha-blended fullscreen quads; rt64 per-PSO conservative raster (`edcb06f`).
    **Closed with a noted caveat — see the entry below.**
-3. POKéMON STADIUM panel bottom border missing — **DIAGNOSED 2026-05-28**
-   (RT64 under-fills the bottom strip; unique oversized-tile/interior-
-   sampling config). Fix not yet landed — see entry below.
-4. Selected Game Pak card strip-overlay residual.
+3. ~~POKéMON STADIUM panel bottom border missing~~ — **FIXED 2026-06-04.**
+   Resolved by defaulting Stadium's RT64 config to bilinear texture sampling;
+   see entry below.
+4. ~~Selected Game Pak card strip-overlay residual~~ — **FIXED 2026-06-04.**
+   Resolved by the same RT64 filtering default; see entry below.
 5. ~~GB Tower "start GB game" hang~~ - **FIXED 2026-06-02.**
    Red, Blue, and Yellow launch from GB Tower and reach gameplay via
    scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
@@ -290,23 +290,33 @@ memory), not the work order — this line is the work order.
       banner) and Main Menu icon panels (which reuse the same frag57
       grid layout via different MTX translations).
 
-- [ ] **Faint horizontal residual streaks on the SELECTED Game Pak
-      card's 5-strip overlay** (post fragment57-selected-card-overlay
-      retirement, 2026-05-24). Card 1 at Game Pak Check now correctly
-      shows the controller-icon graphic (previously hidden by the hack)
-      but the 5-strip RGBA decoration behind the text shows faint
+- [x] **Faint horizontal residual streaks on the SELECTED Game Pak
+      card's 5-strip overlay** - **FIXED 2026-06-04.**
+      Stadium now defaults RT64 to true bilinear
+      sampling instead of the three-point path that produced horizontal
+      color leaks on clamped 2D menu textures. `PSR_RT64_THREEPOINT`
+      remains available for A/B tests. Verified on the normal default
+      path: `build/visual_default_fix_gamepak.png`.
+
+      Historical diagnosis before the fix: Card 1 at Game Pak Check showed
+      the controller-icon graphic, but the 5-strip RGBA decoration had faint
       horizontal yellow lines along strip boundaries. Conservative
       rasterization (which fixed the row-divider seam class) is
       neutral on this artifact — verified by A/B with
       `RT64_CONSERVATIVE_RASTER=0`. Likely a different bug class:
       TMEM row sampling at strip boundaries, narrow-strip s-coord
-      precision, or texture-wrap-at-edge. Investigation deferred;
-      not a regression from the prior state (the hack was net-negative,
-      it omitted the controller icon entirely).
+      precision, or texture-wrap-at-edge. Resolved by the RT64 bilinear
+      default above.
 
-- [ ] **POKéMON STADIUM panel bottom border missing (main menu).**
-      **DIAGNOSED 2026-05-28 — root cause is an RT64 render bug (NOT
-      texture data, NOT geometry, NOT authentic). FIX NOT YET LANDED.**
+- [x] **POKéMON STADIUM panel bottom border missing (main menu).**
+      **FIXED 2026-06-04.** The same RT64 three-point filtering path that
+      caused the Game Pak card streaks also produced horizontal panel leaks
+      and made the selected STADIUM panel's bottom edge look under-filled.
+      The normal default path now renders the complete selected panel and
+      adjacent menu panels without dashed-line leaks:
+      `build/visual_default_fix_main.png`.
+
+      Historical diagnosis before the fix:
 
       *Symptom.* The central, highlighted "POKéMON STADIUM" icon panel
       renders with a thick blue frame border on its top and sides but
