@@ -10,7 +10,6 @@ cups, Gym Leader Castle have been validated) but the following
 visible imperfections remain.
 
 **ACTIVE priority among OPEN issues (user-set 2026-06-03):**
-**#9** (registered Pokémon don't persist) →
 **#4** (Game Pak card strip-overlay residual) → **#3** (STADIUM panel
 bottom border) → **#6** (latent gfx pool UAF) = lowest. The issue
 numbers below are stable IDs (referenced across this doc, commits, and
@@ -45,11 +44,10 @@ memory), not the work order — this line is the work order.
    **FIXED 2026-06-04.** GB APU output is now queued from
    `osGbSetNextBuffer` into the host audio path. Red, Blue, and Yellow
    verified with steady queued audio and nonzero audible PCM. See entry below.
-9. Registered Pokémon do not persist (Transfer Pak cart import) —
-   **NEW 2026-06-03, user-observed.** After registering Pokémon, they do not
-   appear in the registered set on a subsequent visit to the Registration
-   screen. First observed once the register-Quit softlock (#7) was fixed and
-   the flow became reachable. Not a regression. See entry below.
+9. ~~Registered Pokémon do not persist (Transfer Pak cart import)~~ —
+   **FIXED 2026-06-04.** Stadium now uses FlashRAM saving, and the runtime
+   handles Stadium's low-level Flash command path. A freshly restarted runner
+   re-enters Registration showing the saved registered set. See entry below.
 
 - [x] **Register Pokémon quit → softlock (Transfer Pak cart import).**
       **FIXED 2026-06-03, USER-CONFIRMED.** N64Recomp `5173e0f` +
@@ -162,31 +160,32 @@ memory), not the work order — this line is the work order.
       `[jrdiag]` block + the `_n_` audio-skip filter in `extras.c`
       (`pkmnstadium_trace_entry_common`/`_return_common`). Revert all after the fix.
 
-- [ ] **Registered Pokémon do not persist (Transfer Pak cart import).**
-      **NEW 2026-06-03, USER-OBSERVED. Not yet investigated. Not a regression**
-      — first reachable only after the register-Quit softlock (#7) was fixed.
+- [x] **Registered Pokémon do not persist (Transfer Pak cart import).**
+      **FIXED 2026-06-04.** Not a regression — first reachable only after the
+      register-Quit softlock (#7) was fixed.
 
-      *Symptom.* On the Registration screen, register Pokémon (imported from a
-      GB cart via Transfer Pak), exit, then return to the Registration screen:
-      the previously-registered Pokémon are NOT shown in the registered set —
-      the registration did not stick.
+      *Root cause.* The runner declared Stadium as `Eep4k`, but the game uses
+      1Mbit cart FlashRAM for registered-party data. Stadium also does not call
+      the runtime's high-level `osFlash*` stubs here; it uses bundled low-level
+      `osEPiWriteIo` / `osEPiStartDma` Flash command wrappers. The first runtime
+      Flash command implementation wrote data, but reported an MX_C Flash ID,
+      making Stadium choose a `0x40` read-address multiplier while the runtime
+      programmed 128-byte pages. That made the commit appear successful in RAM,
+      but the next boot read the registered-party banks back from the wrong
+      offsets and counted zero sets.
 
-      *Repro.* Reach the Registration submenu (see #7 repro), Register one or
-      more Pokémon, back out (Quit now works), re-enter Registration → the set
-      is empty / unchanged.
+      *Fix.* Set `game.save_type = recomp::SaveType::Flashram`; emulate the
+      low-level Flash command register path in `librecomp/src/pi.cpp`
+      (status/id/read-array/page-program/sector-erase/chip-erase); initialize
+      new Flash saves to `0xFF`; and report an MX_B/D Flash ID so Stadium uses
+      `0x80` page addressing matching the runtime's 128-byte page granularity.
 
-      *Not yet root-caused. Candidate areas to check (unverified):*
-      - Whether the registered-party data is written to the save (Controller
-        Pak / EEPROM / SRAM per `game.toml` `save_type`) and whether that
-        write reaches the host save file, vs. held only in RAM and lost on
-        teardown.
-      - Whether the Transfer-Pak-imported party is committed by the
-        registration flow at all, or only staged.
-      - Whether `ultramodern::init_saving` / the save backend is persisting the
-        relevant region for this title.
-      Start by checking the save path during a register→exit→re-enter cycle
-      (does the save file change?), then trace the registration commit in the
-      decompiled registration code.
+      *Verification.* Registration submenu → Register Pokémon → 1P Yellow:
+      selected a full six-Pokémon set and chose **OK to Register**. The Flash
+      save changed from SHA1 `f8b52429...` to `1104b2fb...`, the game displayed
+      "Registration complete", and a freshly restarted runner re-entered the
+      same Registration source selector showing **Registered Pokémon 1 Set(s)**
+      instead of `0 Set(s)`.
 
 - [x] **Game Boy games have no audio (GB Tower & Transfer Pak cart import).**
       **FIXED 2026-06-04.** GB Tower now queues embedded Game Boy audio from

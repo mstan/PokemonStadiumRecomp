@@ -1112,7 +1112,7 @@ int main(int argc, char** argv) {
     game.internal_name          = "POKEMON STADIUM";
     game.game_id                = u8"pokestadium.us.1.0";
     game.mod_game_id            = "pokestadium";
-    game.save_type              = recomp::SaveType::Eep4k;  // Pokemon Stadium uses EEPROM
+    game.save_type              = recomp::SaveType::Flashram;  // Pokemon Stadium uses 1Mbit FlashRAM
     game.is_enabled             = true;
     game.has_compressed_code    = false;
     game.entrypoint_address     = get_entrypoint_address();
