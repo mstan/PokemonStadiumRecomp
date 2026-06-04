@@ -1971,15 +1971,6 @@ size = 0x8   # vram 0x8120D818
 # or "No function found for jal target" errors, add entries here, regen.
 
 [[input.manual_funcs]]
-# Branched to from func_8120CD1C@instr0. Falls in a 0x1C0-byte gap
-# between func_8120A6A0 and .L8120A860 in .fragment1. Size derived
-# as (next_symbol_vram - this_vram) = 0x8120A860 - 0x8120A73C = 0x124.
-name = "func_8120A73C"
-section = ".fragment1"
-vram = 0x8120A73C
-size = 0x124
-
-[[input.manual_funcs]]
 # Discovered via runtime "Failed to find function at 0x80000530" —
 # tail-call target inside main(), pret didn't symbolize. Conservative
 # size: ends at next known boundary 0x800005C0 (rsp function start).
@@ -3109,6 +3100,11 @@ before_vram = 0x81206D84
 text = "pkmnstadium_gbtower_state_trace(rdram, 0x81206D84, (uint32_t)ctx->r16, ctx);"
 
 [[patches.hook]]
+func = "osGbSetNextBuffer"
+before_vram = 0x8120730C
+text = "pkmnstadium_gbtower_queue_audio(rdram, (uint32_t)ctx->r10, (uint32_t)ctx->r5);"
+
+[[patches.hook]]
 func = "func_81209078"
 before_vram = 0x81209078
 text = "pkmnstadium_gbtower_state_trace(rdram, 0x81209078, 0, ctx);"
@@ -3122,11 +3118,6 @@ text = "pkmnstadium_gbtower_state_trace(rdram, 0x81209870, (uint32_t)ctx->r4, ct
 func = "func_81209EB4"
 before_vram = 0x81209FB4
 text = "pkmnstadium_gbtower_state_trace(rdram, 0x81209FB4, (uint32_t)ctx->r28, ctx);"
-
-[[patches.hook]]
-func = "func_8120A73C"
-before_vram = 0x8120A73C
-text = "pkmnstadium_gbtower_state_trace(rdram, 0x8120A73C, (uint32_t)ctx->r28, ctx);"
 
 [[patches.hook]]
 func = "func_8120B490"

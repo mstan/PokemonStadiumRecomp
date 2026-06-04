@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -19,7 +20,7 @@ ROOT = Path("F:/Projects/n64recomp/PokemonStadiumRecomp")
 RUNNER = ROOT / "build" / "PokemonStadiumRecomp.exe"
 SCREENSHOT = ROOT / "tools" / "_screenshot.ps1"
 ERRLOG = ROOT / "build" / "last_error.log"
-HOST = ("127.0.0.1", 4371)
+HOST = ("127.0.0.1", int(os.environ.get("PSR_DEBUG_PORT", "4371")))
 
 
 def call(cmd: dict[str, Any], timeout: float = 4.0) -> dict[str, Any]:

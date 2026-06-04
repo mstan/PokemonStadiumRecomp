@@ -42,7 +42,7 @@ ROOT = Path("F:/Projects/n64recomp/PokemonStadiumRecomp")
 RUNNER_EXE = ROOT / "build" / "PokemonStadiumRecomp.exe"
 ERRLOG_PATH = ROOT / "build" / "last_error.log"
 HOST = "127.0.0.1"
-PORT = 4371
+PORT = int(os.environ.get("PSR_DEBUG_PORT", "4371"))
 
 # Default crash repro: three Start presses on the title screen, with
 # enough gap between presses for the runner to schedule a frame.

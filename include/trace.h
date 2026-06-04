@@ -31,6 +31,9 @@ void pkmnstadium_trace_entry_ctx(const char *func, const void *ctx);
 void pkmnstadium_trace_return_ctx(const char *func, const void *ctx);
 void pkmnstadium_gbtower_state_trace(unsigned char *rdram, unsigned int tag,
                                      unsigned int s0, const void *ctx);
+void pkmnstadium_gbtower_queue_audio(unsigned char *rdram,
+                                     unsigned int audio_addr,
+                                     unsigned int byte_count);
 
 /* Voluntary-preemption tick (defined in N64ModernRuntime
  * ultramodern/src/scheduler_tick.cpp, extern "C"). One relaxed atomic

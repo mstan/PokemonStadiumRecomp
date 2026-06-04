@@ -13,7 +13,13 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = 5173e0f89e713df54b08fab6d5e412969377f01c
+sha = 755b13a8626f3b9c687721575afb219c2603feb5
+# 755b13a "fix(recompiler): handle local tailcall continuations" — call
+#   wrappers consume pending tailcall targets that resolve to labels in the
+#   current generated function, while pending non-local tailcalls inside an
+#   existing dispatcher bubble back to that dispatcher instead of recursively
+#   nesting host dispatch loops. Required for GB Tower audio verification;
+#   Red/Yellow/Blue launch and play with audio on PSR dev/clear-issues.
 # 5173e0f "fix(recompiler): reentrant nested tailcall dispatch — resolve
 #   register-quit over-unwind" — USER-VERIFIED fix for ISSUES #7. Call
 #   wrappers no longer bubble up into the outermost dispatch loop; nested

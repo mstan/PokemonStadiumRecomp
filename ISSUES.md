@@ -10,7 +10,7 @@ cups, Gym Leader Castle have been validated) but the following
 visible imperfections remain.
 
 **ACTIVE priority among OPEN issues (user-set 2026-06-03):**
-**#8** (GB games no audio) → **#9** (registered Pokémon don't persist) →
+**#9** (registered Pokémon don't persist) →
 **#4** (Game Pak card strip-overlay residual) → **#3** (STADIUM panel
 bottom border) → **#6** (latent gfx pool UAF) = lowest. The issue
 numbers below are stable IDs (referenced across this doc, commits, and
@@ -41,11 +41,10 @@ memory), not the work order — this line is the work order.
    making call wrappers drain nested tailcall chains locally + reentrant
    `recomp_handle_tailcalls` (N64Recomp `5173e0f` + N64ModernRuntime
    `67f3c7c`; pin bumped). See entry below.
-8. Game Boy games have no audio (GB Tower / Transfer Pak cart import) —
-   **KNOWN GAP 2026-06-02. Still open — NOT addressed by the #7 fix** (that
-   fix touched only the tailcall machinery; no audio code). Video + input
-   work; the embedded GB sound is silent (GB APU → N64 audio path not
-   wired). See entry below.
+8. ~~Game Boy games have no audio (GB Tower / Transfer Pak cart import)~~ —
+   **FIXED 2026-06-04.** GB APU output is now queued from
+   `osGbSetNextBuffer` into the host audio path. Red, Blue, and Yellow
+   verified with steady queued audio and nonzero audible PCM. See entry below.
 9. Registered Pokémon do not persist (Transfer Pak cart import) —
    **NEW 2026-06-03, user-observed.** After registering Pokémon, they do not
    appear in the registered set on a subsequent visit to the Registration
@@ -55,6 +54,11 @@ memory), not the work order — this line is the work order.
 - [x] **Register Pokémon quit → softlock (Transfer Pak cart import).**
       **FIXED 2026-06-03, USER-CONFIRMED.** N64Recomp `5173e0f` +
       N64ModernRuntime `67f3c7c` (pin bumped to `5173e0f`).
+
+      **2026-06-04 reverify.** On the cleanup build, the scripted
+      Game Pak Check → Registration → Quit route leaves the runner alive
+      and rendering after Quit (`send_dl`/`dp_complete` reached 1380
+      instead of freezing while only VI/audio advanced).
 
       *Root cause (confirmed).* A nested call whose callee tail-jumped, while
       an outer tailcall dispatch loop was active, hit the call-wrapper
@@ -184,17 +188,29 @@ memory), not the work order — this line is the work order.
       (does the save file change?), then trace the registration commit in the
       decompiled registration code.
 
-- [ ] **Game Boy games have no audio (GB Tower & Transfer Pak cart import).**
-      **KNOWN GAP — noted 2026-06-02, not yet investigated.** GB games launched
-      in the GB Tower boot and play (video + input work), but produce **no
-      sound**. The embedded Game Boy emulator's audio — GB APU emulation routed
-      into the N64 audio system — is not wired up in the recomp: during GB
-      Tower the RSP runs the `gbTowerMain` display/copy microcode (selected by
-      ucode boot signature), not `aspMain`, and no N64-side audio task carries
-      the emulated GB sound to the host output. Distinct from the (fixed) host
-      audio routing / decimation-click issues — those were Stadium's own N64
-      audio; this is the embedded GB sound never being produced at all. Lower
-      priority than the Register-quit softlock above; not yet root-caused.
+- [x] **Game Boy games have no audio (GB Tower & Transfer Pak cart import).**
+      **FIXED 2026-06-04.** GB Tower now queues embedded Game Boy audio from
+      `osGbSetNextBuffer` through `pkmnstadium_gbtower_queue_audio`, normalizing
+      the guest audio buffer address to KSEG0 before calling
+      `ultramodern::queue_audio_buffer`.
+
+      *Root cause.* GB Tower video/input were active, but the embedded GB
+      emulator's audio buffer was never handed to the host runtime. The normal
+      Stadium N64 audio task path does not carry GB sound while GB Tower is
+      running its display/copy microcode, so the recomp needed an explicit hook
+      at the GB audio-buffer handoff.
+
+      *Fix.* Add the `osGbSetNextBuffer` hook at `0x8120730C`, implement
+      `src/main/gb_audio.cpp`, and keep `PSR_DISABLE_GBTOWER_AUDIO=1` as a
+      diagnostic opt-out. A companion N64Recomp local-tailcall continuation fix
+      prevents the GB interpreter path from recursively nesting host tailcall
+      dispatch while launching/playing the carts (N64Recomp `755b13a`, pin
+      bumped).
+
+      *Verification.* Cleanup build, real-time audio (`PSR_TURBO=0`,
+      `PSR_AUDIO_DEVICE=S/PDIF`, debug port 4471): Red, Yellow, and Blue all
+      launch, remain alive, queue ~60 audio chunks/s with no decimation, and
+      report nonzero audible PCM over 240 sampled chunks per cart.
 
 - [x] **Small clicking sound between audio chunks** during music
       sequences. **FIXED 2026-05-28** (runtime fork `N64ModernRuntime`,

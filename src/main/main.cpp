@@ -1092,8 +1092,15 @@ int main(int argc, char** argv) {
 
     // Start the TCP debug server before recomp::start so a debugger
     // script can connect immediately and observe the boot.
-    pkmnstadium::dbg::start(4371);
-    std::fprintf(stderr, "[PSR] debug server started on tcp:4371\n"); std::fflush(stderr);
+    int debug_port = 4371;
+    if (const char* port_env = std::getenv("PSR_DEBUG_PORT")) {
+        int parsed = std::atoi(port_env);
+        if (parsed > 0 && parsed <= 65535) {
+            debug_port = parsed;
+        }
+    }
+    pkmnstadium::dbg::start(debug_port);
+    std::fprintf(stderr, "[PSR] debug server started on tcp:%d\n", debug_port); std::fflush(stderr);
 
     recomp::Version project_version{0, 1, 0, ""};
     recomp::register_config_path(std::filesystem::current_path());

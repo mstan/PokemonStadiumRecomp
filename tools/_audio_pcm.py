@@ -11,9 +11,9 @@
 #
 #   python tools/_audio_pcm.py [count] [--windows N]
 
-import socket, json, sys
+import os, socket, json, sys
 
-HOST, PORT = "127.0.0.1", 4371
+HOST, PORT = "127.0.0.1", int(os.environ.get("PSR_DEBUG_PORT", "4371"))
 
 
 def fetch(count):
