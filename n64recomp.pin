@@ -13,7 +13,15 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = a0aaa1c655d1b58eadcbdff301e24daa7b5961d1
+sha = 5173e0f89e713df54b08fab6d5e412969377f01c
+# 5173e0f "fix(recompiler): reentrant nested tailcall dispatch — resolve
+#   register-quit over-unwind" — USER-VERIFIED fix for ISSUES #7. Call
+#   wrappers no longer bubble up into the outermost dispatch loop; nested
+#   continuations drain their own tailcall chain locally; static-tail
+#   guards (jump-to-own-return → normal return) restored. GB Tower R/B/Y
+#   regression-checked OK. Builds against N64ModernRuntime main 67f3c7c
+#   (reentrant recomp_handle_tailcalls). Includes gated PSR_CFDIAG
+#   recomp_cf_note scaffolding (no-op when off) — cleanup owed.
 # a0aaa1c "feat(recompiler): static-entry seeding + loop-yield + jr-ra
 #   fixes for GB Tower [Codex GB Tower session]" — the engine commit the
 #   GB Tower bring-up was built against (Transfer Pak + GB Tower R/B/Y).

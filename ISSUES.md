@@ -26,24 +26,57 @@ visible imperfections remain.
    scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
    See entry below.
 6. Latent Stadium-side gfx pool UAF / race — lowest (masked by RT64).
-7. Register Pokémon (Transfer Pak cart import) quit → softlock —
-   **RE-DIAGNOSED 2026-06-02** (pool-exhaustion theory REFUTED by measurement).
-   Real cause = a recompiler control-flow divergence on the registration-Quit
-   return (`func_80029008` post-fragment-call tail, in/after
-   `main_pool_try_free`) that terminates the main `Game_Thread` `while(1)`,
-   starving the dp_intro graphics producer → `send_dl` frozen. Exact diverging
-   instruction not yet pinned; fix is in N64Recomp (load-bearing). See entry
-   below. Branch `dev/register-quit-softlock`.
+7. ~~Register Pokémon (Transfer Pak cart import) quit → softlock~~ —
+   **FIXED 2026-06-03, user-confirmed.** Root cause = recompiler tailcall
+   over-unwind: nested continuations were flattened into the outermost
+   dispatch loop, so the menu-exit SP no longer matched `func_80029008`'s
+   frame and the SP-mismatch guard cascaded out of `Game_Thread`. Fixed by
+   making call wrappers drain nested tailcall chains locally + reentrant
+   `recomp_handle_tailcalls` (N64Recomp `5173e0f` + N64ModernRuntime
+   `67f3c7c`; pin bumped). See entry below.
 8. Game Boy games have no audio (GB Tower / Transfer Pak cart import) —
-   **KNOWN GAP 2026-06-02.** Video + input work; the embedded GB sound is
-   silent (GB APU → N64 audio path not wired). See entry below.
+   **KNOWN GAP 2026-06-02. Still open — NOT addressed by the #7 fix** (that
+   fix touched only the tailcall machinery; no audio code). Video + input
+   work; the embedded GB sound is silent (GB APU → N64 audio path not
+   wired). See entry below.
+9. Registered Pokémon do not persist (Transfer Pak cart import) —
+   **NEW 2026-06-03, user-observed.** After registering Pokémon, they do not
+   appear in the registered set on a subsequent visit to the Registration
+   screen. First observed once the register-Quit softlock (#7) was fixed and
+   the flow became reachable. Not a regression. See entry below.
 
-- [ ] **Register Pokémon quit → softlock (Transfer Pak cart import).**
-      **RE-DIAGNOSED 2026-06-02 — earlier "pool exhaustion" root cause is WRONG
-      (refuted by measurement). Real cause = a recompiler control-flow divergence
-      on the registration-Quit return path that terminates the main game thread.
-      Exact diverging instruction not yet pinned; fix is in N64Recomp (load-bearing).**
-      Branch `dev/register-quit-softlock`.
+- [x] **Register Pokémon quit → softlock (Transfer Pak cart import).**
+      **FIXED 2026-06-03, USER-CONFIRMED.** N64Recomp `5173e0f` +
+      N64ModernRuntime `67f3c7c` (pin bumped to `5173e0f`).
+
+      *Root cause (confirmed).* A nested call whose callee tail-jumped, while
+      an outer tailcall dispatch loop was active, hit the call-wrapper
+      bubble-up early-return and was FLATTENED into the outermost dispatch
+      loop. So the whole Registration menu (fragment 61, reached from
+      `func_80029008`'s `jalr $v0`) ran as one flat tailcall chain anchored at
+      `func_80029008`'s continuation `0x80029028`. On menu exit the SP no
+      longer matched `func_80029008`'s `recomp_call_sp`; the per-call
+      `if (ctx->r29 != recomp_call_sp) return;` guard fired and the over-unwind
+      cascaded out of `run_thread_function`, ending `Game_Thread`. Confirmed via
+      the always-on PSR_CFDIAG control-flow ring (`build/cfdiag.stderr.log`:
+      menu ran as a cyclic tailcall chain at hrt=`0x80029028`; `THREAD-ENTRY
+      RETURNED entry=0x8002B330 r31=0x80029028`).
+
+      *Fix.* (a) call wrappers no longer bubble up when an outer dispatcher is
+      active — they fall through to `recomp_handle_tailcalls` so the
+      continuation drains its OWN pending tailcall chain locally and resumes;
+      (b) `recomp_handle_tailcalls` made reentrant (save/restore the
+      `tailcall_dispatching` flag); (c) static-tail guards restored
+      (`recomp_request_tailcall_func_target`; jump-to-own-return → normal
+      return). The earlier "pool exhaustion" theory was REFUTED by measurement
+      (kept below for the record).
+
+      *Cleanup still owed (behavior-neutral; tracked, not yet done):* gated
+      `recomp_cf_note` scaffolding emitted in every call wrapper (no-op unless
+      PSR_CFDIAG=1); the `PKMNSTADIUM_TRACE_HOOKS` `set_source_files_properties`
+      block in CMakeLists; the `[jrdiag]` block + `_n_` audio-skip filter in
+      `extras.c`. The always-on PSR_CFDIAG CF ring in librecomp is doctrine-
+      aligned and may stay. Diagnostic history retained below.
 
       *Repro (USER-CONFIRMED; driven via debug-server input + screenshots).*
       Game Pak Check →A→ Please Select (POKéMON STADIUM, A) →A(overworld STADIUM)→
@@ -117,6 +150,32 @@ visible imperfections remain.
       `set_source_files_properties` trace block (now funcs_68/75/97/44/107); the
       `[jrdiag]` block + the `_n_` audio-skip filter in `extras.c`
       (`pkmnstadium_trace_entry_common`/`_return_common`). Revert all after the fix.
+
+- [ ] **Registered Pokémon do not persist (Transfer Pak cart import).**
+      **NEW 2026-06-03, USER-OBSERVED. Not yet investigated. Not a regression**
+      — first reachable only after the register-Quit softlock (#7) was fixed.
+
+      *Symptom.* On the Registration screen, register Pokémon (imported from a
+      GB cart via Transfer Pak), exit, then return to the Registration screen:
+      the previously-registered Pokémon are NOT shown in the registered set —
+      the registration did not stick.
+
+      *Repro.* Reach the Registration submenu (see #7 repro), Register one or
+      more Pokémon, back out (Quit now works), re-enter Registration → the set
+      is empty / unchanged.
+
+      *Not yet root-caused. Candidate areas to check (unverified):*
+      - Whether the registered-party data is written to the save (Controller
+        Pak / EEPROM / SRAM per `game.toml` `save_type`) and whether that
+        write reaches the host save file, vs. held only in RAM and lost on
+        teardown.
+      - Whether the Transfer-Pak-imported party is committed by the
+        registration flow at all, or only staged.
+      - Whether `ultramodern::init_saving` / the save backend is persisting the
+        relevant region for this title.
+      Start by checking the save path during a register→exit→re-enter cycle
+      (does the save file change?), then trace the registration commit in the
+      decompiled registration code.
 
 - [ ] **Game Boy games have no audio (GB Tower & Transfer Pak cart import).**
       **KNOWN GAP — noted 2026-06-02, not yet investigated.** GB games launched
