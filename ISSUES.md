@@ -681,13 +681,13 @@ memory), not the work order — this line is the work order.
       command, dp_complete fires, game continues.~~ Memory note:
       `project_attract_softlock_2026_05_23.md`.
 
-### Next-step gate: Ares oracle bridge
+### Historical gate: Ares oracle bridge
 
-The three open visible bugs above each have multiple plausible
-root-cause layers (recompiler emit, librecomp shim, RT64 renderer,
-pret disasm correctness, or genuine game-side UAF that real N64
-hardware also has). Static-analysis triage can narrow but not
-eliminate — we keep ending up with two or three viable hypotheses.
+Before the 2026-06-04 closeout, the remaining visible bugs each had
+multiple plausible root-cause layers (recompiler emit, librecomp shim,
+RT64 renderer, pret disasm correctness, or genuine game-side UAF that
+real N64 hardware also has). Static-analysis triage narrowed but did
+not always eliminate competing hypotheses.
 
 The deterministic decider is the **Ares oracle workflow**
 documented in [`DEBUG.md`](DEBUG.md): run Ares against the
@@ -697,12 +697,18 @@ the responsible write came from recompiled code (→ check pret's
 claim about that address), from a librecomp shim (→ our libultra
 emu bug), or from RT64 (→ renderer bug). The bridge is implemented
 (see `n64recomp/ares-bridge/`) but currently has an in-process
-blocker; the recommended next step is the **out-of-process
-oracle** variant. Until that lands, the open bugs are
-diagnosis-blocked at the "which layer" question and we're patching
-symptoms instead of roots.
+blocker; the recommended next step was the **out-of-process
+oracle** variant. At the time, the open bugs were diagnosis-blocked
+at the "which layer" question and symptom patches were being used
+while the oracle path matured.
 
-## Scaffolding (current phase)
+## Historical roadmap / backlog
+
+The unchecked tasks below are retained project roadmap and
+architectural-cleanup notes. They are not open items in the current
+playable-build issue list above.
+
+### Scaffolding (historical phase)
 
 - [ ] Replace placeholder SHA in `n64recomp.pin` with the real
       40-char HEAD of `../N64Recomp` after `setup.sh` runs. Currently
@@ -711,7 +717,7 @@ symptoms instead of roots.
 - [ ] First `disasm/make init` + `disasm/make` run — confirm pret
       builds identically against `disasm/baseroms/us/baserom.z64`.
 
-## Recompilation pipeline (next phase)
+### Recompilation pipeline (historical phase)
 
 - [ ] **Build pret's disasm to produce `pokestadium-us.elf`.**
       Requires MIPS binutils + make + python. On Windows this
@@ -726,7 +732,7 @@ symptoms instead of roots.
       collisions (`0x8FC00000`, `0x88920000`) — likely nothing
       until they cause an analysis or recomp warning.
 
-## Runtime (depends on N64ModernRuntime)
+### Runtime (historical phase; depends on N64ModernRuntime)
 
 - [ ] Vendor or submodule N64ModernRuntime (the runtime that
       Zelda64Recomp / MM:R consume).
@@ -735,7 +741,7 @@ symptoms instead of roots.
 - [ ] First boot — expect to crash or blackscreen; record the
       first divergence.
 
-## GB Tower (out of scope, first pass)
+### GB Tower (historical first pass)
 
 - [ ] Enumerate all GB-related entry points reachable from
       resident `text`. Symbols of interest: `gb_tower`, `gb_mbc`,
@@ -744,7 +750,7 @@ symptoms instead of roots.
 - [ ] Confirm main game (battles, minigames) reachable without
       hitting any stub.
 
-## Oracle / divergence checking
+### Oracle / divergence checking
 
 The Ares oracle bridge lives in the **engine**, not in this
 project — see `n64recomp/ares-bridge/` and its
@@ -773,7 +779,7 @@ Consumer-side work (this project):
 - [ ] `watchdog.c/h` — divergence assertion firing on register
       or memory mismatch reported by the bridge.
 
-## Modding (deferred — see proposals)
+### Modding (deferred — see proposals)
 
 Explicitly **not** prioritized until the base game boots and is
 playable.
@@ -783,7 +789,7 @@ playable.
 - [ ] RecompModMerger.
 - [ ] LiveRecomp / sljit JIT — almost certainly skipped.
 
-## Documentation
+### Documentation
 
 - [ ] `MODDING.md` — flesh out post-MVP. Currently a placeholder.
 - [ ] `docs/` — design notes on overlay handling, GB Tower
@@ -791,7 +797,7 @@ playable.
 - [ ] Per-overlay README skeletons under `overlays/<name>/` once
       extraction tool runs.
 
-## Audio
+### Audio
 
 - [x] **Music-rate periodic tick — FIXED 2026-05-28.** Forked-runtime
       bug: the N64 Audio Interface length register (`AI_LEN_REG`) was
