@@ -799,6 +799,32 @@ playable.
 
 ### Audio
 
+- [x] **Audio output keeps going to a "random" device; does not follow
+      the Windows default. FIXED 2026-06-04.** `select_audio_device()`
+      (`src/main/main.cpp`) used to pick the **first non-controller device in
+      SDL's enumeration order** and pin it by name. That index is not the
+      system default (on this box index 0 = "Headphones (Oculus Virtual Audio
+      Device)") and the order shifts when devices are plugged/unplugged → the
+      output endpoint wandered launch-to-launch and never tracked the user's
+      chosen default. The original logic existed only to dodge a DualSense
+      speaker hijacking the default, but it overcorrected into ignoring the
+      default entirely.
+
+      *Fix.* Rewrote selection to: (1) honor `PSR_AUDIO_DEVICE=<substring>`
+      as an explicit pin; (2) otherwise query `SDL_GetDefaultAudioInfo` for the
+      real system-default endpoint — if it is NOT a controller speaker, open
+      the SDL default (`nullptr`), which on the forced WASAPI backend follows
+      the Windows default endpoint **and live-migrates when the user changes
+      it**; (3) fall back to the first non-controller named device only if the
+      default itself is a controller. GOTCHA: `SDL_GetDefaultAudioInfo` rejects
+      a null `spec` pointer ("Parameter 'spec' is invalid") — must pass a real
+      `SDL_AudioSpec`. SDL here is FetchContent **2.30.3**, not rt64's bundled
+      2.26. Verified live: log reports default `Headphones (SK010 Stereo)` →
+      "SDL default (follows Windows default endpoint, live-migrates)" and boots
+      to the main menu clean. (Output is still muted by default via
+      `PSR_VOLUME`; set `PSR_VOLUME=1.0` to hear it — separate from routing.)
+      Memory: `project_audio_initiative_2026_06_02.md`.
+
 - [x] **Music-rate periodic tick — FIXED 2026-05-28.** Forked-runtime
       bug: the N64 Audio Interface length register (`AI_LEN_REG`) was
       never emulated, killing the game's hardware audio-pacing feedback

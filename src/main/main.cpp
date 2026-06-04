@@ -440,12 +440,21 @@ static void set_frequency(uint32_t freq) {
     update_audio_converter();
 }
 
-// Pick the output device. SDL's default (nullptr) follows the Windows
-// default endpoint, which gets hijacked by game-controller audio endpoints
-// (e.g. a DualSense's built-in speaker) — so the game audio plays through
-// the controller (tinny "static", inaudible on real speakers). Honor
-// PSR_AUDIO_DEVICE=<name substring> if set; otherwise pick the first device
-// that is NOT a known controller/virtual endpoint; fall back to SDL default.
+// Pick the output device.
+//
+// Goal: follow the Windows *default* output endpoint, so the game plays
+// through whatever the user has chosen — and, on the WASAPI backend that
+// we force, live-migrates when they change the default mid-game (open with
+// nullptr to get that behavior). The one trap is a game-controller endpoint
+// (e.g. a DualSense's built-in speaker) becoming the system default: that
+// routes game audio into the controller (tinny "static", inaudible on real
+// speakers). So:
+//   1. PSR_AUDIO_DEVICE=<name substring> set  -> pin that named device.
+//   2. system default is NOT a controller     -> open SDL default (nullptr),
+//                                                 which follows + live-migrates.
+//   3. system default IS a controller         -> fall back to the first
+//                                                 non-controller named device.
+// Returning nullptr means "let SDL track the system default."
 static const char* select_audio_device() {
     const int count = SDL_GetNumAudioDevices(0 /* iscapture=0 -> output */);
     if (count <= 0) return nullptr;  // can't enumerate — use SDL default
@@ -459,10 +468,13 @@ static const char* select_audio_device() {
         return low(hay).find(low(needle)) != std::string::npos;
     };
 
-    const char* want = std::getenv("PSR_AUDIO_DEVICE");
     static const char* kAvoid[] = {
         "dualsense", "dualshock", "wireless controller", "ps5", "ps4",
         "steam streaming",
+    };
+    auto is_controller_endpoint = [&](const char* name) {
+        for (const char* a : kAvoid) if (contains_ci(name, a)) return true;
+        return false;
     };
 
     fprintf(stderr, "[PSR] audio output devices:\n");
@@ -471,28 +483,51 @@ static const char* select_audio_device() {
         fprintf(stderr, "[PSR]   [%d] %s\n", i, nm ? nm : "(null)");
     }
 
-    const char* chosen = nullptr;
-    for (int i = 0; i < count; i++) {
-        const char* name = SDL_GetAudioDeviceName(i, 0);
-        if (!name) continue;
-        if (want && want[0]) {
-            if (contains_ci(name, want)) { chosen = name; break; }
-            continue;
+    // (1) Explicit pin always wins.
+    const char* want = std::getenv("PSR_AUDIO_DEVICE");
+    if (want && want[0]) {
+        for (int i = 0; i < count; i++) {
+            const char* name = SDL_GetAudioDeviceName(i, 0);
+            if (name && contains_ci(name, want)) {
+                fprintf(stderr, "[PSR] -> audio device: \"%s\" (PSR_AUDIO_DEVICE match)\n", name);
+                return name;
+            }
         }
-        bool avoid = false;
-        for (const char* a : kAvoid) if (contains_ci(name, a)) { avoid = true; break; }
-        if (!avoid) { chosen = name; break; }
+        fprintf(stderr, "[PSR] PSR_AUDIO_DEVICE=\"%s\" matched no device; "
+                        "falling back to system default\n", want);
     }
 
-    if (chosen) {
-        fprintf(stderr, "[PSR] -> audio device: \"%s\" %s\n", chosen,
-                (want && want[0]) ? "(PSR_AUDIO_DEVICE match)"
-                                  : "(auto: skipped controller endpoints)");
+    // (2) Follow the Windows default endpoint unless it's a controller speaker.
+    char* def_name = nullptr;
+    SDL_AudioSpec def_spec{};  // some SDL backends reject a null spec ptr
+    if (SDL_GetDefaultAudioInfo(&def_name, &def_spec, 0) == 0 && def_name) {
+        const bool def_is_controller = is_controller_endpoint(def_name);
+        fprintf(stderr, "[PSR] system default output: \"%s\"%s\n", def_name,
+                def_is_controller ? " (controller endpoint — avoiding)" : "");
+        SDL_free(def_name);
+        if (!def_is_controller) {
+            fprintf(stderr, "[PSR] -> audio device: SDL default "
+                            "(follows Windows default endpoint, live-migrates)\n");
+            return nullptr;
+        }
     } else {
-        fprintf(stderr, "[PSR] -> audio device: SDL default "
-                        "(no suitable named device; set PSR_AUDIO_DEVICE to override)\n");
+        fprintf(stderr, "[PSR] SDL_GetDefaultAudioInfo failed (%s); "
+                        "checking enumerated devices\n", SDL_GetError());
     }
-    return chosen;  // may be nullptr -> SDL default
+
+    // (3) Default is a controller (or unknown): first non-controller device.
+    for (int i = 0; i < count; i++) {
+        const char* name = SDL_GetAudioDeviceName(i, 0);
+        if (name && !is_controller_endpoint(name)) {
+            fprintf(stderr, "[PSR] -> audio device: \"%s\" "
+                            "(auto: skipped controller default)\n", name);
+            return name;
+        }
+    }
+
+    fprintf(stderr, "[PSR] -> audio device: SDL default "
+                    "(no non-controller device found)\n");
+    return nullptr;  // nothing better — let SDL pick
 }
 
 static void reset_audio(uint32_t output_freq) {
