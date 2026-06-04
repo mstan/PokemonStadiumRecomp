@@ -3,16 +3,28 @@
 Living list of known gaps. Use this as a pre-flight before starting
 a new work session.
 
-## Current playable build — resolved issue list
+## Current playable build — issue list
 
 The base game runs end-to-end (Quick Battle, Free Battle, Stadium
-cups, Gym Leader Castle have been validated). The current
-playable-build issue list below is closed as of 2026-06-04.
+cups, Gym Leader Castle have been validated). **Still early
+development.** The list below was briefly all-closed on 2026-06-04, but
+the 2026-06-04 milestone snapshot reopens several items — a regression
+plus two closures that turned out to be premature (Codex declared them
+fixed; the artifacts are still visible).
 
-**ACTIVE priority among OPEN issues (user-set 2026-06-03):**
-None in the current playable-build issue list. The issue
-numbers below are stable IDs (referenced across this doc, commits, and
-memory), not the work order — this line is the work order.
+**OPEN as of 2026-06-04 (milestone snapshot):**
+- **#3 POKéMON STADIUM card bottom border — STILL missing.** The
+  RT64-bilinear default did not resolve it; the closure was erroneous.
+- **#4 Selected Game Pak / Player 1 card strip lines — STILL present.**
+  Same premature closure.
+- **#7 Register Pokémon "Quit" / backing out of that menu → softlock —
+  REGRESSED.** Was user-confirmed fixed 2026-06-03; the bug has returned.
+- **#10 Occasional slight audio crackle (new).**
+
+**ACTIVE priority among OPEN issues:** none set — this is a milestone
+snapshot; the items above are documented, not yet re-investigated, and
+no fixes are attempted in this pass. The issue numbers are stable IDs
+(referenced across this doc, commits, and memory), not the work order.
 
 **Original priority order (user-set 2026-05-28, superseded above for open work):**
 1. ~~Cursor / icon sprite corruption~~ — **FIXED 2026-05-28, user-confirmed.**
@@ -22,24 +34,26 @@ memory), not the work order — this line is the work order.
    user-confirmed.** Conservative raster double-blended the shared diagonal of
    alpha-blended fullscreen quads; rt64 per-PSO conservative raster (`edcb06f`).
    **Closed with a noted caveat — see the entry below.**
-3. ~~POKéMON STADIUM panel bottom border missing~~ — **FIXED 2026-06-04.**
-   Resolved by defaulting Stadium's RT64 config to bilinear texture sampling;
-   see entry below.
-4. ~~Selected Game Pak card strip-overlay residual~~ — **FIXED 2026-06-04.**
-   Resolved by the same RT64 filtering default; see entry below.
+3. POKéMON STADIUM panel bottom border missing — **OPEN (reopened 2026-06-04).**
+   The 2026-06-04 RT64-bilinear closure was premature — the bottom border is
+   STILL missing. See entry below.
+4. Selected Game Pak / Player 1 card strip-overlay lines — **OPEN (reopened
+   2026-06-04).** The 2026-06-04 closure was premature — the strip lines are
+   STILL visible. See entry below.
 5. ~~GB Tower "start GB game" hang~~ - **FIXED 2026-06-02.**
    Red, Blue, and Yellow launch from GB Tower and reach gameplay via
    scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
    See entry below.
 6. ~~Latent Stadium-side gfx pool UAF / race~~ — **FIXED 2026-06-04.**
-7. ~~Register Pokémon (Transfer Pak cart import) quit → softlock~~ —
-   **FIXED 2026-06-03, user-confirmed.** Root cause = recompiler tailcall
-   over-unwind: nested continuations were flattened into the outermost
-   dispatch loop, so the menu-exit SP no longer matched `func_80029008`'s
-   frame and the SP-mismatch guard cascaded out of `Game_Thread`. Fixed by
-   making call wrappers drain nested tailcall chains locally + reentrant
-   `recomp_handle_tailcalls` (N64Recomp `5173e0f` + N64ModernRuntime
-   `67f3c7c`; pin bumped). See entry below.
+7. Register Pokémon (Transfer Pak cart import) quit → softlock —
+   **REGRESSED / OPEN (2026-06-04).** Was **FIXED 2026-06-03, user-confirmed**
+   (recompiler tailcall over-unwind: nested continuations flattened into the
+   outermost dispatch loop, so the menu-exit SP no longer matched
+   `func_80029008`'s frame and the SP-mismatch guard cascaded out of
+   `Game_Thread`; fixed by draining nested tailcall chains locally + reentrant
+   `recomp_handle_tailcalls`, N64Recomp `5173e0f` + N64ModernRuntime `67f3c7c`).
+   The softlock has **returned** — choosing **Quit** (or backing out of that
+   menu) wedges again. See entry below.
 8. ~~Game Boy games have no audio (GB Tower / Transfer Pak cart import)~~ —
    **FIXED 2026-06-04.** GB APU output is now queued from
    `osGbSetNextBuffer` into the host audio path. Red, Blue, and Yellow
@@ -48,12 +62,22 @@ memory), not the work order — this line is the work order.
    **FIXED 2026-06-04.** Stadium now uses FlashRAM saving, and the runtime
    handles Stadium's low-level Flash command path. A freshly restarted runner
    re-enters Registration showing the saved registered set. See entry below.
+10. Occasional slight audio crackle — **OPEN (new 2026-06-04).** Intermittent
+    faint crackle during play. Distinct from the music-rate click fixed
+    2026-05-28 (that was constant ~4/s decimation; this is occasional). See
+    entry below.
 
-- [x] **Register Pokémon quit → softlock (Transfer Pak cart import).**
-      **FIXED 2026-06-03, USER-CONFIRMED.** N64Recomp `5173e0f` +
-      N64ModernRuntime `67f3c7c` (pin bumped to `5173e0f`).
+- [ ] **Register Pokémon quit → softlock (Transfer Pak cart import).**
+      **REGRESSED / OPEN (2026-06-04 milestone).** Previously FIXED
+      2026-06-03, USER-CONFIRMED (N64Recomp `5173e0f` + N64ModernRuntime
+      `67f3c7c`, pin bumped to `5173e0f`). The softlock has **RETURNED**:
+      choosing **Quit** — or backing out of that menu — wedges again. Not
+      re-investigated in this pass (milestone snapshot, no fix attempted).
+      The prior root-cause analysis and fix history are retained below to
+      seed the re-investigation.
 
-      **2026-06-04 reverify.** On the cleanup build, the scripted
+      **2026-06-04 reverify (from the now-superseded "fixed" state).** On
+      the cleanup build, the scripted
       Game Pak Check → Registration → Quit route leaves the runner alive
       and rendering after Quit (`send_dl`/`dp_complete` reached 1380
       instead of freezing while only VI/audio advanced).
@@ -290,15 +314,15 @@ memory), not the work order — this line is the work order.
       banner) and Main Menu icon panels (which reuse the same frag57
       grid layout via different MTX translations).
 
-- [x] **Faint horizontal residual streaks on the SELECTED Game Pak
-      card's 5-strip overlay** - **FIXED 2026-06-04.**
-      Stadium now defaults RT64 to true bilinear
-      sampling instead of the three-point path that produced horizontal
-      color leaks on clamped 2D menu textures. `PSR_RT64_THREEPOINT`
-      remains available for A/B tests. Verified on the normal default
-      path: `build/visual_default_fix_gamepak.png`.
+- [ ] **Faint horizontal residual streaks on the SELECTED Game Pak /
+      Player 1 card's 5-strip overlay** - **OPEN (reopened 2026-06-04
+      milestone).** The 2026-06-04 closure (defaulting RT64 to true bilinear
+      sampling instead of the three-point path; `PSR_RT64_THREEPOINT` for
+      A/B) was **premature — the strip lines are STILL visible** on the
+      Player 1 / selected card. Not re-investigated this pass. The bilinear
+      default remains in place; prior diagnosis retained below.
 
-      Historical diagnosis before the fix: Card 1 at Game Pak Check showed
+      Historical diagnosis (pre-closure): Card 1 at Game Pak Check showed
       the controller-icon graphic, but the 5-strip RGBA decoration had faint
       horizontal yellow lines along strip boundaries. Conservative
       rasterization (which fixed the row-divider seam class) is
@@ -308,15 +332,16 @@ memory), not the work order — this line is the work order.
       precision, or texture-wrap-at-edge. Resolved by the RT64 bilinear
       default above.
 
-- [x] **POKéMON STADIUM panel bottom border missing (main menu).**
-      **FIXED 2026-06-04.** The same RT64 three-point filtering path that
-      caused the Game Pak card streaks also produced horizontal panel leaks
-      and made the selected STADIUM panel's bottom edge look under-filled.
-      The normal default path now renders the complete selected panel and
-      adjacent menu panels without dashed-line leaks:
-      `build/visual_default_fix_main.png`.
+- [ ] **POKéMON STADIUM panel bottom border missing (main menu).**
+      **OPEN (reopened 2026-06-04 milestone).** The 2026-06-04 closure
+      (attributed to the same RT64 three-point→bilinear filtering change as
+      the Game Pak card streaks) was **premature — the selected STADIUM
+      card's bottom border is STILL missing.** Not re-investigated this pass.
+      The prior, detailed root-cause work (the oversized-tile / interior-
+      sampling RT64 under-fill hypothesis) is retained below and is the best
+      starting point for the re-investigation.
 
-      Historical diagnosis before the fix:
+      Historical diagnosis (pre-closure):
 
       *Symptom.* The central, highlighted "POKéMON STADIUM" icon panel
       renders with a thick blue frame border on its top and sides but
@@ -798,6 +823,18 @@ playable.
       extraction tool runs.
 
 ### Audio
+
+- [ ] **Occasional slight audio crackle (#10).** **OPEN (new 2026-06-04
+      milestone).** Intermittent faint crackle/crackling during play. Distinct
+      from the music-rate periodic click fixed 2026-05-28 — that was a constant
+      ~4/s artifact from `skip_factor` decimation when the SDL queue exceeded
+      100 ms, and it is gone (AI_LEN_REG pacing restored). This new report is
+      *occasional*, not constant. Not yet root-caused; the always-on audio
+      rings (`audio_queue_recent` / `audio_pcm_recent`, readers in `tools/`)
+      are the place to start — query the queue-depth and post-resample HF
+      windows around a crackle to see whether decimation is firing again
+      (transient queue spikes) or it is upstream synthesis. No fix attempted in
+      this milestone pass.
 
 - [x] **Audio output keeps going to a "random" device; does not follow
       the Windows default. FIXED 2026-06-04.** `select_audio_device()`

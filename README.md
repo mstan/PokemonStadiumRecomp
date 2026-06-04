@@ -3,26 +3,44 @@
 Static recompilation of **Pokémon Stadium (US v1.0)** to native PC.
 Built on top of [N64Recomp](https://github.com/N64Recomp/N64Recomp).
 
-> **Status: Playable end-to-end (with known visible bugs).** Quick
-> Battle, Free Battle, Stadium cups, and Gym Leader Castle have all
-> been validated through a complete round. Audio plays at 50% by
-> default (`PSR_VOLUME=0.5`). See [`ISSUES.md`](ISSUES.md) for the
-> remaining visible glitches (small clicks during music, a
-> corrupted cursor on a few menu screens, gridline patterns through
-> certain HUD elements).
+> **Status: Early development — playable end-to-end, with known
+> issues.** Quick Battle, Free Battle, Stadium cups, and Gym Leader
+> Castle have all been validated through a complete round, and both the
+> Transfer Pak party-import path and the embedded GB Tower now work. It
+> is still rough: expect occasional audio crackle, visual glitches on
+> some menu elements, and a softlock in some menus. See
+> [`ISSUES.md`](ISSUES.md) for the current list.
 >
 > **First launch:** the runner pops a file picker. Point it at your
 > own legal Pokémon Stadium (US v1.0) ROM (`.z64` / `.n64` / `.v64`).
 > The path is remembered (`rom.cfg` next to the exe) so later
 > launches go straight into the game. CLI arg `argv[1]` is also
-> honored for scripted runs.
->
-> **Transfer Pak is supported** via a built-in Game Boy cart
-> emulator (ROM-only / MBC1 / MBC3 / MBC5, with battery RAM saves).
-> Point at your own legal GB/GBC ROM via `transfer_pak.cfg` — see
-> the [Transfer Pak](#transfer-pak) section below. GB Tower (the
-> embedded full GB emulator for free-play GB games inside Stadium)
-> remains out of scope.
+> honored for scripted runs. Audio is muted by default during
+> development — set `PSR_VOLUME=1.0` (any value 0–1) to enable sound.
+
+## Features
+
+- **Plays Pokémon Stadium end-to-end** — Quick Battle, Free Battle, the
+  Stadium cups, and Gym Leader Castle have each been run to completion.
+- **GB Tower — play full Game Boy games inside Stadium, with your own
+  ROMs and saves.** The embedded Game Boy emulator launches DMG and CGB
+  carts (Red, Blue, and Yellow verified to gameplay); cart save load and
+  write are verified for MBC3 and MBC5, and GB audio is routed to the
+  host. Provide your own legal GB/GBC ROM + save — see
+  [GB Tower](#gb-tower) below.
+- **Transfer Pak — import your party from a Game Boy cart.** A
+  hardware-level Transfer Pak + GB cart emulator (ROM-only / MBC1 / MBC3
+  / MBC5) feeds the in-game Game Pak Check / Registration menus from your
+  own ROM + save. Battery SRAM is persisted on every write, and
+  registered Pokémon now persist across runs (Stadium FlashRAM save).
+  Multiple controllers/Transfer Paks (ports 1–4) are supported. See
+  [Transfer Pak](#transfer-pak) below.
+- **RT64-backed rendering** with internal-resolution upscaling.
+- **Audio follows your Windows default output device** and migrates live
+  when you change it; override with `PSR_AUDIO_DEVICE=<name substring>`.
+- **SDL game-controller input** (including DualSense/DualShock).
+- **Configurable** via env vars and `*.cfg` files placed next to the exe
+  (`rom.cfg`, `transfer_pak.cfg`).
 
 ## ROM
 
@@ -155,16 +173,32 @@ This is **unlike NES bank-switching** (where every bank shares
 for both N64Recomp and Ghidra; per-fragment extraction is not
 needed and the project doesn't ship that tooling.
 
+## GB Tower
+
+Stadium's built-in **GB Tower** is the embedded Game Boy emulator that
+plays full GB/GBC cartridges directly on the N64 — distinct from the
+Transfer Pak (which imports a *party* into Stadium; see above). It is
+**supported**: Red, Blue, and Yellow have been launched to live gameplay,
+DMG and CGB boot paths both work, cart save load/write is verified
+(MBC3 / MBC5), and the embedded emulator's audio is routed to the host.
+
+GB Tower reads carts through the same Transfer Pak cart model, so you
+supply your own legal GB/GBC ROM + save the same way — via
+`transfer_pak.cfg` (`p1_rom` / `p1_save`) or the
+`PSR_TRANSFER_PAK_P{1..4}_ROM` / `..._SAVE` environment variables. In the
+game: **POKéMON STADIUM → right to the giant Game Boy (GB Tower) → pick a
+cart → A**. The 1P slot is the default cart; additional ports map to the
+2P/3P carts.
+
+`PSR_DISABLE_GBTOWER_AUDIO=1` is available as a diagnostic opt-out for
+the GB audio path.
+
 ## Out of scope (first pass)
 
-**GB Tower** — the embedded Game Boy emulator that lets Stadium
-play full GB cartridges directly on the N64 (distinct from the
-Transfer Pak cart-bridge, which **is** supported — see above). The
-GB-emulator code lives partly in the resident `text` segment
-(symbols `gb_tower`, `gb_mbc`, "load gb emulator" near
-`0xB230`/`0xE1C0`/`0xE570`) and partly in the `gb_tower_roms` tail
-segment. GB Tower entry points are **stubbed**, not ported — see
-`ISSUES.md`.
+Nothing major remains explicitly out of scope for the base game at this
+point — GB Tower (above) was the last big "out of scope" item and is now
+in. Remaining gaps are tracked as ordinary issues in
+[`ISSUES.md`](ISSUES.md) rather than scope exclusions.
 
 ## Oracle (Ares) — TODO
 
