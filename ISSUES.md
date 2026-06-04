@@ -9,14 +9,11 @@ The base game runs end-to-end (Quick Battle, Free Battle, Stadium
 cups, Gym Leader Castle have been validated). **Still early
 development.** The list below was briefly all-closed on 2026-06-04, but
 the 2026-06-04 milestone snapshot reopens several items — a regression
-plus two closures that turned out to be premature (Codex declared them
-fixed; the artifacts are still visible).
+plus closures that turned out to be premature.
 
 **OPEN as of 2026-06-04 (milestone snapshot):**
 - **#3 POKéMON STADIUM card bottom border — STILL missing.** The
   RT64-bilinear default did not resolve it; the closure was erroneous.
-- **#4 Selected Game Pak / Player 1 card strip lines — STILL present.**
-  Same premature closure.
 - **#7 Register Pokémon "Quit" / backing out of that menu → softlock —
   REGRESSED.** Was user-confirmed fixed 2026-06-03; the bug has returned.
 - **#10 Occasional slight audio crackle (new).**
@@ -37,9 +34,8 @@ no fixes are attempted in this pass. The issue numbers are stable IDs
 3. POKéMON STADIUM panel bottom border missing — **OPEN (reopened 2026-06-04).**
    The 2026-06-04 RT64-bilinear closure was premature — the bottom border is
    STILL missing. See entry below.
-4. Selected Game Pak / Player 1 card strip-overlay lines — **OPEN (reopened
-   2026-06-04).** The 2026-06-04 closure was premature — the strip lines are
-   STILL visible. See entry below.
+4. ~~Selected Game Pak / Player 1 card strip-overlay lines~~ — **FIXED
+   2026-06-04.** See entry below.
 5. ~~GB Tower "start GB game" hang~~ - **FIXED 2026-06-02.**
    Red, Blue, and Yellow launch from GB Tower and reach gameplay via
    scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
@@ -314,13 +310,14 @@ no fixes are attempted in this pass. The issue numbers are stable IDs
       banner) and Main Menu icon panels (which reuse the same frag57
       grid layout via different MTX translations).
 
-- [ ] **Faint horizontal residual streaks on the SELECTED Game Pak /
-      Player 1 card's 5-strip overlay** - **OPEN (reopened 2026-06-04
-      milestone).** The 2026-06-04 closure (defaulting RT64 to true bilinear
-      sampling instead of the three-point path; `PSR_RT64_THREEPOINT` for
-      A/B) was **premature — the strip lines are STILL visible** on the
-      Player 1 / selected card. Not re-investigated this pass. The bilinear
-      default remains in place; prior diagnosis retained below.
+- [x] **Faint horizontal residual streaks on the SELECTED Game Pak /
+      Player 1 card's 5-strip overlay** - **FIXED 2026-06-04.**
+      RT64 now forces manual RDP texture sampling for TMEM-backed draws
+      instead of native GPU sampler addressing. Verified across five
+      cold-start passes on Game Pak Check Player 1 and 30 repeated main-menu
+      frames; the intermittent Event Battle/Battle Now/Stadium panel streaks
+      did not recur.
+      Prior diagnosis retained below.
 
       Historical diagnosis (pre-closure): Card 1 at Game Pak Check showed
       the controller-icon graphic, but the 5-strip RGBA decoration had faint
