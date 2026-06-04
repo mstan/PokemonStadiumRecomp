@@ -1651,15 +1651,16 @@ void pkmnstadium_gdl_submit_snapshot(uint8_t* rdram, uint32_t dl_vaddr,
     for (uint32_t i = 0; i < MAX_CMDS; i++) {
         uint32_t off = dl_off + i * 8;
         if (off + 8 > 0x800000) break;
-        /* Big-endian read of w0,w1 from RDRAM. */
-        uint32_t w0 = ((uint32_t)rdram[off]   << 24) |
-                      ((uint32_t)rdram[off+1] << 16) |
-                      ((uint32_t)rdram[off+2] << 8)  |
-                      ((uint32_t)rdram[off+3]);
-        uint32_t w1 = ((uint32_t)rdram[off+4] << 24) |
-                      ((uint32_t)rdram[off+5] << 16) |
-                      ((uint32_t)rdram[off+6] << 8)  |
-                      ((uint32_t)rdram[off+7]);
+        /* RDRAM stores words in the host byte order used by RT64's
+         * DisplayList view, so decode the command words little-endian. */
+        uint32_t w0 = ((uint32_t)rdram[off]) |
+                      ((uint32_t)rdram[off + 1] << 8) |
+                      ((uint32_t)rdram[off + 2] << 16) |
+                      ((uint32_t)rdram[off + 3] << 24);
+        uint32_t w1 = ((uint32_t)rdram[off + 4]) |
+                      ((uint32_t)rdram[off + 5] << 8) |
+                      ((uint32_t)rdram[off + 6] << 16) |
+                      ((uint32_t)rdram[off + 7] << 24);
         uint8_t op = (w0 >> 24) & 0xFF;
         if (op == 0xDF) break;  /* G_ENDDL */
         if (op == 0xDE) {

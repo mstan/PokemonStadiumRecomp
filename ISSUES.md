@@ -3,14 +3,14 @@
 Living list of known gaps. Use this as a pre-flight before starting
 a new work session.
 
-## Current playable build — known visible issues
+## Current playable build — resolved issue list
 
 The base game runs end-to-end (Quick Battle, Free Battle, Stadium
-cups, Gym Leader Castle have been validated) but the following
-visible imperfections remain.
+cups, Gym Leader Castle have been validated). The current
+playable-build issue list below is closed as of 2026-06-04.
 
 **ACTIVE priority among OPEN issues (user-set 2026-06-03):**
-**#6** (latent gfx pool UAF). The issue
+None in the current playable-build issue list. The issue
 numbers below are stable IDs (referenced across this doc, commits, and
 memory), not the work order — this line is the work order.
 
@@ -31,7 +31,7 @@ memory), not the work order — this line is the work order.
    Red, Blue, and Yellow launch from GB Tower and reach gameplay via
    scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
    See entry below.
-6. Latent Stadium-side gfx pool UAF / race — lowest (masked by RT64).
+6. ~~Latent Stadium-side gfx pool UAF / race~~ — **FIXED 2026-06-04.**
 7. ~~Register Pokémon (Transfer Pak cart import) quit → softlock~~ —
    **FIXED 2026-06-03, user-confirmed.** Root cause = recompiler tailcall
    over-unwind: nested continuations were flattened into the outermost
@@ -637,8 +637,20 @@ memory), not the work order — this line is the work order.
       - `memmap-get-fragment-data-context` → librecomp helper API
         (PSR `9bf003c` + N64MR `3ed8bfd`).
 
-- [ ] **Latent Stadium-side gfx pool UAF / race** (newly named
-      2026-05-23 — RT64 fix masks the symptom). The attract-demo
+- [x] **Latent Stadium-side gfx pool UAF / race** (newly named
+      2026-05-23; reverified fixed/stale 2026-06-04).
+      **FIXED 2026-06-04.** The submit-time GDL diagnostic was reading
+      command words in the wrong byte order, producing a false malformed
+      top-level target. After correcting the scanner to match RT64's
+      `DisplayList` word order, a no-input attract run crossed the old
+      failing range (`send_dl=3717`, `dp_complete=3717`) with no renderer
+      stall. `build/attract_uaf_fixedscan_report.json` shows 1,024 recent
+      submit targets and 1,024 recent walk targets, zero malformed heads,
+      zero hits for the old bad targets (`0x80208F18`, `0x80208F20`,
+      `0x80294B60`), and 955 matched submit/walk pairs that were
+      byte-identical valid DLs.
+
+      *Historical diagnosis before the 2026-06-04 recheck:* The attract-demo
       softlock root-cause was Stadium emitting a `G_DL CALL` into
       memory at `0x80208F18` that holds compressed audio/image
       bytes instead of DL commands. The RT64 fix prevents the
@@ -648,8 +660,9 @@ memory), not the work order — this line is the work order.
       wavetables get repurposed). Symptom may be invisible if no
       one walks the garbage area as a DL anymore, but a future
       bug could surface from the same broken pool management.
-      Proper investigation requires the Ares oracle bridge to
-      diff RDRAM at the moment Stadium emits the bad CALL.
+      At the time, proper investigation was thought to require the Ares
+      oracle bridge to diff RDRAM at the moment Stadium emitted the bad
+      CALL.
 
 - [x] **Attract-demo white-screen softlock.** ~~Fixed 2026-05-23
       in RT64 (`hle: harden interpreter against malformed G_DL +
