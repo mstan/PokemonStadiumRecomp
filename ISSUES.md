@@ -12,13 +12,10 @@ the 2026-06-04 milestone snapshot reopens several items — a regression
 plus closures that turned out to be premature.
 
 **OPEN as of 2026-06-04 (milestone snapshot):**
-- **#7 Register Pokémon "Quit" / backing out of that menu → softlock —
-  REGRESSED.** Was user-confirmed fixed 2026-06-03; the bug has returned.
 - **#10 Occasional slight audio crackle (new).**
 
-**ACTIVE priority among OPEN issues:** #7, the Registration Quit softlock
-regression. The issue numbers are stable IDs (referenced across this doc,
-commits, and memory), not the work order.
+**ACTIVE priority among OPEN issues:** #10. The issue numbers are stable IDs
+(referenced across this doc, commits, and memory), not the work order.
 
 **Original priority order (user-set 2026-05-28, superseded above for open work):**
 1. ~~Cursor / icon sprite corruption~~ — **FIXED 2026-05-28, user-confirmed.**
@@ -37,15 +34,8 @@ commits, and memory), not the work order.
    scripted TCP input. Save load/write is verified for MBC3 and MBC5 carts.
    See entry below.
 6. ~~Latent Stadium-side gfx pool UAF / race~~ — **FIXED 2026-06-04.**
-7. Register Pokémon (Transfer Pak cart import) quit → softlock —
-   **REGRESSED / OPEN (2026-06-04).** Was **FIXED 2026-06-03, user-confirmed**
-   (recompiler tailcall over-unwind: nested continuations flattened into the
-   outermost dispatch loop, so the menu-exit SP no longer matched
-   `func_80029008`'s frame and the SP-mismatch guard cascaded out of
-   `Game_Thread`; fixed by draining nested tailcall chains locally + reentrant
-   `recomp_handle_tailcalls`, N64Recomp `5173e0f` + N64ModernRuntime `67f3c7c`).
-   The softlock has **returned** — choosing **Quit** (or backing out of that
-   menu) wedges again. See entry below.
+7. ~~Register Pokémon (Transfer Pak cart import) quit → softlock~~ —
+   **FIXED 2026-06-04.** See entry below.
 8. ~~Game Boy games have no audio (GB Tower / Transfer Pak cart import)~~ —
    **FIXED 2026-06-04.** GB APU output is now queued from
    `osGbSetNextBuffer` into the host audio path. Red, Blue, and Yellow
@@ -59,20 +49,28 @@ commits, and memory), not the work order.
     2026-05-28 (that was constant ~4/s decimation; this is occasional). See
     entry below.
 
-- [ ] **Register Pokémon quit → softlock (Transfer Pak cart import).**
-      **REGRESSED / OPEN (2026-06-04 milestone).** Previously FIXED
-      2026-06-03, USER-CONFIRMED (N64Recomp `5173e0f` + N64ModernRuntime
-      `67f3c7c`, pin bumped to `5173e0f`). The softlock has **RETURNED**:
-      choosing **Quit** — or backing out of that menu — wedges again. Not
-      re-investigated in this pass (milestone snapshot, no fix attempted).
-      The prior root-cause analysis and fix history are retained below to
-      seed the re-investigation.
+- [x] **Register Pokémon quit → softlock (Transfer Pak cart import).**
+      **FIXED 2026-06-04.** The 2026-06-04 regression came from the
+      local-tailcall continuation change in N64Recomp `755b13a`: it preserved
+      local label continuations, but restored the old non-local nested-tailcall
+      bubble-up path. On Registration → Quit, `PSR_CFDIAG=1` showed
+      `call-bubble-dispatch` events followed by the known SP-mismatch cascade
+      out of `Game_Thread`.
 
-      **2026-06-04 reverify (from the now-superseded "fixed" state).** On
-      the cleanup build, the scripted
-      Game Pak Check → Registration → Quit route leaves the runner alive
-      and rendering after Quit (`send_dl`/`dp_complete` reached 1380
-      instead of freezing while only VI/audio advanced).
+      N64Recomp `d97d8d8` keeps the local continuation handling, but non-local
+      nested tailcalls now fall through to the reentrant
+      `recomp_handle_tailcalls` drain instead of restoring the previous host
+      return and returning upward. N64ModernRuntime `981662a` bumps the
+      N64Recomp gitlink to that fix.
+
+      Validated on the live build with the exact route:
+      Game Pak Check → POKéMON STADIUM → STADIUM → POKé CUP → POKé BALL →
+      Registration → Quit. Quit returned to the Battle/Rules/Registration row;
+      `send_dl` advanced from 11492 to 11595 over the next two seconds,
+      `dp_complete` advanced with it, and the fixed `PSR_CFDIAG` log contains
+      no `THREAD-ENTRY RETURNED`, `call-bubble-dispatch`, or SP-mismatch event.
+
+      The prior root-cause analysis and fix history are retained below.
 
       *Root cause (confirmed).* A nested call whose callee tail-jumped, while
       an outer tailcall dispatch loop was active, hit the call-wrapper
