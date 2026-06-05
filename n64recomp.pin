@@ -13,7 +13,18 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = 755b13a8626f3b9c687721575afb219c2603feb5
+sha = 25ecf9fb3c6ab95c21c8a2a4c6ade89c649c84d1
+# 25ecf9f "fix(recompiler): depth-bounded tailcall draining — fix GB Tower
+#   crash without regressing register-quit" — USER-VERIFIED milestone fixing
+#   BOTH ISSUES #11 (GB Tower crash on cart launch) and #7 (register-quit
+#   softlock) on a single build. tailcall_dispatching is now a nested-
+#   trampoline DEPTH counter; call wrappers drain pending non-local tailcalls
+#   locally below depth 1024 (preserves the shallow finite register-quit
+#   continuation, #7) and bubble up above it (caps the GB Tower emulator's
+#   unbounded constant-SP fetch-decode loop before host-stack overflow, #11).
+#   Builds against N64ModernRuntime 78949d6 (matching depth-counter ++/-- in
+#   recomp_handle_tailcalls). Carries gated PSR_CFDIAG recomp_cf_note
+#   scaffolding (no-op when off) — cleanup owed.
 # 755b13a "fix(recompiler): handle local tailcall continuations" — call
 #   wrappers consume pending tailcall targets that resolve to labels in the
 #   current generated function, while pending non-local tailcalls inside an

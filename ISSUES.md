@@ -7,11 +7,11 @@ a new work session.
 
 The base game runs end-to-end (Quick Battle, Free Battle, Stadium
 cups, Gym Leader Castle have been validated). **Still early
-development.** The list below was briefly all-closed on 2026-06-04, but
-the 2026-06-04 milestone snapshot reopens several items — a regression
-plus closures that turned out to be premature.
+development.** As of 2026-06-05, #11 (the GB Tower launch crash) is
+FIXED together with #7 (register-quit softlock) on a single build —
+see the depth-bounded tailcall fix below.
 
-**OPEN as of 2026-06-04 (milestone snapshot):**
+**OPEN as of 2026-06-05 (milestone snapshot):**
 - **#10 Occasional slight audio crackle (new).**
 
 **ACTIVE priority among OPEN issues:** #10. The issue numbers are stable IDs
@@ -44,10 +44,84 @@ plus closures that turned out to be premature.
    **FIXED 2026-06-04.** Stadium now uses FlashRAM saving, and the runtime
    handles Stadium's low-level Flash command path. A freshly restarted runner
    re-enters Registration showing the saved registered set. See entry below.
+11. GB Tower crashes on selecting any game — **FIXED 2026-06-05 (user-verified).**
+    Root cause: the GB Tower emulator's fetch-decode-execute loop is an
+    unbounded chain of tail calls with a CONSTANT guest SP. The #7 fix's
+    "drain nested tailcalls locally" re-entered `recomp_handle_tailcalls` once
+    per loop iteration, growing the host C stack without bound → host stack
+    overflow (`0xC00000FD`) on cart launch. #7 and #11 share this exact dispatch
+    path and present with identical SP/r31; the discriminator that separates
+    them is nesting DEPTH (#7 finite/shallow <256; #11 unbounded, observed
+    7680+). Fix (N64Recomp `25ecf9f` + N64ModernRuntime `78949d6`):
+    `tailcall_dispatching` became a nested-trampoline depth counter; call
+    wrappers drain locally below depth 1024 (preserves #7's finite menu-exit
+    continuation) and bubble up to the single outer trampoline above it (caps
+    #11, converting the loop to iteration — lossless because constant-SP
+    tailcalls carry no per-level work). Verified: GB Tower Red launches to
+    live gameplay AND Registration → Quit returns cleanly to the
+    Battle/Rules/Registration row, on the same build. See entry below.
+
 10. Occasional slight audio crackle — **OPEN (new 2026-06-04).** Intermittent
     faint crackle during play. Distinct from the music-rate click fixed
     2026-05-28 (that was constant ~4/s decimation; this is occasional). See
     entry below.
+
+- [x] **GB Tower crashes on selecting any game.** **FIXED 2026-06-05
+      (user-verified).** Selecting any cart (Red/Blue/Yellow) in GB Tower used
+      to crash on launch. First observed 2026-06-04 after the #7 register-Quit
+      softlock fix landed (N64Recomp `d97d8d8`, N64ModernRuntime `981662a`).
+
+      *Root cause (measured via the always-on PSR_CFDIAG control-flow ring).*
+      #11 and #7 share the SAME nested-tailcall dispatch path in the N64Recomp
+      call wrapper / `recomp_handle_tailcalls`, and both arrive with IDENTICAL
+      register state (matching SP and r31) — so no SP/r31 test can separate them:
+      - The GB Tower emulator (fragment 2, funcs around `0x8120A6A0`–`0x8120BD50`)
+        is a fetch-decode-execute loop built from tail calls, recursing with a
+        CONSTANT guest SP (`0x8011B788`) at every level.
+      - The #7 fix made nested tailcalls "drain locally" — re-enter
+        `recomp_handle_tailcalls`. For a finite continuation (#7) that is correct
+        and shallow. For the GB loop it nests a fresh host trampoline per
+        iteration → the host C stack grows without bound → host stack overflow
+        (`0xC00000FD`) after ~7680 levels, on cart launch.
+      - The inverse (always bubble up to the outer trampoline) caps the GB loop
+        but skips #7's finite continuation tail (`func_80029008`'s
+        `main_pool_try_free`) → over-unwind → #7 softlock. Confirmed by direct
+        A/B: drain-only fixed #7 but crashed #11; bubble-only fixed #11 but
+        softlocked #7.
+
+      *Discriminator = nesting DEPTH.* #7 is finite/shallow (<256 cumulative
+      drain events); #11 is unbounded (7680+). A threshold cleanly separates them.
+
+      *Fix (N64Recomp `25ecf9f` + N64ModernRuntime `78949d6`).*
+      `ctx->tailcall_dispatching` is now a nested-trampoline DEPTH counter
+      (`++`/`--` around the drain loop in `recomp_handle_tailcalls`, per guest
+      thread). Generated call wrappers, on a pending NON-local tailcall not
+      already resolved by the return-continuation / local-label handlers:
+        - depth < 1024 → drain locally via `recomp_handle_tailcalls` (gives #7
+          its known-good behavior — runs the frame's tail and resumes);
+        - depth ≥ 1024 → bubble up so the SINGLE outermost trampoline iterates
+          (gives #11 its known-good behavior — O(1) host stack). Bubbling
+          mid-loop is lossless because constant-SP pure tailcalls carry no
+          per-level work. 1024 is ~4× above #7's depth and ~7× below the
+          observed overflow depth.
+
+      *Verification (live build, debug-server driven + screenshots).*
+      - #11: Game Pak Check → POKéMON STADIUM → STADIUM → GB Tower → Red → launch
+        reaches LIVE Pokémon Red gameplay (battle scene); process stays alive,
+        `send_dl`/`dp_complete` advance, 8506 GB Tower trace events, no overflow.
+      - #7: Game Pak Check → … → POKé CUP → Poké Ball division → Registration →
+        Quit returns cleanly to the Battle/Rules/Registration row; `send_dl`
+        advanced across Quit; PSR_CFDIAG ring shows NO `THREAD-ENTRY RETURNED`
+        / SP-mismatch and a zero nested-return counter.
+      Both verified on the SAME build.
+
+      *Owed (behavior-neutral, tracked):* the gated `recomp_cf_note`
+      `call-bubble-dispatch` scaffolding in every wrapper (no-op unless
+      PSR_CFDIAG=1), the `[jrdiag]` block + `set_source_files_properties` trace
+      block; Yellow/Blue not yet harness-verified (fix is cart-agnostic — same
+      GB interpreter loop). The depth threshold (1024) is empirically chosen;
+      a legit finite continuation nesting >1024 would bubble — the cf-ring would
+      flag it as an unexpected `call-bubble-dispatch`.
 
 - [x] **Register Pokémon quit → softlock (Transfer Pak cart import).**
       **FIXED 2026-06-04.** The 2026-06-04 regression came from the
