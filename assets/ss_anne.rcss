@@ -1,0 +1,223 @@
+/* SS Anne launcher theme. Dark, Steam-like; mirrors the mockup. */
+
+body {
+    width: 100%;
+    height: 100%;
+    font-family: LatoLatin;
+    font-weight: normal;
+    color: #c7d5e0ff;
+}
+
+#app {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background-color: #0d1117ff;
+}
+
+/* ---- Title bar ---------------------------------------------------------- */
+#titlebar {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    height: 46dp;
+    padding: 0dp 16dp;
+    background-color: #11171fff;
+    border-bottom: 1dp #1e2631ff;
+}
+#titlebar__brand { display: flex; flex-direction: row; align-items: center; }
+#titlebar__name { color: #e6edf3ff; font-weight: bold; font-size: 18dp; }
+#titlebar__sep  { color: #39424dff; font-size: 18dp; margin: 0dp 10dp; }
+#titlebar__sub  { color: #8a97a5ff; font-size: 16dp; }
+#titlebar__controls { display: flex; flex-direction: row; align-items: center; }
+.winbtn { color: #8a97a5ff; font-size: 16dp; margin-left: 18dp; }
+.winbtn--close { color: #c7d5e0ff; }
+
+/* transient warning banner under the title bar */
+#banner {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9dp 16dp;
+    background-color: #4a3a16ff;
+    border-bottom: 1dp #c9a227ff;
+    color: #f0d98cff;
+    font-size: 14dp;
+    text-align: center;
+}
+
+/* ---- Player cards ------------------------------------------------------- */
+#players {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: row;
+    flex-grow: 1;
+    width: 100%;
+    padding: 12dp 8dp;
+}
+.card {
+    box-sizing: border-box;
+    flex-grow: 1;
+    flex-basis: 0dp;
+    display: flex;
+    flex-direction: column;
+    margin: 0dp 6dp;
+    padding: 12dp;
+    background-color: #161d27ff;
+    border: 1dp #232c38ff;
+    border-top: 3dp #232c38ff;
+    border-radius: 8dp;
+}
+.card--p1 { border-top-color: #f0b429ff; }
+.card--p2 { border-top-color: #e8443bff; }
+.card--p3 { border-top-color: #3b9ae8ff; }
+.card--p4 { border-top-color: #5a6573ff; }
+.card--empty { color: #6b7686ff; }
+
+.card__head {
+    display: flex; flex-direction: row; align-items: center;
+    justify-content: space-between; margin-bottom: 10dp;
+}
+.card__player { font-weight: bold; font-size: 13dp; }
+.card--p1 .card__player { color: #f0b429ff; }
+.card--p2 .card__player { color: #e8443bff; }
+.card--p3 .card__player { color: #3b9ae8ff; }
+.card--p4 .card__player { color: #9b8ad6ff; }
+.card__enable { color: #c7d5e0ff; font-size: 13dp; }
+.card__enable--off { color: #6b7686ff; }
+/* CSS-drawn checkbox: empty bordered box; filled green when checked. */
+.chk {
+    display: inline-block;
+    width: 13dp; height: 13dp;
+    margin-right: 5dp;
+    border: 1dp #3a4654ff;
+    border-radius: 3dp;
+    background-color: #0f141bff;
+    vertical-align: -2dp;
+}
+.chk--on { background-color: #3fb950ff; border-color: #3fb950ff; }
+
+.card__cartwrap { display: flex; flex-direction: row; justify-content: center; align-items: center; margin: 6dp 0dp 4dp 0dp; }
+img.cart { width: 132dp; height: 138dp; cursor: pointer; } /* click cart to change ROM */
+
+/* explicit ROM load/change + remove controls under the cart */
+.card__cartactions {
+    display: flex; flex-direction: row; align-items: center; justify-content: center;
+    margin-bottom: 8dp;
+}
+.card__cartactions .btn { margin: 0dp 3dp; }
+.btn--icon {
+    font-size: 11dp; color: #c7d5e0ff;
+    background-color: #2a2030ff; border: 1dp #5a3a47ff; border-radius: 5dp;
+    padding: 5dp 8dp; cursor: pointer;
+}
+.btn--icon:hover { background-color: #5a2a33ff; border-color: #e8443bff; color: #ffffffff; }
+.hidden { display: none; }
+/* fully collapse a flex item (RmlUi's flex reserves space for display:none),
+   so e.g. an empty slot's "Load ROM" stays centered with the x removed. */
+.btn--collapsed { display: none; width: 0dp; height: 0dp; padding: 0dp; margin: 0dp; border-width: 0dp; }
+
+.card__game { display: flex; flex-direction: row; align-items: center; margin-bottom: 10dp; }
+.card__gamename { color: #e6edf3ff; font-weight: bold; font-size: 16dp; margin-left: 8dp; }
+.card__gamename--off { color: #6b7686ff; font-weight: normal; }
+
+.card__row { display: flex; flex-direction: row; align-items: center; font-size: 13dp; margin-bottom: 4dp; }
+.card__row .k { color: #8a97a5ff; width: 58dp; }
+.card__row .v { color: #c7d5e0ff; }
+.card__row .v.save { color: #c7d5e0ff; flex-grow: 1; min-width: 0dp; overflow: hidden; }
+.card__save .btn { flex-shrink: 0; margin-left: 8dp; }
+
+.card__save { margin-top: 4dp; align-items: center; }
+
+.card__ctrllabel { color: #8a97a5ff; font-size: 11dp; margin-top: 10dp; margin-bottom: 4dp; }
+.card__ctrlwrap { position: relative; }
+/* popup option list */
+.ctrl-menu {
+    position: absolute;
+    top: 40dp; left: 0dp; right: 0dp;
+    background-color: #0f141bff;
+    border: 1dp #2f3a47ff;
+    border-radius: 6dp;
+    padding: 4dp 0dp;
+    z-index: 50;
+}
+.ctrl-opt { display: block; padding: 7dp 11dp; color: #c7d5e0ff; font-size: 13dp; cursor: pointer; }
+.ctrl-opt:hover { background-color: #1d2733ff; }
+
+/* controller/keyboard navigation focus highlight */
+.nav-focus { background-color: #20405eff; border-radius: 4dp; }
+.card__dropdown.nav-focus { border-color: #66c0f4ff; }
+#play.nav-focus { background-color: #2ea043ff; border: 2dp #ffffffff; }
+.card__dropdown {
+    display: flex; flex-direction: row; align-items: center;
+    background-color: #0f141bff; border: 1dp #232c38ff; border-radius: 6dp;
+    padding: 7dp 9dp;
+}
+.card__dropdown--off { color: #6b7686ff; }
+.pad { font-size: 13dp; margin-right: 7dp; }
+.card__ctrlname { color: #c7d5e0ff; font-size: 13dp; }
+img.chev { width: 12dp; height: 8dp; margin-left: auto; }
+img.chev-inline { width: 11dp; height: 7dp; margin-left: 4dp; }
+img.ico-check { width: 14dp; height: 12dp; vertical-align: -1dp; margin-right: 3dp; }
+
+.card__status { display: flex; flex-direction: row; align-items: center; font-size: 11dp; color: #8a97a5ff; margin-top: 6dp; }
+
+/* status / accent dots */
+.dot { width: 9dp; height: 9dp; border-radius: 5dp; background-color: #5a6573ff; }
+.dot--p1 { background-color: #f0b429ff; }
+.dot--p2 { background-color: #e8443bff; }
+.dot--p3 { background-color: #3b9ae8ff; }
+.dot--off { background-color: #5a6573ff; }
+.dot--on { background-color: #3fb950ff; }
+.card__status .dot { margin-right: 6dp; }
+
+/* clickable affordances */
+.card__enable, .card__dropdown, .btn, #play { cursor: pointer; }
+.card__enable:hover { color: #ffffffff; }
+.card__dropdown:hover { border-color: #3b9ae8ff; }
+#play:hover { background-color: #3fb950ff; }
+
+/* buttons */
+.btn {
+    font-size: 12dp; color: #c7d5e0ff;
+    background-color: #222c38ff; border: 1dp #2f3a47ff; border-radius: 5dp;
+    padding: 5dp 12dp; margin-left: 10dp;
+}
+.btn--ghost { background-color: #1b232eff; }
+.btn--link { background-color: transparent; border-color: transparent; color: #8a97a5ff; }
+.btn--disabled { color: #5a6573ff; border-color: #20272fff; }
+
+/* ---- Stadium ROM strip -------------------------------------------------- */
+#stadiumbar {
+    box-sizing: border-box;
+    display: flex; flex-direction: row; align-items: center; justify-content: space-between;
+    width: 100%; height: 116dp;
+    padding: 0dp 20dp;
+    background-color: #11171fff;
+    border-top: 1dp #1e2631ff;
+}
+#stadium__left { display: flex; flex-direction: row; align-items: center; }
+img#stadium__cart { width: 132dp; height: 91dp; margin-right: 18dp; }
+#stadium__title { color: #e6edf3ff; font-weight: bold; font-size: 18dp; }
+#stadium__verified { color: #3fb950ff; font-size: 14dp; font-weight: normal; margin-left: 8dp; }
+#stadium__actions { display: flex; flex-direction: row; align-items: center; margin-top: 8dp; }
+#stadium__actions .btn { margin-left: 0dp; margin-right: 10dp; }
+
+#playwrap { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+#autoplay-count { color: #8a97a5ff; font-size: 13dp; margin-bottom: 6dp; }
+#autoplay-row { color: #c7d5e0ff; font-size: 13dp; margin-top: 8dp; cursor: pointer; }
+#autoplay-row:hover { color: #ffffffff; }
+#play {
+    color: #ffffffff; font-weight: bold; font-size: 30dp;
+    background-color: #2ea043ff; border: 1dp #3fb950ff; border-radius: 8dp;
+    padding: 16dp 52dp;
+}
+/* PLAY disabled until a controller is assigned to an enabled player. */
+#play.play--disabled {
+    background-color: #21303fff; border-color: #2b3640ff; color: #5a6573ff;
+    cursor: arrow;
+}

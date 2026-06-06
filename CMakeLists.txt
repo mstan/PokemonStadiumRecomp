@@ -18,6 +18,17 @@ endif()
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+# On Windows the bundled FreeType (lib/freetype-windows-binaries) is located via
+# our own lib/FindFreetype.cmake; put lib/ on the module path so both RmlUi's
+# build and our find_package(Freetype) below resolve to it.
+if (WIN32)
+    set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/lib/")
+endif()
+
+# Release/windowed build: no console window. Off by default (the console is handy
+# for dev — stderr logs). Configure with -DPSR_NO_CONSOLE=ON for the release exe.
+option(PSR_NO_CONSOLE "Build a windowed release with no console window" OFF)
+
 # ---- ROM hash check ---------------------------------------------------------
 set(EXPECTED_BASEROM_MD5 "ed1378bc12115f71209a77844965ba50")
 if(EXISTS "${CMAKE_SOURCE_DIR}/baserom.z64")
@@ -34,6 +45,18 @@ set(RT64_STATIC TRUE)
 set(RT64_SDL_WINDOW_VULKAN TRUE)
 add_compile_definitions(HLSL_CPU)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
+
+# ---- RmlUi + lunasvg (UI framework for the SS Anne launcher) ----------------
+# Vendored forks under lib/ (version-matched to the rt64/N64MR fork lineage,
+# Zelda64Recomp@ab677e7). lunasvg must come first so RmlUi's SVG plugin links
+# it statically.
+set(BUILD_SHARED_LIBS OFF)
+set(LUNASVG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(${CMAKE_SOURCE_DIR}/lib/lunasvg)
+set(RMLUI_SVG_PLUGIN ON CACHE BOOL "" FORCE)
+set(RMLUI_TESTS_ENABLED OFF CACHE BOOL "" FORCE)
+add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RmlUi)
+target_compile_definitions(rmlui_core PRIVATE LUNASVG_BUILD_STATIC)
 
 # ---- N64ModernRuntime (junctioned at lib/N64ModernRuntime) -----------------
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
@@ -63,29 +86,12 @@ target_include_directories(RecompiledFuncs PRIVATE
 file(GLOB FUNC_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/generated/*.c)
 target_sources(RecompiledFuncs PRIVATE ${FUNC_C_SOURCES})
 
-# TEMP (dev/register-quit-softlock diagnosis): enable the TRACE_ENTRY/RETURN
-# function-trace hooks for the registration-Quit RETURN CHAIN, to pin which
-# function diverges and lets Game_Thread exit its while(1) dispatch loop. The
-# stack-scan of the wedged process showed the chain at divergence is:
-#   Game_Thread -> func_80029BC0 -> func_80029984 -> func_80029008 -> fragment61.
-# TRACE_RETURN fires on each function return, so the last ENTRY without a
-# matching RETURN (or Game_Thread's TRACE_RETURN firing at all) localizes the
-# divergence. Scoped to these files; F70/D64/DBC dropped so the ring isn't
-# flooded by the per-frame scheduler tick after the wedge. REMOVE after diagnosis.
-set_source_files_properties(
-    ${CMAKE_SOURCE_DIR}/generated/funcs_68.c    # Game_Thread (main dispatch while(1))
-    ${CMAKE_SOURCE_DIR}/generated/funcs_75.c    # func_80029BC0 (STATE_STADIUM_MENU)
-    ${CMAKE_SOURCE_DIR}/generated/funcs_97.c    # func_80029984 (Stadium fragment loop)
-    ${CMAKE_SOURCE_DIR}/generated/funcs_44.c    # func_80029008 (FRAGMENT_LOAD_AND_CALL caller)
-    ${CMAKE_SOURCE_DIR}/generated/funcs_107.c   # func_84203E6C (jrdiag: log return decision); _n_ audio filtered
-    ${CMAKE_SOURCE_DIR}/generated/funcs_87.c    # main_pool_try_free (jrdiag enter/return) — post-frag-call suspect
-    ${CMAKE_SOURCE_DIR}/generated/funcs_81.c    # main_pool_free (jrdiag enter/return) — runs freed-block destructor
-    # (funcs_6 = frag61 input-loop dropped: they're grouped with
-    #  per-frame audio fns _n_loadOutputBuffer/func_800383C8 that flood the ring.
-    #  frag61 already confirmed to reach its normal TRACE_RETURN; we only need the
-    #  main-code return cascade above to see where it stops.)
-    PROPERTIES COMPILE_DEFINITIONS "PKMNSTADIUM_TRACE_HOOKS=1"
-)
+# NOTE: the register-quit/GB-Tower TRACE_ENTRY/RETURN hooks (PKMNSTADIUM_TRACE_HOOKS)
+# were removed 2026-06 — Issues #7/#11 are resolved and the per-function [jrdiag]
+# stderr spew was the dominant cost of the launcher->game boot stutter. The engine
+# still emits TRACE_ENTRY()/TRACE_RETURN() in generated/ (game.toml trace_mode=true),
+# but include/trace.h compiles them to no-ops without this define. A future regen
+# with trace_mode=false purges the emitted calls entirely.
 
 # ---- Runner executable ------------------------------------------------------
 add_executable(PokemonStadiumRecomp
@@ -108,6 +114,14 @@ add_executable(PokemonStadiumRecomp
     ${CMAKE_SOURCE_DIR}/rsp/gbTowerColorMain.cpp
     # njpgdspMain is the standard libultra JPEG ucode (vendored from Zelda64Recomp's recompiled output).
     ${CMAKE_SOURCE_DIR}/rsp/njpgdspMain.cpp
+
+    # ---- SS Anne UI overlay (Phase 0 seam proof) ---------------------------
+    # Minimal RmlUi<->RT64 overlay + the game-agnostic recompui renderer +
+    # RmlUi's SDL platform backend. The full launcher (Phase 1) adds the rest
+    # of src/ui/ as it gets adapted from Zelda64 to SS Anne.
+    src/main/ui_seam.cpp
+    ${CMAKE_SOURCE_DIR}/src/ui/ui_renderer.cpp
+    ${CMAKE_SOURCE_DIR}/lib/RmlUi/Backends/RmlUi_Platform_SDL.cpp
 )
 
 target_include_directories(PokemonStadiumRecomp PRIVATE
@@ -123,6 +137,18 @@ target_include_directories(PokemonStadiumRecomp PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/inc
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/rhi
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/render
+    # ---- SS Anne UI (RmlUi) include paths ----------------------------------
+    ${CMAKE_SOURCE_DIR}/src/ui
+    ${CMAKE_SOURCE_DIR}/src/ui/core
+    ${CMAKE_SOURCE_DIR}/src/ui/util
+    ${CMAKE_SOURCE_DIR}/lib/RmlUi/Include
+    ${CMAKE_SOURCE_DIR}/lib/RmlUi/Backends
+    ${CMAKE_SOURCE_DIR}/lib/GamepadMotionHelpers
+    ${CMAKE_SOURCE_DIR}/lib/freetype-windows-binaries/include
+    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/nativefiledialog-extended/src/include
+    # Generated Interface{VS,PS} shader headers land here.
+    ${CMAKE_BINARY_DIR}/shaders
+    ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 target_compile_options(PokemonStadiumRecomp PRIVATE
@@ -130,6 +156,12 @@ target_compile_options(PokemonStadiumRecomp PRIVATE
     -fms-extensions
     -march=nehalem  # Required by RT64's RSP simulator (SSSE3, SSE4.1, SSE4.2)
 )
+
+# The UI sources (ui_renderer.cpp, RmlUi backend) include RT64's hlslpp via
+# Windows headers; without NOMINMAX the min/max macros break hlslpp's min()/
+# max() declarations. Zelda64Recomp sets this globally; we scope it to the
+# runner target's sources so the rt64/RmlUi sub-builds are untouched.
+target_compile_definitions(PokemonStadiumRecomp PRIVATE NOMINMAX)
 
 # Emit PDBs in Release for the runner + librecomp/ultramodern so the SEH
 # crash filter's stack walk produces real symbol names. clang-cl needs
@@ -182,6 +214,11 @@ target_link_libraries(PokemonStadiumRecomp PRIVATE
     ultramodern
     rt64
     ares_bridge
+    # ---- SS Anne UI (RmlUi) ------------------------------------------------
+    RmlUi::Core
+    RmlUi::Debugger
+    lunasvg
+    nfd
 )
 
 # Force-include all of ares_bridge.lib so the static initializer that
@@ -195,6 +232,48 @@ if (MSVC)
     )
 endif()
 
+# Windowed (no-console) release. SDL2main supplies WinMain for the WINDOWS
+# subsystem, which calls our SDL_main (main() is renamed by SDL.h), so no /ENTRY
+# override is needed. stderr still routes to a redirected handle if one is set,
+# so logging/diagnostics aren't lost when launched from a terminal.
+if (WIN32 AND PSR_NO_CONSOLE)
+    target_link_options(PokemonStadiumRecomp PRIVATE /SUBSYSTEM:WINDOWS)
+endif()
+
 target_include_directories(PokemonStadiumRecomp PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/ares-bridge/include
+)
+
+# ---- FreeType (RmlUi font engine) ------------------------------------------
+# Resolved via lib/FindFreetype.cmake (static, bundled). RmlUi's own build also
+# finds it through the module path set near the top of this file.
+find_package(Freetype REQUIRED)
+target_include_directories(PokemonStadiumRecomp PRIVATE ${FREETYPE_INCLUDE_DIRS})
+target_link_libraries(PokemonStadiumRecomp PRIVATE ${FREETYPE_LIBRARIES})
+
+# ---- Interface shader compilation (RmlUi overlay) --------------------------
+# build_vertex_shader / build_pixel_shader come from lib/rt64's CMakeLists and
+# need the DXC option vars + DXC path set in this scope (rt64's own CMake does
+# not export them). Mirrors Zelda64Recomp@ab677e7's top-level shader setup.
+set(DXC_COMMON_OPTS "-I${PROJECT_SOURCE_DIR}/src")
+set(DXC_DXIL_OPTS "-Wno-ignored-attributes")
+set(DXC_SPV_OPTS "-spirv" "-fspv-target-env=vulkan1.0" "-fvk-use-dx-layout")
+set(DXC_PS_OPTS "${DXC_COMMON_OPTS}" "-E" "PSMain" "-T ps_6_0" "-D DYNAMIC_RENDER_PARAMS")
+set(DXC_VS_OPTS "${DXC_COMMON_OPTS}" "-E" "VSMain" "-T vs_6_0" "-D DYNAMIC_RENDER_PARAMS" "-fvk-invert-y")
+if (WIN32)
+    set(DXC "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc.exe")
+elseif (APPLE)
+    set(DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos")
+else()
+    set(DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-linux")
+endif()
+
+build_vertex_shader(PokemonStadiumRecomp "shaders/InterfaceVS.hlsl" "shaders/InterfaceVS.hlsl")
+build_pixel_shader(PokemonStadiumRecomp "shaders/InterfacePS.hlsl" "shaders/InterfacePS.hlsl")
+
+# ---- UI assets (fonts, etc.) next to the executable ------------------------
+add_custom_command(TARGET PokemonStadiumRecomp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/assets"
+        "$<TARGET_FILE_DIR:PokemonStadiumRecomp>/assets"
 )

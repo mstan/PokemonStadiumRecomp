@@ -1,0 +1,175 @@
+<rml>
+<head>
+    <link type="text/rcss" href="rml.rcss"/>
+    <link type="text/rcss" href="ss_anne.rcss"/>
+    <title>SS Anne</title>
+</head>
+<body>
+<div id="app">
+
+    <!-- Title bar -->
+    <div id="titlebar">
+        <div id="titlebar__brand">
+            <span id="titlebar__name">SS Anne</span>
+            <span id="titlebar__sep">|</span>
+            <span id="titlebar__sub">Pokémon Stadium Recomp</span>
+        </div>
+    </div>
+
+    <!-- Transient warning banner -->
+    <div id="banner" class="hidden"></div>
+
+    <!-- Player cards -->
+    <div id="players">
+
+        <div class="card card--p1" id="card1">
+            <div class="card__head">
+                <span class="card__player">PLAYER 1</span>
+                <span class="card__enable" id="card1-enable"><span class="chk" id="card1-chk"></span> Enabled</span>
+            </div>
+            <div class="card__cartwrap"><img class="cart" id="card1-cart" src="carts/empty.png"/></div>
+            <div class="card__cartactions">
+                <span class="btn btn--ghost" id="card1-romchange">Load ROM</span>
+                <span class="btn btn--icon" id="card1-romremove">&#215;</span>
+            </div>
+            <div class="card__game">
+                <span class="dot dot--p1"></span>
+                <span class="card__gamename" id="card1-game">No game loaded</span>
+            </div>
+            <div class="card__row"><span class="k">Trainer</span><span class="v" id="card1-trainer">&#8212;</span></div>
+            <div class="card__row"><span class="k">ID</span><span class="v" id="card1-id">&#8212;</span></div>
+            <div class="card__row card__save">
+                <span class="k">Save</span><span class="v save" id="card1-save">&#8212;</span>
+                <span class="btn btn--ghost" id="card1-savechange">Change</span>
+            </div>
+            <div class="card__ctrllabel">Controller</div>
+            <div class="card__ctrlwrap">
+                <div class="card__dropdown" id="card1-dropdown">
+                    <span class="pad">&#127918;</span>
+                    <span class="card__ctrlname" id="card1-ctrl">None</span>
+                    <img class="chev" src="carts/chev.png"/>
+                </div>
+                <div class="ctrl-menu hidden" id="card1-ctrlmenu"></div>
+            </div>
+            <div class="card__status" id="card1-status"><span class="dot dot--off"></span> Not assigned</div>
+        </div>
+
+        <div class="card card--p2" id="card2">
+            <div class="card__head">
+                <span class="card__player">PLAYER 2</span>
+                <span class="card__enable" id="card2-enable"><span class="chk" id="card2-chk"></span> Enabled</span>
+            </div>
+            <div class="card__cartwrap"><img class="cart" id="card2-cart" src="carts/empty.png"/></div>
+            <div class="card__cartactions">
+                <span class="btn btn--ghost" id="card2-romchange">Load ROM</span>
+                <span class="btn btn--icon" id="card2-romremove">&#215;</span>
+            </div>
+            <div class="card__game">
+                <span class="dot dot--p2"></span>
+                <span class="card__gamename" id="card2-game">No game loaded</span>
+            </div>
+            <div class="card__row"><span class="k">Trainer</span><span class="v" id="card2-trainer">&#8212;</span></div>
+            <div class="card__row"><span class="k">ID</span><span class="v" id="card2-id">&#8212;</span></div>
+            <div class="card__row card__save">
+                <span class="k">Save</span><span class="v save" id="card2-save">&#8212;</span>
+                <span class="btn btn--ghost" id="card2-savechange">Change</span>
+            </div>
+            <div class="card__ctrllabel">Controller</div>
+            <div class="card__ctrlwrap">
+                <div class="card__dropdown" id="card2-dropdown">
+                    <span class="pad">&#127918;</span>
+                    <span class="card__ctrlname" id="card2-ctrl">None</span>
+                    <img class="chev" src="carts/chev.png"/>
+                </div>
+                <div class="ctrl-menu hidden" id="card2-ctrlmenu"></div>
+            </div>
+            <div class="card__status" id="card2-status"><span class="dot dot--off"></span> Not assigned</div>
+        </div>
+
+        <div class="card card--p3" id="card3">
+            <div class="card__head">
+                <span class="card__player">PLAYER 3</span>
+                <span class="card__enable" id="card3-enable"><span class="chk" id="card3-chk"></span> Enabled</span>
+            </div>
+            <div class="card__cartwrap"><img class="cart" id="card3-cart" src="carts/empty.png"/></div>
+            <div class="card__cartactions">
+                <span class="btn btn--ghost" id="card3-romchange">Load ROM</span>
+                <span class="btn btn--icon" id="card3-romremove">&#215;</span>
+            </div>
+            <div class="card__game">
+                <span class="dot dot--p3"></span>
+                <span class="card__gamename" id="card3-game">No game loaded</span>
+            </div>
+            <div class="card__row"><span class="k">Trainer</span><span class="v" id="card3-trainer">&#8212;</span></div>
+            <div class="card__row"><span class="k">ID</span><span class="v" id="card3-id">&#8212;</span></div>
+            <div class="card__row card__save">
+                <span class="k">Save</span><span class="v save" id="card3-save">&#8212;</span>
+                <span class="btn btn--ghost" id="card3-savechange">Change</span>
+            </div>
+            <div class="card__ctrllabel">Controller</div>
+            <div class="card__ctrlwrap">
+                <div class="card__dropdown" id="card3-dropdown">
+                    <span class="pad">&#127918;</span>
+                    <span class="card__ctrlname" id="card3-ctrl">None</span>
+                    <img class="chev" src="carts/chev.png"/>
+                </div>
+                <div class="ctrl-menu hidden" id="card3-ctrlmenu"></div>
+            </div>
+            <div class="card__status" id="card3-status"><span class="dot dot--off"></span> Not assigned</div>
+        </div>
+
+        <div class="card card--p4" id="card4">
+            <div class="card__head">
+                <span class="card__player">PLAYER 4</span>
+                <span class="card__enable" id="card4-enable"><span class="chk" id="card4-chk"></span> Enabled</span>
+            </div>
+            <div class="card__cartwrap"><img class="cart" id="card4-cart" src="carts/empty.png"/></div>
+            <div class="card__cartactions">
+                <span class="btn btn--ghost" id="card4-romchange">Load ROM</span>
+                <span class="btn btn--icon" id="card4-romremove">&#215;</span>
+            </div>
+            <div class="card__game">
+                <span class="dot dot--off"></span>
+                <span class="card__gamename card__gamename--off" id="card4-game">No game loaded</span>
+            </div>
+            <div class="card__row"><span class="k">Trainer</span><span class="v" id="card4-trainer">&#8212;</span></div>
+            <div class="card__row"><span class="k">ID</span><span class="v" id="card4-id">&#8212;</span></div>
+            <div class="card__row card__save">
+                <span class="k">Save</span><span class="v save" id="card4-save">&#8212;</span>
+                <span class="btn btn--ghost" id="card4-savechange">Change</span>
+            </div>
+            <div class="card__ctrllabel">Controller</div>
+            <div class="card__ctrlwrap">
+                <div class="card__dropdown" id="card4-dropdown">
+                    <span class="pad">&#127918;</span>
+                    <span class="card__ctrlname" id="card4-ctrl">None</span>
+                    <img class="chev" src="carts/chev.png"/>
+                </div>
+                <div class="ctrl-menu hidden" id="card4-ctrlmenu"></div>
+            </div>
+            <div class="card__status" id="card4-status"><span class="dot dot--off"></span> Not assigned</div>
+        </div>
+
+    </div>
+
+    <!-- Stadium ROM strip -->
+    <div id="stadiumbar">
+        <div id="stadium__left">
+            <img id="stadium__cart" src="carts/n64.png"/>
+            <div id="stadium__info">
+                <div id="stadium__title">Pokémon Stadium (USA) <span id="stadium__verified"><img class="ico-check" src="carts/check.png"/> Verified</span></div>
+                <div id="stadium__actions">
+                    <span class="btn btn--ghost" id="stadium-change">Change</span>
+                </div>
+            </div>
+        </div>
+        <div id="playwrap">
+            <div id="autoplay-count" class="hidden"></div>
+            <span id="play">PLAY</span>
+            <div id="autoplay-row"><span class="chk chk--on" id="autoplay-chk"></span> Auto-play</div>
+        </div>
+    </div>
+
+</div>
+</body>
+</rml>

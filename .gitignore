@@ -46,6 +46,8 @@ Thumbs.db
 _tmp_*
 _baseline_*
 _experimental_*
+_*.png
+_*.pid
 
 # ROM data (don't redistribute)
 *.z64
