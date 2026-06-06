@@ -187,12 +187,40 @@ int next_device(int slot, int cur) {
     return 0;
 }
 
+// A Game Boy cart and its save go together: each slot must have BOTH a ROM and
+// a save, or NEITHER. Returns the index (0-3) of the first slot that has exactly
+// one of the two (an incomplete pairing), or -1 if every slot is consistent.
+int slot_pairing_error_index() {
+    for (int i = 0; i < 4; ++i) {
+        if (g_slot_rom[i].empty() != g_slot_save[i].empty()) return i;
+    }
+    return -1;
+}
+
 bool config_valid() {
-    if (!g_stadium_valid) return false; // a valid Stadium ROM is required
+    if (!g_stadium_valid) return false;                // a valid Stadium ROM is required
+    if (slot_pairing_error_index() >= 0) return false; // GB ROM and save must come as a pair
     for (int i = 0; i < 4; ++i) {
         if (g_slot_enabled[i] && g_slot_device[i] != 0) return true;
     }
-    return false; // a controller is required to play
+    return false; // at least one enabled player with a controller is required
+}
+
+// Human-readable reason PLAY is blocked, shown to the user when they try to
+// start with an invalid configuration. Mirrors config_valid()'s checks in the
+// same order. Returns "" when the configuration is valid.
+std::string play_block_reason() {
+    if (!g_stadium_valid) {
+        return "Select a valid Pokemon Stadium ROM before starting.";
+    }
+    const int bad = slot_pairing_error_index();
+    if (bad >= 0) {
+        const std::string who = "Player " + std::to_string(bad + 1);
+        return g_slot_rom[bad].empty()
+            ? who + " has a save but no Game Boy game — add the game, or remove the save."
+            : who + " has a Game Boy game but no save — add the save, or remove the game.";
+    }
+    return "Enable at least one player and assign a controller before starting.";
 }
 
 // A valid Game Boy ROM: header checksum at 0x14D over bytes 0x134..0x14C.
@@ -560,7 +588,14 @@ void update_slot_ui(Rml::ElementDocument* doc, int slot) {
     if (Rml::Element* st = doc->GetElementById(base + "-status")) {
         // The label must be wrapped in a span: RmlUi drops a bare text node that
         // is a direct child of a flex row, leaving just the dot.
-        if (g_slot_enabled[slot] && assigned) {
+        const bool rom_only  = !g_slot_rom[slot].empty() && g_slot_save[slot].empty();
+        const bool save_only = g_slot_rom[slot].empty() && !g_slot_save[slot].empty();
+        if (rom_only || save_only) {
+            // Incomplete Game Boy cart: ROM and save must come as a pair. Flag it
+            // so the user sees why PLAY is disabled.
+            const char* msg = rom_only ? "Save required" : "Game required";
+            st->SetInnerRML(std::string("<span class=\"dot dot--err\"></span><span class=\"st\">") + msg + "</span>");
+        } else if (g_slot_enabled[slot] && assigned) {
             st->SetInnerRML("<span class=\"dot dot--on\"></span><span class=\"st\">Connected</span>");
         } else {
             st->SetInnerRML("<span class=\"dot dot--off\"></span><span class=\"st\">Not assigned</span>");
@@ -918,7 +953,9 @@ void attach_launcher_events(Rml::ElementDocument* doc) {
     // PLAY: only launches when the config is valid.
     auto play_fn = [doc] {
         if (!config_valid()) {
-            std::fprintf(stderr, "[ss-anne] PLAY ignored: no enabled player has a controller\n");
+            const std::string reason = play_block_reason();
+            std::fprintf(stderr, "[ss-anne] PLAY blocked: %s\n", reason.c_str());
+            set_banner(reason);
             return;
         }
         if (g_play_requested.exchange(true)) return;

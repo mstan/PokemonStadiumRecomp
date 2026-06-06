@@ -173,6 +173,7 @@ img.ico-check { width: 14dp; height: 12dp; vertical-align: -1dp; margin-right: 3
 .dot--p3 { background-color: #3b9ae8ff; }
 .dot--off { background-color: #5a6573ff; }
 .dot--on { background-color: #3fb950ff; }
+.dot--err { background-color: #e8443bff; }
 .card__status .dot { margin-right: 6dp; }
 
 /* clickable affordances */
