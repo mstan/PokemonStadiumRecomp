@@ -36,6 +36,7 @@
 #include <string>
 
 #include "post_mortem.hpp"
+#include "app_paths.h"
 
 // ── External hooks into existing rings/counters ──────────────────────
 
@@ -121,9 +122,12 @@ namespace pkmnstadium { namespace dbg {
     extern std::atomic<uint64_t> g_update_screen_count;
 }}
 
-// Dedicated output path — single file, overwritten per dump.
-static const char* kReportPath =
-    "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_report.json";
+// Dedicated output path — single file, overwritten per dump. Written next to
+// the executable (see app_paths.h) so a released build never depends on a
+// build-tree path.
+static std::string report_path() {
+    return pkmnstadium::app_file("last_run_report.json").string();
+}
 
 // Mutex so on-demand TCP dump and SEH/atexit dump can't race.
 static std::mutex g_dump_mutex;
@@ -839,7 +843,8 @@ extern "C" void psr_post_mortem_dump(const char* reason,
 {
     std::lock_guard<std::mutex> lock(g_dump_mutex);
 
-    FILE* f = std::fopen(kReportPath, "w");
+    const std::string report_file = report_path();
+    FILE* f = std::fopen(report_file.c_str(), "w");
     if (!f) return;
 
     auto t_now = std::chrono::system_clock::now();
@@ -876,6 +881,7 @@ extern "C" void psr_post_mortem_dump(const char* reason,
     // Separate file: input history (so the replay tool doesn't need
     // to parse the multi-MB main report). Empty if no input was driven.
     extern void psr_dump_input_history_json(const char* path);
-    psr_dump_input_history_json(
-        "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_input_history.json");
+    const std::string input_history_file =
+        pkmnstadium::app_file("last_run_input_history.json").string();
+    psr_dump_input_history_json(input_history_file.c_str());
 }

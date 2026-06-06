@@ -1,9 +1,8 @@
 /*
  * debug_server.cpp — Minimal TCP debug server for PokemonStadiumRecomp.
  *
- * Modeled after nesrecomp's runner/src/debug_server.c (per
- * F:\Projects\recomp-template\NES\TCP.md). Default port 4370,
- * single-client, JSON line protocol.
+ * A small single-client, JSON-line TCP debug server. Default port
+ * 4370.
  *
  * Commands implemented for first-pass visibility:
  *
@@ -18,9 +17,8 @@
  *   tail_errlog                  → returns last_error.log content (post-mortem inspection)
  *   quit                         → exit cleanly
  *
- * Per project principles (F:\Projects\recomp-template\NES\TCP.md):
- * any state we want visible from outside grows TCP commands here.
- * Don't add side-channel logging.
+ * Design rule: any state we want visible from outside grows TCP
+ * commands here. Don't add side-channel logging.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -42,6 +40,7 @@
 #include <vector>
 
 #include "debug_server.h"
+#include "app_paths.h"
 #include "librecomp/ultra_trace.hpp"
 #include "librecomp/rsp.hpp"
 #include "ares_bridge.h"
@@ -1690,10 +1689,15 @@ static std::string handle_command(const std::string& line) {
         return out;
     }
     // ---------------- Ares oracle bridge -----------------------------------
-    // The ares-bridge library is linked into the runner. These commands
-    // expose the oracle to external diff harnesses (tools/diff_aspmain.py).
-    // The bridge runs in this process; calls block the debug-server thread
-    // until the oracle returns. The runner's main thread is unaffected.
+    // Dev-only divergence-oracle commands, compiled in only when the build is
+    // configured with the real Ares bridge (-DWITH_ARES_BRIDGE=ON, which
+    // defines PSR_WITH_ARES). The shipped release builds without Ares (so the
+    // executable can statically link the CRT and stay self-contained), so these
+    // commands are excluded and the runner links none of the Ares trace
+    // symbols. They expose the oracle to external diff harnesses
+    // (tools/diff_aspmain.py); calls block the debug-server thread (not the
+    // runner's main thread) until the oracle returns.
+#ifdef PSR_WITH_ARES
     if (cmd == "ares_status") {
         // Read every counter on the dedicated Ares thread so the trace
         // ring's thread_local state is consistent with the writer.
@@ -1857,6 +1861,7 @@ static std::string handle_command(const std::string& line) {
                    std::to_string(ares_rsp_trace_is_enabled()) + "}";
         });
     }
+#endif // PSR_WITH_ARES
 
     if (cmd == "get_last_pc_trail") {
         // Returns the live pc_trail of the most-recently-launched RSP
@@ -1917,7 +1922,7 @@ static std::string handle_command(const std::string& line) {
         // without any "arm + capture" timing dance. Used to capture
         // the DL feeding any visible frame (e.g. a sprite-corruption
         // repro screen) for offline GBI decoding.
-        std::string path = "F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_run_dl.bin";
+        std::string path = pkmnstadium::app_file("last_run_dl.bin").string();
         std::string p = get_str(line, "path");
         if (!p.empty()) path = p;
         uint32_t addr = 0, size = 0;
@@ -1930,7 +1935,8 @@ static std::string handle_command(const std::string& line) {
         return buf;
     }
     if (cmd == "tail_errlog") {
-        FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "rb");
+        const std::string errlog_path = pkmnstadium::app_file("last_error.log").string();
+        FILE* f = fopen(errlog_path.c_str(), "rb");
         if (!f) return R"({"ok":true,"errlog":""})";
         char chunk[4096]{};
         size_t n = fread(chunk, 1, sizeof(chunk) - 1, f);
@@ -1955,7 +1961,8 @@ static std::string handle_command(const std::string& line) {
         // diagnose deep stalls (e.g. attract demo blocked in an
         // OSMesgQueue wait) without having to instrument every libultra
         // primitive.
-        FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
+        const std::string errlog_path = pkmnstadium::app_file("last_error.log").string();
+        FILE* f = fopen(errlog_path.c_str(), "a");
         if (!f) return R"({"ok":false,"error":"could not open log"})";
         fprintf(f, "\n=== dump_threads ===\n");
 

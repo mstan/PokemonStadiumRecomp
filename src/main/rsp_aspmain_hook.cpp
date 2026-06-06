@@ -38,8 +38,8 @@
  * should reach the `mtc0 r1, SP_STATUS; break 0` at L_108C in finite
  * time, returning RspExitReason::Broke.
  *
- * Per project principles (PRINCIPLES.md #12): this is NOT a stub. It
- * encodes the real HLE-correct boot residue Stadium's aspMain needs.
+ * This is NOT a stub: it encodes the real HLE-correct boot residue
+ * Stadium's aspMain needs.
  * On real hardware rspboot does the equivalent setup; we replicate it.
  */
 

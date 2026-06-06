@@ -72,7 +72,7 @@ WORKDIR /work
 Build and use:
 ```bash
 docker build -t pokestadium-disasm -f Dockerfile .
-docker run --rm -v "F:/Projects/PokemonStadiumRecomp:/work" \
+docker run --rm -v "$(pwd):/work" \
   pokestadium-disasm \
   bash -c "cd disasm && pip install -r requirements.txt && make init && make"
 ```

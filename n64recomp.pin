@@ -13,7 +13,10 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = 25ecf9fb3c6ab95c21c8a2a4c6ade89c649c84d1
+sha = 62a475436d9b66f4448ab52b415295255628789a
+# 62a4754 "docs: drop references to private methodology notes in comments" —
+#   the engine commit the v0.4.0-beta release binary was built against;
+#   comment-only changes on top of 25ecf9f below.
 # 25ecf9f "fix(recompiler): depth-bounded tailcall draining — fix GB Tower
 #   crash without regressing register-quit" — USER-VERIFIED milestone fixing
 #   BOTH ISSUES #11 (GB Tower crash on cart launch) and #7 (register-quit

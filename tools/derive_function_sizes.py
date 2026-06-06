@@ -20,9 +20,9 @@ Usage:
 Then merge the output into game.toml's [[input.function_sizes]]
 section.
 
-Per project principles: this is NOT a stub. We are recovering real
-function sizes from the ELF that pret already built — we're not
-inventing behavior. The same data is observable via readelf;
+This is NOT a stub: we are recovering real function sizes from the
+ELF that pret already built — we're not inventing behavior. The same
+data is observable via readelf;
 N64Recomp just doesn't auto-derive it itself yet (that's the engine
 fix to upstream).
 """

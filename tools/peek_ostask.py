@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import struct
 import subprocess
@@ -46,6 +47,15 @@ import sys
 import time
 from contextlib import contextmanager
 from typing import Optional
+
+# Resolve defaults relative to this script so the tool isn't tied to any one
+# machine's directory layout. tools/ -> repo root -> n64recomp workspace root.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(_REPO)
+_DEFAULT_ROM = os.path.join(_REPO, "baserom.z64")
+_DEFAULT_ORACLE = os.path.join(
+    _ROOT, "N64Recomp", "build-aresbridge", "ares-bridge", "Release",
+    "ares_oracle_server.exe")
 
 
 # Stadium's observed hook-log values (from session handoff).
@@ -178,11 +188,10 @@ def find_label_entries(events: list[dict], target_pc: int,
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ares-port", type=int, default=4372)
-    ap.add_argument("--rom", default="F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64")
+    ap.add_argument("--rom", default=_DEFAULT_ROM)
     ap.add_argument("--ares-frames", type=int, default=60)
     ap.add_argument("--oracle-server",
-                    default="F:/Projects/n64recomp/N64Recomp/build-aresbridge/"
-                            "ares-bridge/Release/ares_oracle_server.exe",
+                    default=_DEFAULT_ORACLE,
                     help="Path to ares_oracle_server.exe. Pass empty to "
                          "skip spawning (assume already running).")
     ap.add_argument("--keep-server", action="store_true",

@@ -2,9 +2,9 @@
  * extras.c — game-specific runtime hooks for PokemonStadiumRecomp.
  *
  * Hosts the recomp_unhandled_* entry points that the engine emits
- * for instructions it can't translate at compile time. Per project
- * principles (PRINCIPLES.md #12): NOT stubs. These are real
- * implementations that abort loudly with full diagnostic context
+ * for instructions it can't translate at compile time. These are
+ * NOT stubs: they are real implementations that abort loudly with
+ * full diagnostic context
  * if reached. They are the runtime side of the "tolerant emit
  * mode" engine commit (N64Recomp 512191b).
  *
@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "app_paths.h" /* psr_app_file_c: runtime files next to the exe */
 
 #ifdef _WIN32
 /* Defined here (top of file) rather than before its sole use site
@@ -56,7 +58,8 @@ static void unhandled_abort(const char *kind, uint32_t pc, const char *detail) {
     /* Persistent-file copy: stderr in headless runs gets buffered and
      * the abort() can wipe it before the parent process reads. The
      * file is the source of truth for post-mortem inspection. */
-    FILE *f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
+    char errlog_path[1024];
+    FILE *f = fopen(psr_app_file_c("last_error.log", errlog_path, sizeof errlog_path), "a");
     if (f) {
         fprintf(f,
             "\n=== N64Recomp UNHANDLED %s ===\n"
@@ -126,9 +129,9 @@ void recomp_unhandled_instruction(uint8_t *rdram, recomp_context *ctx,
 /* Pokemon Stadium pulls in libultra functions for: CPU control       */
 /* registers (SR/Cause/Count), 64DD/Leo disk drive, controller pak    */
 /* I/O, and EPI device I/O. librecomp provides 138 _recomp libultra   */
-/* shims but not these. Per project principles (PRINCIPLES.md #12)    */
-/* these are NOT stubs — they abort loudly with full context if       */
-/* reached, surfacing the missing implementation as a clearly-named   */
+/* shims but not these. These are NOT stubs — they abort loudly with  */
+/* full context if reached, surfacing the missing implementation as a  */
+/* clearly-named                                                       */
 /* runtime failure rather than silent wrong behavior.                 */
 /*                                                                    */
 /* Real implementations would either model the libultra behavior      */
@@ -139,7 +142,9 @@ void recomp_unhandled_instruction(uint8_t *rdram, recomp_context *ctx,
 
 #define UNIMPL_LIBULTRA(name)                                                  \
     void name##_recomp(uint8_t *rdram, recomp_context *ctx) {                  \
-        FILE *f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a"); \
+        char errlog_path[1024];                                               \
+        FILE *f = fopen(psr_app_file_c("last_error.log", errlog_path,         \
+                                       sizeof errlog_path), "a");             \
         if (f) {                                                               \
             fprintf(f, "\n=== UNIMPLEMENTED LIBULTRA: %s ===\n", #name);       \
             fclose(f);                                                         \
@@ -376,8 +381,9 @@ static void pkmnstadium_gb_fragment_trace(const char *func,
         return;
     }
 
+    char trace_path[1024];
     FILE *f = fopen(
-        "F:/Projects/n64recomp/PokemonStadiumRecomp/build/gb_frag_trace.log",
+        psr_app_file_c("gb_frag_trace.log", trace_path, sizeof trace_path),
         event == 1 ? "w" : "a");
     if (f == NULL) {
         return;

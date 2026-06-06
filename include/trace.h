@@ -13,9 +13,9 @@
  * for finding "where is the boot stuck?" without random trial
  * fixes.
  *
- * Per project principles (PRINCIPLES.md #12): not stubs. Real
- * function calls into a real ring writer; the recorded data is
- * used for diagnosis, not for simulating behavior.
+ * These are not stubs: real function calls into a real ring writer;
+ * the recorded data is used for diagnosis, not for simulating
+ * behavior.
  */
 
 #ifndef PKMNSTADIUM_TRACE_H

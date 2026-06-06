@@ -422,15 +422,19 @@ void refresh_slot(Rml::ElementDocument* doc, int slot, const std::string& rom, c
 // Rewrite launcher.cfg from the current slot state. The cfg is the GUI's
 // persistent storage. Caller must hold g_change_mutex.
 void write_transfer_pak_cfg() {
-    std::ofstream f(std::filesystem::current_path() / "launcher.cfg", std::ios::trunc);
+    std::ofstream f(exe_dir() / "launcher.cfg", std::ios::trunc);
     if (!f) {
         std::fprintf(stderr, "[ss-anne] WARN: cannot write launcher.cfg\n");
         return;
     }
     f << "# SS Anne launcher configuration - managed by the launcher.\n";
-    f << "# pN_rom / pN_save: per-player-slot (1-4) Game Boy cart + save, edited\n";
-    f << "# via the launcher's cartridge (ROM) and Save 'Change' buttons.\n";
+    f << "# pN_enabled=on|off : whether player slot N (1-4) is active.\n";
+    f << "# pN_device : input device for slot N (0=None, 1=Keyboard, 2+=gamepad).\n";
+    f << "# pN_rom / pN_save: per-slot Game Boy cart + save, edited via the\n";
+    f << "# launcher's cartridge (ROM) and Save 'Change' buttons.\n";
     for (int i = 0; i < 4; ++i) {
+        f << "p" << (i + 1) << "_enabled=" << (g_slot_enabled[i] ? "on" : "off") << "\n";
+        f << "p" << (i + 1) << "_device=" << g_slot_device[i] << "\n";
         if (!g_slot_rom[i].empty())  f << "p" << (i + 1) << "_rom=" << g_slot_rom[i] << "\n";
         if (!g_slot_save[i].empty()) f << "p" << (i + 1) << "_save=" << g_slot_save[i] << "\n";
     }
@@ -451,10 +455,47 @@ bool parse_bool(const std::string& v, bool fallback) {
     return fallback;
 }
 
+void apply_default_assignment(); // defined below; used by the first-run path
+
 // Read launcher.cfg into the slot state and paint every card.
 void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem::path& /*assets*/) {
+    const std::filesystem::path cfg_path = exe_dir() / "launcher.cfg";
+
+    // First run (no launcher.cfg, or the user deleted it): the app must work with
+    // no configuration. Seed sensible defaults — Player 1 enabled, no Game Boy
+    // cart, the other slots disabled, auto-play off — then write the file so the
+    // choice persists. The device for P1 is left at None here and filled in by
+    // apply_default_assignment() (keyboard, or the first gamepad if one is
+    // connected) so the build is immediately playable out of the box.
+    if (!std::filesystem::exists(cfg_path)) {
+        std::fprintf(stderr, "[ss-anne] no launcher.cfg -> writing defaults (P1 enabled)\n");
+        for (int i = 0; i < 4; ++i) {
+            g_slot_enabled[i] = (i == 0);
+            g_slot_device[i]  = 0;
+            g_slot_rom[i].clear();
+            g_slot_save[i].clear();
+        }
+        g_autoplay_pref = false;
+        g_autoplay = false;
+        // apply_default_assignment() (run from attach_launcher_events, right
+        // after this) gives P1 a device; reflect that choice in the file too.
+        apply_default_assignment();
+        {
+            std::scoped_lock lock(g_change_mutex);
+            write_transfer_pak_cfg();
+        }
+        for (int p = 1; p <= 4; ++p) {
+            refresh_slot(doc, p - 1, g_slot_rom[p - 1], g_slot_save[p - 1]);
+        }
+        if (const char* env = std::getenv("PSR_AUTOPLAY")) {
+            g_autoplay_pref = parse_bool(env, g_autoplay_pref);
+            g_autoplay = g_autoplay_pref;
+        }
+        return;
+    }
+
     std::map<std::string, std::string> cfg;
-    std::ifstream f(std::filesystem::current_path() / "launcher.cfg");
+    std::ifstream f(cfg_path);
     std::string line;
     while (std::getline(f, line)) {
         const size_t c = line.find_first_of("#;");
@@ -467,12 +508,22 @@ void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem
         if (!k.empty() && !v.empty()) cfg[k] = v;
     }
 
+    const int devices = device_count(); // keyboard + connected gamepads
     for (int p = 1; p <= 4; ++p) {
         const std::string pk = "p" + std::to_string(p);
         g_slot_rom[p - 1]  = cfg.count(pk + "_rom")  ? cfg[pk + "_rom"]  : "";
         g_slot_save[p - 1] = cfg.count(pk + "_save") ? cfg[pk + "_save"] : "";
-        // Slots with a configured cart default to enabled; empty slots disabled.
-        g_slot_enabled[p - 1] = !g_slot_rom[p - 1].empty();
+        // enabled: explicit pN_enabled wins; otherwise fall back to the old
+        // behavior (a slot with a configured cart was implicitly enabled).
+        g_slot_enabled[p - 1] = cfg.count(pk + "_enabled")
+            ? parse_bool(cfg[pk + "_enabled"], !g_slot_rom[p - 1].empty())
+            : !g_slot_rom[p - 1].empty();
+        // device: explicit pN_device wins, clamped to what's actually connected
+        // (a persisted gamepad that's since been unplugged falls back to None so
+        // apply_default_assignment() can re-pick a valid device).
+        int dev = cfg.count(pk + "_device") ? std::atoi(cfg[pk + "_device"].c_str()) : 0;
+        if (dev < 0 || dev >= devices) dev = 0;
+        g_slot_device[p - 1] = dev;
         refresh_slot(doc, p - 1, g_slot_rom[p - 1], g_slot_save[p - 1]);
     }
 
@@ -532,11 +583,13 @@ void cancel_autoplay(Rml::ElementDocument* doc) {
     set_class(doc, "autoplay-count", "hidden", true);
 }
 
-// Give the first enabled slot a sensible default device so PLAY can be reached
-// quickly: the first gamepad if one is connected, otherwise the keyboard.
+// Give the first enabled slot that still has no device a sensible default so
+// PLAY can be reached quickly: the first gamepad if one is connected, otherwise
+// the keyboard. Slots whose device was restored from launcher.cfg are left
+// alone (device != 0), so a saved assignment is never clobbered.
 void apply_default_assignment() {
     for (int i = 0; i < 4; ++i) {
-        if (g_slot_enabled[i]) {
+        if (g_slot_enabled[i] && g_slot_device[i] == 0) {
             g_slot_device[i] = g_gamepads.empty() ? 1 /*Keyboard*/ : 2 /*first gamepad*/;
             break;
         }

@@ -14,9 +14,9 @@
  *   - RT64 render context creation via pokestadium::renderer
  *   - recomp::start with full callback wiring
  *
- * Per project principles: anywhere we'd want to "skip" something
- * with a stub, we either implement it for real or use a
- * loud-abort pattern that surfaces missing functionality.
+ * No stubs: anywhere we'd want to "skip" something with a stub, we
+ * either implement it for real or use a loud-abort pattern that
+ * surfaces missing functionality.
  */
 
 #include <array>
@@ -48,6 +48,34 @@
 #include <SDL.h>
 #include <SDL_syswm.h>
 
+#include "app_paths.h"
+
+namespace pkmnstadium {
+// Defined here (where <windows.h> is already included with WIN32_LEAN_AND_MEAN /
+// NOMINMAX) and shared via app_paths.h with the other translation units.
+std::filesystem::path exe_dir() {
+#ifdef _WIN32
+    char buf[MAX_PATH] = {0};
+    GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    return std::filesystem::path(buf).parent_path();
+#else
+    return std::filesystem::current_path();
+#endif
+}
+
+std::filesystem::path app_file(const std::string& name) {
+    return exe_dir() / name;
+}
+} // namespace pkmnstadium
+
+// C-callable variant for extras.c (see app_paths.h).
+extern "C" const char* psr_app_file_c(const char* name, char* out, unsigned long out_size) {
+    if (out == nullptr || out_size == 0) return "";
+    const std::string p = pkmnstadium::app_file(name != nullptr ? name : "").string();
+    std::snprintf(out, out_size, "%s", p.c_str());
+    return out;
+}
+
 #include "recomp.h"
 #include <librecomp/game.hpp>
 #include <ultramodern/ultramodern.hpp>
@@ -67,10 +95,10 @@ extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 namespace pokestadium { void register_overlays(); }
 namespace pokestadium::rsp { void register_pre_task_hooks(); }
 
-// RSP microcode entry points provided by RSPRecomp output (Zelda's
-// built aspMain.cpp + njpgdspMain.cpp at F:/Projects/n64recomp/Zelda64Recomp/rsp,
-// referenced by CMakeLists). These implement the libultra standard
-// audio/JPEG microcodes that ship with Pokemon Stadium-era N64 games.
+// RSP microcode entry points provided by RSPRecomp output (the prebuilt
+// aspMain.cpp + njpgdspMain.cpp under rsp/, referenced by CMakeLists).
+// These implement the libultra standard audio/JPEG microcodes that ship
+// with Pokemon Stadium-era N64 games.
 extern RspUcodeFunc aspMain;
 extern RspUcodeFunc gbTowerMain;
 extern RspUcodeFunc gbTowerColorMain;
@@ -1034,7 +1062,8 @@ static LONG WINAPI psr_crash_filter(EXCEPTION_POINTERS* info) {
     // Write the compact stack log before the larger post-mortem dump.
     // If the process is already corrupt enough for the full JSON dump to
     // fault, this path still leaves a durable fault address and trace tail.
-    FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
+    const std::string err_log_path = pkmnstadium::app_file("last_error.log").string();
+    FILE* f = fopen(err_log_path.c_str(), "a");
     if (f) {
         setvbuf(f, nullptr, _IONBF, 0);
         fprintf(f, "\n=== UNHANDLED EXCEPTION ===\n");
@@ -1134,7 +1163,8 @@ static void error_message_box(const char* msg) {
     // ultramodern::error_handling::quick_exit() terminates the process,
     // and stderr buffering can swallow the message in headless runs.
     // Write a known file path so post-mortem inspection is easy.
-    FILE* f = fopen("F:/Projects/n64recomp/PokemonStadiumRecomp/build/last_error.log", "a");
+    const std::string err_log_path = pkmnstadium::app_file("last_error.log").string();
+    FILE* f = fopen(err_log_path.c_str(), "a");
     if (f) {
         fprintf(f, "[PSR ERROR] %s\n", msg);
         fclose(f);

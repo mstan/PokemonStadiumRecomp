@@ -1,4 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Use the classic flag-based MSVC runtime selection (CMP0091 OLD) so the static
+# CRT can be forced reliably under direct clang-cl + Ninja. Must be set before
+# project(), which initializes the per-config flag variables we rewrite below.
+# See the static-CRT block further down for the rationale.
+if (WIN32)
+    cmake_policy(SET CMP0091 OLD)
+endif()
+
 project(PokemonStadiumRecomp C CXX)
 
 set(CMAKE_C_STANDARD 17)
@@ -13,6 +22,28 @@ if (WIN32)
 endif()
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
     cmake_policy(SET CMP0135 NEW)
+endif()
+
+# Statically link the MSVC C/C++ runtime so the shipped executable does not
+# depend on the Visual C++ redistributable being installed (no MSVCP140.dll /
+# VCRUNTIME140.dll to bundle — the #1 cause of "missing DLL" errors on a clean
+# machine).
+#
+# The CMAKE_MSVC_RUNTIME_LIBRARY abstraction (CMP0091 NEW) is not reliably
+# honored for the direct clang-cl + Ninja configuration this project uses, so we
+# use the classic, bulletproof approach: with CMP0091 OLD (set before project()
+# above), the runtime flag lives in CMAKE_*_FLAGS_<CONFIG>; rewrite the
+# dynamic-CRT flag (-MD) to the static one (/MT) in every flag variable. Because
+# dependencies inherit these flag variables, every target links the static CRT.
+if (WIN32)
+    foreach(flag_var
+            CMAKE_C_FLAGS   CMAKE_C_FLAGS_DEBUG   CMAKE_C_FLAGS_RELEASE
+            CMAKE_C_FLAGS_RELWITHDEBINFO   CMAKE_C_FLAGS_MINSIZEREL
+            CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+            CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_MINSIZEREL)
+        string(REGEX REPLACE "[-/]MDd" "/MTd" ${flag_var} "${${flag_var}}")
+        string(REGEX REPLACE "[-/]MD"  "/MT"  ${flag_var} "${${flag_var}}")
+    endforeach()
 endif()
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -126,6 +157,7 @@ add_executable(PokemonStadiumRecomp
 
 target_include_directories(PokemonStadiumRecomp PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/main
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/ultramodern/include
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/librecomp/include
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
@@ -230,6 +262,14 @@ if (MSVC)
     target_link_options(PokemonStadiumRecomp PRIVATE
         "/WHOLEARCHIVE:$<TARGET_FILE:ares_bridge>"
     )
+endif()
+
+# Expose the real-Ares oracle's debug-server commands only when the real bridge
+# is configured. Without this define the runner references none of the Ares
+# trace symbols (which live in the real ares_bridge), so the default
+# (placeholder) build links cleanly with the static CRT.
+if (WITH_ARES_BRIDGE)
+    target_compile_definitions(PokemonStadiumRecomp PRIVATE PSR_WITH_ARES=1)
 endif()
 
 # Windowed (no-console) release. SDL2main supplies WinMain for the WINDOWS

@@ -1,6 +1,11 @@
-import struct, sys
+import os, struct, sys
 
-with open('F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64', 'rb') as f:
+# baserom.z64 sits at the repo root (tools/ is one level below it). Allow an
+# override as argv[1] so the tool isn't tied to any one machine's layout.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+rom_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_REPO, "baserom.z64")
+
+with open(rom_path, 'rb') as f:
     f.seek(0x7F670)
     data = f.read(0x2B0)
 

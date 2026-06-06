@@ -68,7 +68,7 @@ PART 1 — One-time setup
 
 2. Inside Ghidra:
    File → New Project → Non-Shared Project
-     Project Directory: F:\Projects\PokemonStadiumRecomp\ghidra\aspmain\projects
+     Project Directory: <repo>\ghidra\aspmain\projects   (<repo> = your checkout)
      Project Name:      aspMain
    Click Finish. (The projects/ subdir is gitignored — Ghidra
    writes large machine-specific .gpr/.lock files there.)
@@ -82,7 +82,7 @@ vram 0x04000000. Ghidra's ELF / N64 loaders don't apply here;
 this is just RSP microcode we're hand-mapping.
 
 3. File → Import File...
-     Navigate to: F:\Projects\PokemonStadiumRecomp\ghidra\aspmain\
+     Navigate to: <repo>\ghidra\aspmain\
      Pick:        aspMain_full_sp.bin
      Click "Select File To Import"
 
@@ -310,7 +310,7 @@ made during a live boot run, with timestamps. If you want to
 cross-reference what's happening at the SCHEDULER level when
 the audio task fires:
 
-  python F:/Projects/PokemonStadiumRecomp/tools/dump_libultra_boot.py
+  python tools/dump_libultra_boot.py   (run from the repo root)
   (with the runner running on TCP 4371)
 
 The JSONL is one event per line. Useful command:

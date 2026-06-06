@@ -38,7 +38,7 @@ Project creation
 ----------------
 1. Launch Ghidra. File → New Project → Non-Shared Project.
 2. Name: PokemonStadiumRecomp
-   Location: F:\Projects\PokemonStadiumRecomp\ghidra\projects\
+   Location: <repo>\ghidra\projects\   (<repo> = your PokemonStadiumRecomp checkout)
    (the projects/ subdir is gitignored — Ghidra writes
    .gpr/.lock files there which are large and machine-specific)
 

@@ -54,6 +54,13 @@ _*.pid
 # one-offs are not. See tools/README.md.
 tools/_*
 
+# Release packaging scratch / output (the staged zip is uploaded to the
+# GitHub Release, not tracked in git).
+dist/
+_build_console.*
+_release_notes_*
+_package_release.ps1
+
 # ROM data (don't redistribute)
 *.z64
 *.n64

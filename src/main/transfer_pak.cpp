@@ -15,6 +15,7 @@
 #include <librecomp/helpers.hpp>
 
 #include "ultramodern/ultramodern.hpp"
+#include "app_paths.h"
 
 namespace pkmnstadium::transfer_pak {
 namespace {
@@ -458,8 +459,11 @@ namespace {
             debug_enabled = true;
         }
 
+        // Next to the exe, matching the launcher's writer (ui_seam.cpp) so the
+        // emulated Transfer Pak reads the same launcher.cfg the GUI writes,
+        // regardless of the process's working directory.
         const std::filesystem::path config_path =
-            std::filesystem::current_path() / "launcher.cfg";
+            pkmnstadium::exe_dir() / "launcher.cfg";
         const auto config = read_config_file(config_path);
 
         for (int port = 0; port < port_count; port++) {

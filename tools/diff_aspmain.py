@@ -35,12 +35,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
 from typing import Optional
+
+# Resolve defaults relative to this script so the tool isn't tied to any one
+# machine's directory layout. tools/ -> repo root -> n64recomp workspace root.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(_REPO)
+_DEFAULT_ROM = os.path.join(_REPO, "baserom.z64")
+_DEFAULT_ORACLE = os.path.join(
+    _ROOT, "N64Recomp", "build-aresbridge", "ares-bridge", "Release",
+    "ares_oracle_server.exe")
 
 
 def _send(sock: socket.socket, f, payload):
@@ -139,13 +149,12 @@ def main(argv: list[str]) -> int:
                     help="Stadium runner debug-server port (default 4371)")
     ap.add_argument("--ares-port", type=int, default=4372,
                     help="ares_oracle_server port (default 4372)")
-    ap.add_argument("--rom", default="F:/Projects/n64recomp/PokemonStadiumRecomp/baserom.z64",
+    ap.add_argument("--rom", default=_DEFAULT_ROM,
                     help="Path to baserom.z64 (must match what Stadium uses)")
     ap.add_argument("--ares-frames", type=int, default=60,
                     help="Frames to step Ares forward before diffing")
     ap.add_argument("--oracle-server",
-                    default="F:/Projects/n64recomp/N64Recomp/build-aresbridge/"
-                            "ares-bridge/Release/ares_oracle_server.exe",
+                    default=_DEFAULT_ORACLE,
                     help="Path to the ares_oracle_server.exe binary. If "
                          "the server is already running on --ares-port, "
                          "pass empty string to skip spawning.")
