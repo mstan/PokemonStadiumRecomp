@@ -55,12 +55,16 @@ crackle and some menu-level visual glitches.
 - Boot, the title / attract sequence, and the in-game **menus**.
 - The **SS Anne launcher** (see below).
 - The **Kid's Club mini-games**.
-- **GB Tower** — the embedded Game Boy emulator. Red, Blue, and Yellow
-  boot to live gameplay; DMG and CGB paths both work; cart save load and
-  write are verified (MBC3 / MBC5); GB audio is routed to the host.
-- **Transfer Pak** party import (Game Pak Check / Registration) with
-  battery-SRAM persistence; registered Pokémon persist across runs
-  (Stadium FlashRAM save). Controllers / Transfer Paks on ports 1–4.
+- **GB Tower** — the Game Boy player built into Stadium. Pokémon Red, Blue,
+  and Yellow play from start to live gameplay, your cartridge's save is read
+  and written back, and the Game Boy sound comes through your speakers.
+  (The Game Boy games themselves run in an emulator — but that emulator is
+  *built into Pokémon Stadium*, so it gets turned into native PC code right
+  along with the rest of the game.)
+- **Transfer Pak** — import your party from your own Game Boy Pokémon
+  cartridge (Game Pak Check / Registration), and the Pokémon you register
+  are remembered between sessions. Up to four players' controllers and
+  cartridges, on ports 1–4.
 - **Entering and exiting a battle** — a battle starts, plays, and returns
   to the menu.
 
@@ -203,9 +207,9 @@ emulator of that accessory plus the Game Boy cart it bridges to, so
 the in-game Game Pak Check menu sees the configured ROM/save as if
 a real cart were plugged into a Transfer Pak in port 1.
 
-**Supported cart types:** ROM-only, MBC1, MBC3, MBC5 (covers Pokémon
-Red / Blue / Yellow / Gold / Silver / Crystal). Battery-backed SRAM
-is persisted to disk on every write.
+**Supported games:** the Gen 1 and Gen 2 Pokémon Game Boy titles — Red,
+Blue, Yellow, Gold, Silver, and Crystal. Your cartridge's save is written
+back to disk as you play, so progress isn't lost.
 
 **Configuration.** The SS Anne launcher normally writes `launcher.cfg`
 for you (it is the launcher's persistent store — see
@@ -265,12 +269,17 @@ needed and the project doesn't ship that tooling.
 
 ## GB Tower
 
-Stadium's built-in **GB Tower** is the embedded Game Boy emulator that
-plays full GB/GBC cartridges directly on the N64 — distinct from the
-Transfer Pak (which imports a *party* into Stadium; see above). It is
-**supported**: Red, Blue, and Yellow have been launched to live gameplay,
-DMG and CGB boot paths both work, cart save load/write is verified
-(MBC3 / MBC5), and the embedded emulator's audio is routed to the host.
+Stadium's built-in **GB Tower** lets you play full Game Boy games on the
+big screen, right inside Pokémon Stadium — different from the Transfer Pak,
+which only imports a *party* (see above). It **works**: Pokémon Red, Blue,
+and Yellow play to live gameplay, your cartridge save is read and written
+back, and the Game Boy sound plays through your speakers.
+
+A note for the curious: the Game Boy games genuinely run in an emulator,
+the way they always did inside Pokémon Stadium. The difference here is that
+the emulator — which is part of the Pokémon Stadium game itself — is
+recompiled into native PC code along with everything else, rather than being
+run by a separate emulator on top.
 
 GB Tower reads carts through the same Transfer Pak cart model, so you
 supply your own legal GB/GBC ROM + save the same way — via
