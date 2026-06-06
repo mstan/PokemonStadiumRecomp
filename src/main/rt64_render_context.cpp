@@ -114,8 +114,18 @@ static void set_application_user_config(RT64::Application* application,
     switch (config.res_option) {
         default:
         case ultramodern::renderer::Resolution::Auto:
-            application->userConfig.resolution = RT64::UserConfiguration::Resolution::WindowIntegerScale;
-            application->userConfig.downsampleMultiplier = 1;
+            // Ship supersampled by default. Render at 6x the N64 base
+            // (1920x1440) and box-filter down by 2 to 3x (960x720, the window)
+            // for 2x2 SSAA. Together with 4x MSAA below this is what actually
+            // kills the thin-geometry rainbow speckle on the 3D models (verified
+            // on the attract/title); MSAA alone only smooths polygon
+            // silhouettes. Manual mode (not WindowIntegerScale) is the path the
+            // #12 uniform framebuffer-scale fix was verified against, so the 2D
+            // menus stay correct. Equivalent to PSR_RT64_RES_MULT=6
+            // PSR_RT64_DOWNSAMPLE=2; weaker GPUs can set PSR_RT64_DOWNSAMPLE=1.
+            application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
+            application->userConfig.resolutionMultiplier = 6.0;
+            application->userConfig.downsampleMultiplier = 2;
             break;
         case ultramodern::renderer::Resolution::Original:
             application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
