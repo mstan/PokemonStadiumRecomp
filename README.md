@@ -108,20 +108,21 @@ game (used for regression runs).
 ## Configuration
 
 - **RT64-backed rendering** with internal-resolution upscaling.
-- **Anti-aliasing and supersampling.** 4× MSAA is the default (smooths the
-  models' polygon silhouettes). For extra cleanup of sub-pixel-thin
-  geometry, supersampling is available via environment variables, all read
-  in `src/main/rt64_render_context.cpp` and off by default:
-  - `PSR_RT64_RES_MULT=<1.0–16.0>` — internal render-resolution multiplier.
-  - `PSR_RT64_DOWNSAMPLE=<1–8>` — box-filter the rendered image down by this
-    factor before presenting. The presented image is `RES_MULT /
-    DOWNSAMPLE`, so pairing e.g. `RES_MULT=6` with `DOWNSAMPLE=2` at a 720p
-    window renders 1440p, outputs 720p, and 2×2-supersamples the 3D without
-    a non-native present-rescale. The 2D menus stay correct because RT64
-    now scales every framebuffer layer of a screen uniformly.
-  - `PSR_RT64_MSAA=None|2X|4X|8X` (or `0|2|4|8`) — override the MSAA level.
-  - `PSR_RT64_UPSCALE2D`, `PSR_RT64_FILTERING`, `PSR_RT64_THREEPOINT` — 2D
-    upscaling, texture filtering, and three-point filtering knobs.
+- **Smoother graphics, on by default.** The game runs with anti-aliasing
+  (4× MSAA) so the models' edges aren't jagged. You don't have to set
+  anything — it just looks better out of the box. The 2D menus stay sharp.
+- **Optional: render at a higher resolution (supersampling).** If you have a
+  capable GPU and want the far-away, thin parts of the models even cleaner,
+  you can have the game draw at a higher resolution and shrink the result
+  down. It's off by default; turn it on with these environment variables
+  (see [`docs/graphics.md`](docs/graphics.md) for the full list and
+  examples):
+  - `PSR_RT64_RES_MULT` — how much higher than the window to render
+    (e.g. `2` for double).
+  - `PSR_RT64_DOWNSAMPLE` — how much to shrink it back down before showing
+    it. Using both together is what gives the cleanest image.
+  - `PSR_RT64_MSAA` — change the anti-aliasing level (`None`, `2X`, `4X`,
+    `8X`) if the default doesn't suit your GPU.
 - **Audio** plays through your system's default output device; override
   with `PSR_AUDIO_DEVICE=<name substring>`.
 - **Game-controller input** (including DualSense / DualShock).
@@ -289,23 +290,25 @@ point — GB Tower (above) was the last big "out of scope" item and is now
 in. Remaining gaps are tracked as ordinary issues in
 [`ISSUES.md`](ISSUES.md) rather than scope exclusions.
 
-## Oracle (Ares) — TODO
+## Oracle (Ares)
 
-N64Recomp does not ship oracle infrastructure the way nesrecomp
-ships with Nestopia. Wiring Ares as a divergence-checking oracle is
-a follow-up subproject. The slot is reserved at `ares-emulator/`
-(opt-in via `WITH_ARES=1` in setup); the bridge code (`ares_bridge.cpp`,
-`n64_snapshot.c`, `verify_mode.c`, `watchdog.c`) is not yet
-written. Track in `ISSUES.md`.
+Divergence checking against a reference emulator is currently done by
+manual side-by-side runs against [ares](https://ares-emu.net/). An
+automated bridge — running Ares in-process as an oracle and diffing N64
+state against it — is a planned follow-up, not part of the current build.
+The slot is reserved at `ares-emulator/` (opt-in via `WITH_ARES=1` in
+setup); the bridge code (`ares_bridge.cpp`, `n64_snapshot.c`,
+`verify_mode.c`, `watchdog.c`) is not yet written. Tracked in `ISSUES.md`.
 
 ## Documentation
 
+- [`docs/graphics.md`](docs/graphics.md) — anti-aliasing + supersampling options.
 - [`DEBUG.md`](DEBUG.md) — debug + divergence protocol.
 - [`ISSUES.md`](ISSUES.md) — known issues + open work.
 - [`MODDING.md`](MODDING.md) — modding hooks (post-MVP).
 - [`ghidra/instructions.txt`](ghidra/instructions.txt) — Ghidra setup.
 
-## Credits
+## Acknowledgements
 
 - [pret/pokestadium](https://github.com/pret/pokestadium) — the Pokémon
   Stadium disassembly this project builds on.

@@ -49,6 +49,11 @@ _experimental_*
 _*.png
 _*.pid
 
+# Ad-hoc debug/probe scaffolding under tools/ (the `_`-prefixed scratch
+# scripts from investigations). Permanent, named tools are tracked; these
+# one-offs are not. See tools/README.md.
+tools/_*
+
 # ROM data (don't redistribute)
 *.z64
 *.n64
