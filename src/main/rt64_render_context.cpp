@@ -111,33 +111,16 @@ static RT64::UserConfiguration::InternalColorFormat to_rt64(ultramodern::rendere
 
 static void set_application_user_config(RT64::Application* application,
                                         const ultramodern::renderer::GraphicsConfig& config) {
-    switch (config.res_option) {
-        default:
-        case ultramodern::renderer::Resolution::Auto:
-            // Ship supersampled by default. Render at 6x the N64 base
-            // (1920x1440) and box-filter down by 2 to 3x (960x720, the window)
-            // for 2x2 SSAA. Together with 4x MSAA below this is what actually
-            // kills the thin-geometry rainbow speckle on the 3D models (verified
-            // on the attract/title); MSAA alone only smooths polygon
-            // silhouettes. Manual mode (not WindowIntegerScale) is the path the
-            // #12 uniform framebuffer-scale fix was verified against, so the 2D
-            // menus stay correct. Equivalent to PSR_RT64_RES_MULT=6
-            // PSR_RT64_DOWNSAMPLE=2; weaker GPUs can set PSR_RT64_DOWNSAMPLE=1.
-            application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
-            application->userConfig.resolutionMultiplier = 6.0;
-            application->userConfig.downsampleMultiplier = 2;
-            break;
-        case ultramodern::renderer::Resolution::Original:
-            application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
-            application->userConfig.resolutionMultiplier = std::max(config.ds_option, 1);
-            application->userConfig.downsampleMultiplier = std::max(config.ds_option, 1);
-            break;
-        case ultramodern::renderer::Resolution::Original2x:
-            application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
-            application->userConfig.resolutionMultiplier = 2.0 * std::max(config.ds_option, 1);
-            application->userConfig.downsampleMultiplier = std::max(config.ds_option, 1);
-            break;
-    }
+    // SUPERSAMPLING IS HARDCODED — NOT config-driven. The N64 models look awful
+    // without it (rainbow speckle on sub-pixel-thin geometry), so we do not let
+    // config.res_option (which may be Original/Original2x = no supersampling)
+    // decide it. Always render at 6x the N64 base (1920x1440) in Manual mode and
+    // box-filter down by 2 to 3x (960x720, the window) for 2x2 SSAA. This is the
+    // config verified to clear the speckle; Manual mode is the path the #12
+    // uniform framebuffer-scale fix keeps the 2D menus correct under.
+    application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
+    application->userConfig.resolutionMultiplier = 6.0;
+    application->userConfig.downsampleMultiplier = 2;
 
     switch (config.hr_option) {
         default:
@@ -154,14 +137,11 @@ static void set_application_user_config(RT64::Application* application,
     }
 
     application->userConfig.aspectRatio = to_rt64(config.ar_option);
-    // This port ships with anti-aliasing on: the N64 models have hard polygon
-    // silhouettes that alias badly without it. When no preference is stored
-    // (default-constructed config => None), default to 4x MSAA. PSR_RT64_MSAA
-    // below can override to None/2X/4X/8X for A/B testing or weaker GPUs.
-    application->userConfig.antialiasing =
-        (config.msaa_option == ultramodern::renderer::Antialiasing::None)
-            ? RT64::UserConfiguration::Antialiasing::MSAA4X
-            : to_rt64(config.msaa_option);
+    // Anti-aliasing is HARDCODED to 4x MSAA — not config-driven. The N64 models'
+    // hard polygon silhouettes alias badly without it, and we don't want a
+    // stored/default config dialing it down. (PSR_RT64_MSAA below can still
+    // override for A/B testing or weaker GPUs.)
+    application->userConfig.antialiasing = RT64::UserConfiguration::Antialiasing::MSAA4X;
     application->userConfig.refreshRate = to_rt64(config.rr_option);
     application->userConfig.refreshRateTarget = config.rr_manual_value;
     application->userConfig.internalColorFormat = to_rt64(config.hpfb_option);
