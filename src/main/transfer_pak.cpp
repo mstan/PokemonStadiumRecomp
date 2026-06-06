@@ -459,7 +459,7 @@ namespace {
         }
 
         const std::filesystem::path config_path =
-            std::filesystem::current_path() / "transfer_pak.cfg";
+            std::filesystem::current_path() / "launcher.cfg";
         const auto config = read_config_file(config_path);
 
         for (int port = 0; port < port_count; port++) {

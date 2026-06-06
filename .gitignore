@@ -61,9 +61,17 @@ _*.pid
 *.srm
 *.state
 saves.txt
-transfer_pak.cfg
+saves/
+launcher.cfg
 tools/_derive.stderr
 tools/_splice.py
+
+# Local-only artifacts (Ghidra project DB, debug drivers, caches, backups)
+ghidra/*.rep/
+tools/_drive_*.py
+__pycache__/
+*.bak
+*.bak-*
 # Build artifacts produced by tools/_decompress_*.py — regenerable from
 # baserom.z64 + the script. The script is the source of truth.
 tools/*_decompressed.bin

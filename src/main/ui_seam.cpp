@@ -108,8 +108,8 @@ bool g_slot_enabled[4] = {false, false, false, false};
 bool g_slot_has_rom[4] = {false, false, false, false};
 int g_slot_device[4] = {0, 0, 0, 0}; // device index per slot
 
-// ---- per-slot ROM/save, persisted to transfer_pak.cfg (Phase 3d) ----------
-// transfer_pak.cfg is the GUI's persistent storage: read on load, rewritten on
+// ---- per-slot ROM/save, persisted to launcher.cfg (Phase 3d) ----------
+// launcher.cfg is the GUI's persistent storage: read on load, rewritten on
 // every Change. Mutated by the file-dialog thread, consumed by the render
 // thread on the dirty flag, so guarded by g_change_mutex.
 std::mutex g_change_mutex;
@@ -129,9 +129,22 @@ std::string g_banner_msg;
 bool g_banner_dirty = false;
 int g_banner_frames = 0; // render-thread countdown; >0 means visible
 
-// Auto-play: a 5s countdown (default on) that launches once the config is valid,
-// so a controller-only user can just wait. Render-thread state.
-bool g_autoplay = true;
+// Auto-play: a 5s countdown (default OFF) that launches once the config is
+// valid, so a controller-only user can opt into just waiting. Render-thread
+// state.
+//
+// Two pieces of state, deliberately separate:
+//   g_autoplay_pref - the persisted user preference (launcher.cfg `autoplay=`,
+//                     overridable by the PSR_AUTOPLAY env var). This is what the
+//                     checkbox edits and what gets written back to the cfg.
+//                     Defaults off; the user enables it from the launcher.
+//   g_autoplay      - the live runtime flag for "is the countdown active right
+//                     now". Seeded from g_autoplay_pref on launch, but cleared
+//                     transiently by cancel_autoplay() the moment the user starts
+//                     configuring, so the game never launches out from under them.
+//                     That transient clear must NOT be persisted.
+bool g_autoplay_pref = false;
+bool g_autoplay = false;
 bool g_autoplay_armed = false;
 std::chrono::steady_clock::time_point g_autoplay_deadline;
 int g_autoplay_last_sec = -1;
@@ -223,7 +236,7 @@ std::filesystem::path exe_dir() {
 #endif
 }
 
-// ---- transfer_pak.cfg -> launcher slot population --------------------------
+// ---- launcher.cfg -> launcher slot population --------------------------
 
 std::string trim(std::string s) {
     const size_t a = s.find_first_not_of(" \t\r\n");
@@ -406,27 +419,42 @@ void refresh_slot(Rml::ElementDocument* doc, int slot, const std::string& rom, c
     }
 }
 
-// Rewrite transfer_pak.cfg from the current slot state. The cfg is the GUI's
+// Rewrite launcher.cfg from the current slot state. The cfg is the GUI's
 // persistent storage. Caller must hold g_change_mutex.
 void write_transfer_pak_cfg() {
-    std::ofstream f(std::filesystem::current_path() / "transfer_pak.cfg", std::ios::trunc);
+    std::ofstream f(std::filesystem::current_path() / "launcher.cfg", std::ios::trunc);
     if (!f) {
-        std::fprintf(stderr, "[ss-anne] WARN: cannot write transfer_pak.cfg\n");
+        std::fprintf(stderr, "[ss-anne] WARN: cannot write launcher.cfg\n");
         return;
     }
-    f << "# Transfer Pak carts - managed by the SS Anne launcher.\n";
-    f << "# pN_rom / pN_save per player slot (1-4). Edited via the launcher's\n";
-    f << "# cartridge (ROM) and Save 'Change' buttons.\n";
+    f << "# SS Anne launcher configuration - managed by the launcher.\n";
+    f << "# pN_rom / pN_save: per-player-slot (1-4) Game Boy cart + save, edited\n";
+    f << "# via the launcher's cartridge (ROM) and Save 'Change' buttons.\n";
     for (int i = 0; i < 4; ++i) {
         if (!g_slot_rom[i].empty())  f << "p" << (i + 1) << "_rom=" << g_slot_rom[i] << "\n";
         if (!g_slot_save[i].empty()) f << "p" << (i + 1) << "_save=" << g_slot_save[i] << "\n";
     }
+    // autoplay: the 5s "PLAY waits for you, then launches" countdown. Toggled via
+    // the launcher's Auto-play checkbox. The PSR_AUTOPLAY env var overrides this
+    // at load time (it does not rewrite the file).
+    f << "# autoplay=on|off : start the game automatically after a 5s countdown.\n";
+    f << "autoplay=" << (g_autoplay_pref ? "on" : "off") << "\n";
 }
 
-// Read transfer_pak.cfg into the slot state and paint every card.
+// Parse a cfg/env boolean. Accepts on/off, true/false, yes/no, 1/0 (any case).
+// Returns fallback for anything unrecognized.
+bool parse_bool(const std::string& v, bool fallback) {
+    std::string s;
+    for (char ch : v) s += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (s == "1" || s == "on" || s == "true" || s == "yes") return true;
+    if (s == "0" || s == "off" || s == "false" || s == "no") return false;
+    return fallback;
+}
+
+// Read launcher.cfg into the slot state and paint every card.
 void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem::path& /*assets*/) {
     std::map<std::string, std::string> cfg;
-    std::ifstream f(std::filesystem::current_path() / "transfer_pak.cfg");
+    std::ifstream f(std::filesystem::current_path() / "launcher.cfg");
     std::string line;
     while (std::getline(f, line)) {
         const size_t c = line.find_first_of("#;");
@@ -447,6 +475,14 @@ void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem
         g_slot_enabled[p - 1] = !g_slot_rom[p - 1].empty();
         refresh_slot(doc, p - 1, g_slot_rom[p - 1], g_slot_save[p - 1]);
     }
+
+    // Auto-play preference: cfg `autoplay=on|off` (default off), with the
+    // PSR_AUTOPLAY env var taking precedence when set.
+    g_autoplay_pref = cfg.count("autoplay") ? parse_bool(cfg["autoplay"], false) : false;
+    if (const char* env = std::getenv("PSR_AUTOPLAY")) {
+        g_autoplay_pref = parse_bool(env, g_autoplay_pref);
+    }
+    g_autoplay = g_autoplay_pref;
 }
 
 void add_click(Rml::ElementDocument* doc, const std::string& id, std::function<void()> fn) {
@@ -665,7 +701,7 @@ bool handle_nav_event(Rml::ElementDocument* doc, const SDL_Event& ev) {
 }
 
 // Run a native open-file dialog on a detached thread (so neither the render nor
-// gfx thread blocks while it's modal), then persist the pick to transfer_pak.cfg
+// gfx thread blocks while it's modal), then persist the pick to launcher.cfg
 // and flag the card for refresh on the render thread.
 enum class ChangeKind { Rom, Save };
 void open_change_dialog(int slot, ChangeKind kind) {
@@ -804,18 +840,27 @@ void attach_launcher_events(Rml::ElementDocument* doc) {
     // Stadium (N64) ROM picker.
     add_click(doc, "stadium-change", [doc] { cancel_autoplay(doc); open_stadium_dialog(); });
 
-    // Auto-play toggle.
+    // Auto-play toggle. Flips the persisted preference (written back to
+    // launcher.cfg) and the live runtime flag together.
     auto autoplay_fn = [doc] {
-        g_autoplay = !g_autoplay;
+        g_autoplay_pref = !g_autoplay_pref;
+        g_autoplay = g_autoplay_pref;
         set_class(doc, "autoplay-chk", "chk--on", g_autoplay);
         if (!g_autoplay) {
             g_autoplay_armed = false;
             set_class(doc, "autoplay-count", "hidden", true);
         }
+        {
+            std::lock_guard<std::mutex> lk(g_change_mutex);
+            write_transfer_pak_cfg();
+        }
     };
     add_click(doc, "autoplay-row", autoplay_fn);
     g_nav_items.push_back("autoplay-row");
     g_nav_actions["autoplay-row"] = autoplay_fn;
+    // Reflect the loaded preference (cfg/env) in the checkbox at startup.
+    set_class(doc, "autoplay-chk", "chk--on", g_autoplay);
+    if (!g_autoplay) set_class(doc, "autoplay-count", "hidden", true);
 
     // PLAY: only launches when the config is valid.
     auto play_fn = [doc] {

@@ -1,46 +1,112 @@
-# PokemonStadiumRecomp
+# PokemonStadiumRecomp — SS Anne
 
 Static recompilation of **Pokémon Stadium (US v1.0)** to native PC.
 Built on top of [N64Recomp](https://github.com/N64Recomp/N64Recomp).
 
-> **Status: Early development — playable end-to-end, with known
-> issues.** Quick Battle, Free Battle, Stadium cups, and Gym Leader
-> Castle have all been validated through a complete round, and both the
-> Transfer Pak party-import path and the embedded GB Tower now work. It
-> is still rough: expect occasional audio crackle, visual glitches on
-> some menu elements, and a softlock in some menus. See
-> [`ISSUES.md`](ISSUES.md) for the current list.
->
-> **First launch:** the runner pops a file picker. Point it at your
-> own legal Pokémon Stadium (US v1.0) ROM (`.z64` / `.n64` / `.v64`).
-> The path is remembered (`rom.cfg` next to the exe) so later
-> launches go straight into the game. CLI arg `argv[1]` is also
-> honored for scripted runs. Audio is muted by default during
-> development — set `PSR_VOLUME=1.0` (any value 0–1) to enable sound.
+This project is **SS Anne**, a Pokémon Stadium recompilation: it turns the
+original game into a native PC program instead of running it in an
+emulator. It is built on the N64Recomp toolchain and depends on a set of
+companion forks maintained alongside it:
 
-## Features
+- [N64Recomp](https://github.com/mstan/N64Recomp) — the static recompiler
+- [N64ModernRuntime](https://github.com/mstan/N64ModernRuntime) — the runtime that stands in for the N64's operating system
+- [rt64](https://github.com/mstan/rt64) — the graphics renderer
 
-- **Plays Pokémon Stadium end-to-end** — Quick Battle, Free Battle, the
-  Stadium cups, and Gym Leader Castle have each been run to completion.
-- **GB Tower — play full Game Boy games inside Stadium, with your own
-  ROMs and saves.** The embedded Game Boy emulator launches DMG and CGB
-  carts (Red, Blue, and Yellow verified to gameplay); cart save load and
-  write are verified for MBC3 and MBC5, and GB audio is routed to the
-  host. Provide your own legal GB/GBC ROM + save — see
-  [GB Tower](#gb-tower) below.
-- **Transfer Pak — import your party from a Game Boy cart.** A
-  hardware-level Transfer Pak + GB cart emulator (ROM-only / MBC1 / MBC3
-  / MBC5) feeds the in-game Game Pak Check / Registration menus from your
-  own ROM + save. Battery SRAM is persisted on every write, and
-  registered Pokémon now persist across runs (Stadium FlashRAM save).
-  Multiple controllers/Transfer Paks (ports 1–4) are supported. See
-  [Transfer Pak](#transfer-pak) below.
+Each of those repositories lists, at the top of its own README, the
+changes made to it for this project.
+
+## Changes in this fork
+
+What this project adds, in plain terms:
+
+- **Makes Pokémon Stadium run as a native PC program** instead of inside
+  an emulator. Most of the work is teaching the recompilation toolchain
+  about this one specific game.
+- **Transfer Pak support** — the game can read a Pokémon party from your
+  own Game Boy cartridge, the way the real Transfer Pak accessory did, and
+  save back to it. See [Transfer Pak](#transfer-pak).
+- **GB Tower works** — the Game Boy emulator built into Stadium can play
+  full Game Boy games. See [GB Tower](#gb-tower).
+- **A setup screen before the game starts** — the SS Anne launcher, for
+  choosing carts and controllers. See
+  [The SS Anne launcher](#the-ss-anne-launcher).
+- **Your progress is saved** — registered Pokémon are remembered between
+  sessions, and sound plays through whatever output device your system is
+  set to use.
+- **All the under-the-hood fixes** listed in the three companion projects
+  above — graphics glitches, audio timing, and crashes/freezes. Each of
+  those READMEs describes its own changes.
+
+## Status
+
+This is a work-in-progress recompilation. The list below reflects what
+has actually been exercised, not everything the game contains. Known
+issues are tracked in [`ISSUES.md`](ISSUES.md); expect occasional audio
+crackle and some menu-level visual glitches.
+
+**Tested and working:**
+
+- Boot, the title / attract sequence, and the in-game **menus**.
+- The **SS Anne launcher** (see below).
+- The **Kid's Club mini-games**.
+- **GB Tower** — the embedded Game Boy emulator. Red, Blue, and Yellow
+  boot to live gameplay; DMG and CGB paths both work; cart save load and
+  write are verified (MBC3 / MBC5); GB audio is routed to the host.
+- **Transfer Pak** party import (Game Pak Check / Registration) with
+  battery-SRAM persistence; registered Pokémon persist across runs
+  (Stadium FlashRAM save). Controllers / Transfer Paks on ports 1–4.
+- **Entering and exiting a battle** — a battle starts, plays, and returns
+  to the menu.
+
+**Not yet tested end-to-end:**
+
+- A full Stadium **cup** has **not** been run from start to finish.
+- **Gym Leader Castle** has **not** been run from start to finish.
+- Individual battles work, but completing an entire cup or Gym Leader
+  Castle run — multiple consecutive battles with the full
+  win/loss/progression flow — has **not** been validated end-to-end.
+
+**First launch:** the project opens the SS Anne launcher. If no ROM has
+been remembered yet it pops a file picker; point it at your own legal
+Pokémon Stadium (US v1.0) ROM (`.z64` / `.n64` / `.v64`). The path is
+remembered (`rom.cfg` next to the exe) and CLI arg `argv[1]` is also
+honored for scripted runs.
+
+## The SS Anne launcher
+
+On launch the project shows an in-app configuration screen — the **SS
+Anne launcher** — before the game boots, replacing the original
+straight-to-game boot.
+
+![The SS Anne launcher](docs/launcher.png)
+
+From the launcher you can:
+
+- Assign a **Game Boy cart (Transfer Pak)** to each of the four player
+  slots, with per-slot enable toggles. Cart art, trainer name, and ID are
+  read from the configured ROM + save.
+- Assign a **controller** to each slot (one device per slot), routed to
+  that player's port when the game starts.
+- Confirm the **Stadium (N64) ROM** (shown verified) and change it.
+- Toggle **Auto-play**: a 5-second countdown that starts the game once the
+  configuration is valid, so a controller-only user can opt into just
+  waiting. It is **off by default**; the preference is persisted to
+  `launcher.cfg` (`autoplay=on|off`) and can be overridden at launch with
+  the `PSR_AUTOPLAY` environment variable (`PSR_AUTOPLAY=1` enables it,
+  `PSR_AUTOPLAY=0` disables it).
+- Press **PLAY** (enabled once at least one enabled slot has a controller).
+
+`PSR_AUTOBOOT=1` skips the launcher entirely and boots straight into the
+game (used for regression runs).
+
+## Configuration
+
 - **RT64-backed rendering** with internal-resolution upscaling.
-- **Audio follows your Windows default output device** and migrates live
-  when you change it; override with `PSR_AUDIO_DEVICE=<name substring>`.
-- **SDL game-controller input** (including DualSense/DualShock).
-- **Configurable** via env vars and `*.cfg` files placed next to the exe
-  (`rom.cfg`, `transfer_pak.cfg`).
+- **Audio** plays through your system's default output device; override
+  with `PSR_AUDIO_DEVICE=<name substring>`.
+- **Game-controller input** (including DualSense / DualShock).
+- Configured via environment variables and `*.cfg` files placed next to
+  the exe (`rom.cfg`, `launcher.cfg`).
 
 ## ROM
 
@@ -120,7 +186,10 @@ a real cart were plugged into a Transfer Pak in port 1.
 Red / Blue / Yellow / Gold / Silver / Crystal). Battery-backed SRAM
 is persisted to disk on every write.
 
-**Configuration.** Drop a `transfer_pak.cfg` next to the exe:
+**Configuration.** The SS Anne launcher normally writes `launcher.cfg`
+for you (it is the launcher's persistent store — see
+[The SS Anne launcher](#the-ss-anne-launcher)), but you can also hand-edit
+or create it next to the exe:
 
 ```ini
 # Paths are relative to this file (or absolute).
@@ -133,7 +202,7 @@ Keys are `pN_rom` / `pN_save` for ports 1–4. Environment variables
 file. Set `PSR_TRANSFER_PAK_DEBUG=1` for verbose bus-level tracing
 (off by default).
 
-`transfer_pak.cfg` and `*.gb` / `*.gbc` are gitignored — bring your
+`launcher.cfg` and `*.gb` / `*.gbc` are gitignored — bring your
 own legal dumps.
 
 ## Pipeline overview
@@ -184,7 +253,7 @@ DMG and CGB boot paths both work, cart save load/write is verified
 
 GB Tower reads carts through the same Transfer Pak cart model, so you
 supply your own legal GB/GBC ROM + save the same way — via
-`transfer_pak.cfg` (`p1_rom` / `p1_save`) or the
+`launcher.cfg` (`p1_rom` / `p1_save`) or the
 `PSR_TRANSFER_PAK_P{1..4}_ROM` / `..._SAVE` environment variables. In the
 game: **POKéMON STADIUM → right to the giant Game Boy (GB Tower) → pick a
 cart → A**. The 1P slot is the default cart; additional ports map to the
@@ -218,6 +287,21 @@ written. Track in `ISSUES.md`.
 
 ## Credits
 
-- pret/pokestadium — disassembly
-- N64Recomp by Mr-Wiseguy and contributors — recompiler
-- ares-emulator team — accuracy reference
+- [pret/pokestadium](https://github.com/pret/pokestadium) — the Pokémon
+  Stadium disassembly this project builds on.
+- the [ares](https://ares-emu.net/) emulator team — accuracy reference.
+
+## License
+
+PokemonStadiumRecomp is distributed under the **GNU General Public
+License, version 3** — see [`COPYING`](COPYING).
+
+It is built from several components under their own licenses, whose terms
+and copyright notices are retained in their respective repositories:
+
+- N64ModernRuntime — GPL-3.0 (`COPYING`)
+- N64Recomp — MIT (`LICENSE`)
+- rt64 — MIT (`LICENSE`)
+
+The original game's assets are **not** included; a legal copy of the
+Pokémon Stadium (US v1.0) ROM is required to build or run this project.

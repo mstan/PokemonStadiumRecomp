@@ -106,7 +106,7 @@ You (Codex) added Transfer Pak support in
 `src/main/transfer_pak.{cpp,h}` + the libultra-shim overrides for
 `__osContRamRead` / `__osContRamWrite` / `__osPfsGetStatus`,
 plus the `connected_device_info` change in `main.cpp` and the
-config plumbing through `transfer_pak.cfg`. Nice work. A few things
+config plumbing through `launcher.cfg`. Nice work. A few things
 the human and Claude touched up afterward — be aware of these:
 
 ### Docs are now consistent with the implementation
@@ -164,7 +164,7 @@ cart is loaded.
 ### Untracked, not committed
 
 As of this note, `transfer_pak.cpp`, `transfer_pak.h`, the
-`transfer_pak.cfg` sample, and the `main.cpp` / `extras.c` /
+`launcher.cfg` sample, and the `main.cpp` / `extras.c` /
 `CMakeLists.txt` / `.gitignore` integration edits all sit untracked
 on `dev/sprite-corruption-menu-borders` alongside unrelated
 sprite-corruption diag work. **Carve this out onto its own
@@ -191,5 +191,5 @@ shows correctly before claiming anything works.
 | `src/main/main.cpp` | `initialize()` call, `connected_device_info` gating |
 | `extras.c` | Removed `UNIMPL_LIBULTRA` for the three shimmed entry points |
 | `CMakeLists.txt` | Added `transfer_pak.cpp` to the target sources |
-| `.gitignore` | Ignores `*.gb`, `*.gbc`, `transfer_pak.cfg` |
-| `transfer_pak.cfg` | Local sample, gitignored |
+| `.gitignore` | Ignores `*.gb`, `*.gbc`, `launcher.cfg` |
+| `launcher.cfg` | Local sample, gitignored |

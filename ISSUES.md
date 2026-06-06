@@ -611,7 +611,7 @@ see the depth-bounded tailcall fix below.
 
       **Historical repro from 2026-05-28 (superseded):** load a GB cart
       image into P1 Transfer Pak —
-      `transfer_pak.cfg` `p1_rom=pokemon-yellow.gbc` / `p1_save=...`, OR env
+      `launcher.cfg` `p1_rom=pokemon-yellow.gbc` / `p1_save=...`, OR env
       `PSR_TRANSFER_PAK_P1_ROM`/`_SAVE` (the cfg is read from `current_path`
       = `build/`, so env is easiest from the repo root). Main menu →
       POKéMON STADIUM → Right (highlights "GB TOWER") → A → select the
