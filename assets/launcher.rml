@@ -33,7 +33,7 @@
                 <span class="btn btn--icon" id="card1-romremove">&#215;</span>
             </div>
             <div class="card__game">
-                <span class="dot dot--p1"></span>
+                <span class="dot dot--off" id="card1-gamedot"></span>
                 <span class="card__gamename" id="card1-game">No game loaded</span>
             </div>
             <div class="card__row"><span class="k">Trainer</span><span class="v" id="card1-trainer">&#8212;</span></div>
@@ -65,7 +65,7 @@
                 <span class="btn btn--icon" id="card2-romremove">&#215;</span>
             </div>
             <div class="card__game">
-                <span class="dot dot--p2"></span>
+                <span class="dot dot--off" id="card2-gamedot"></span>
                 <span class="card__gamename" id="card2-game">No game loaded</span>
             </div>
             <div class="card__row"><span class="k">Trainer</span><span class="v" id="card2-trainer">&#8212;</span></div>
@@ -97,7 +97,7 @@
                 <span class="btn btn--icon" id="card3-romremove">&#215;</span>
             </div>
             <div class="card__game">
-                <span class="dot dot--p3"></span>
+                <span class="dot dot--off" id="card3-gamedot"></span>
                 <span class="card__gamename" id="card3-game">No game loaded</span>
             </div>
             <div class="card__row"><span class="k">Trainer</span><span class="v" id="card3-trainer">&#8212;</span></div>
@@ -129,7 +129,7 @@
                 <span class="btn btn--icon" id="card4-romremove">&#215;</span>
             </div>
             <div class="card__game">
-                <span class="dot dot--off"></span>
+                <span class="dot dot--off" id="card4-gamedot"></span>
                 <span class="card__gamename card__gamename--off" id="card4-game">No game loaded</span>
             </div>
             <div class="card__row"><span class="k">Trainer</span><span class="v" id="card4-trainer">&#8212;</span></div>

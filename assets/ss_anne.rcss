@@ -174,6 +174,11 @@ img.ico-check { width: 14dp; height: 12dp; vertical-align: -1dp; margin-right: 3
 .dot--off { background-color: #5a6573ff; }
 .dot--on { background-color: #3fb950ff; }
 .dot--err { background-color: #e8443bff; }
+/* Game-colored dots next to the cart name (match the Game Boy game). */
+.dot--red { background-color: #e8443bff; }
+.dot--blue { background-color: #3b9ae8ff; }
+.dot--yellow { background-color: #f0b429ff; }
+.dot--green { background-color: #3fb950ff; }
 .card__status .dot { margin-right: 6dp; }
 
 /* clickable affordances */

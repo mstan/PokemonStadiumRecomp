@@ -393,6 +393,18 @@ void set_text(Rml::ElementDocument* doc, const std::string& id, const std::strin
 void set_cart(Rml::ElementDocument* doc, const std::string& id, const std::string& src);
 void set_class(Rml::ElementDocument* doc, const std::string& id, const char* cls, bool on);
 
+// Color the dot next to the cart name to match the Game Boy game it names
+// (red / blue / yellow / green), or gray (dot--off) when no/unknown game is
+// loaded. Intentionally the GAME's color, not the player slot's.
+void set_game_dot(Rml::ElementDocument* doc, const std::string& id, const std::string& key) {
+    const bool known = (key == "red" || key == "blue" || key == "yellow" || key == "green");
+    set_class(doc, id, "dot--off",    !known);
+    set_class(doc, id, "dot--red",    key == "red");
+    set_class(doc, id, "dot--blue",   key == "blue");
+    set_class(doc, id, "dot--yellow", key == "yellow");
+    set_class(doc, id, "dot--green",  key == "green");
+}
+
 // Update one player card's ROM/save-derived fields (game name, cart art, save
 // filename, trainer name + ID). Reused by the initial load and by live Change
 // refreshes. RmlUi calls must run on the render thread.
@@ -410,6 +422,7 @@ void refresh_slot(Rml::ElementDocument* doc, int slot, const std::string& rom, c
     if (rom.empty()) {
         set_text(doc, base + "-game", "No game loaded");
         set_class(doc, base + "-game", "card__gamename--off", true);
+        set_game_dot(doc, base + "-gamedot", "");
         set_cart(doc, base + "-cart", "carts/empty.png");
         set_text(doc, base + "-save", "&#8212;");
         return;
@@ -418,7 +431,9 @@ void refresh_slot(Rml::ElementDocument* doc, int slot, const std::string& rom, c
 
     std::filesystem::path rom_path = rom;
     if (rom_path.is_relative()) rom_path = std::filesystem::current_path() / rom_path;
-    const GameInfo gi = info_for(gb_game_key(rom_path));
+    const std::string game_key = gb_game_key(rom_path);
+    set_game_dot(doc, base + "-gamedot", game_key);
+    const GameInfo gi = info_for(game_key);
     if (gi.display != nullptr) {
         set_text(doc, base + "-game", gi.display);
         set_cart(doc, base + "-cart", gi.art);
