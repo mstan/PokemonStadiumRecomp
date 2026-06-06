@@ -570,6 +570,18 @@ void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem
         refresh_slot(doc, p - 1, g_slot_rom[p - 1], g_slot_save[p - 1]);
     }
 
+    // One physical device drives at most one port. If the loaded config assigns
+    // the same device to multiple slots (an old/hand-edited file, or a config
+    // written before per-slot assignment was enforced), keep the first slot and
+    // clear the duplicates — otherwise that one controller would drive several
+    // players (e.g. Player 1's pad controlling Players 1-3).
+    for (int a = 0; a < 4; ++a) {
+        if (g_slot_device[a] == 0) continue;
+        for (int b = a + 1; b < 4; ++b) {
+            if (g_slot_device[b] == g_slot_device[a]) g_slot_device[b] = 0;
+        }
+    }
+
     // Auto-play preference: cfg `autoplay=on|off` (default off), with the
     // PSR_AUTOPLAY env var taking precedence when set.
     g_autoplay_pref = cfg.count("autoplay") ? parse_bool(cfg["autoplay"], false) : false;
@@ -638,11 +650,22 @@ void cancel_autoplay(Rml::ElementDocument* doc) {
 // the keyboard. Slots whose device was restored from launcher.cfg are left
 // alone (device != 0), so a saved assignment is never clobbered.
 void apply_default_assignment() {
+    auto device_used = [](int dev) {
+        for (int s = 0; s < 4; ++s) if (g_slot_device[s] == dev) return true;
+        return false;
+    };
     for (int i = 0; i < 4; ++i) {
-        if (g_slot_enabled[i] && g_slot_device[i] == 0) {
-            g_slot_device[i] = g_gamepads.empty() ? 1 /*Keyboard*/ : 2 /*first gamepad*/;
-            break;
+        if (!g_slot_enabled[i] || g_slot_device[i] != 0) continue;
+        // Pick the first device not already assigned to another slot: a free
+        // gamepad first, otherwise the keyboard. Never hand out a device that's
+        // already in use (that would make one controller drive two players).
+        int dev = 0;
+        for (int cand = 2; cand < 2 + static_cast<int>(g_gamepads.size()); ++cand) {
+            if (!device_used(cand)) { dev = cand; break; }
         }
+        if (dev == 0 && !device_used(1)) dev = 1; // keyboard, if free
+        g_slot_device[i] = dev;                   // may stay None if nothing free
+        break;
     }
 }
 
@@ -669,6 +692,12 @@ void select_device(Rml::ElementDocument* doc, int slot, int dev) {
     hide_all_ctrl_menus(doc);
     update_slot_ui(doc, slot);
     update_play_gate(doc);
+    // Persist: controller assignment is part of the saved config, just like
+    // ROM/save. (This was missing, so device choices were lost on relaunch.)
+    {
+        std::scoped_lock lk(g_change_mutex);
+        write_transfer_pak_cfg();
+    }
 }
 
 // Open/close a slot's controller option list (closes the others).
@@ -920,6 +949,11 @@ void attach_launcher_events(Rml::ElementDocument* doc) {
             // Keep the controller assignment when disabling — harmless and config-friendly.
             update_slot_ui(doc, i);
             update_play_gate(doc);
+            // Persist the enabled state (was missing, so it didn't survive relaunch).
+            {
+                std::scoped_lock lk(g_change_mutex);
+                write_transfer_pak_cfg();
+            }
         };
         add_click(doc, base + "-enable", enable_fn);
         g_nav_items.push_back(base + "-enable");
