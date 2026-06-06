@@ -144,7 +144,14 @@ static void set_application_user_config(RT64::Application* application,
     }
 
     application->userConfig.aspectRatio = to_rt64(config.ar_option);
-    application->userConfig.antialiasing = to_rt64(config.msaa_option);
+    // This port ships with anti-aliasing on: the N64 models have hard polygon
+    // silhouettes that alias badly without it. When no preference is stored
+    // (default-constructed config => None), default to 4x MSAA. PSR_RT64_MSAA
+    // below can override to None/2X/4X/8X for A/B testing or weaker GPUs.
+    application->userConfig.antialiasing =
+        (config.msaa_option == ultramodern::renderer::Antialiasing::None)
+            ? RT64::UserConfiguration::Antialiasing::MSAA4X
+            : to_rt64(config.msaa_option);
     application->userConfig.refreshRate = to_rt64(config.rr_option);
     application->userConfig.refreshRateTarget = config.rr_manual_value;
     application->userConfig.internalColorFormat = to_rt64(config.hpfb_option);
@@ -172,6 +179,21 @@ static void set_application_user_config(RT64::Application* application,
             std::fprintf(stderr, "[psr-rt64] PSR_RT64_RES_MULT='%s' rejected (need float in [1.0, 16.0])\n", r);
         }
     }
+    // Supersampling control. RT64 renders at resolutionMultiplier and box-filters
+    // down by downsampleMultiplier; the presented image is their ratio. To
+    // supersample WITHOUT the non-native present-rescale that corrupts 2D menus,
+    // pair a high PSR_RT64_RES_MULT with this so the OUTPUT matches the window's
+    // native integer scale (e.g. at a 720p window: RES_MULT=6 + DOWNSAMPLE=2 =>
+    // render 1440p, output 720p, 2x2 supersampled 3D, menus untouched).
+    if (const char* d = std::getenv("PSR_RT64_DOWNSAMPLE")) {
+        int dm = std::atoi(d);
+        if (dm >= 1 && dm <= 8) {
+            application->userConfig.downsampleMultiplier = dm;
+            std::fprintf(stderr, "[psr-rt64] forced downsampleMultiplier = %d\n", dm);
+        } else {
+            std::fprintf(stderr, "[psr-rt64] PSR_RT64_DOWNSAMPLE='%s' rejected (need int in [1,8])\n", d);
+        }
+    }
     if (const char* f = std::getenv("PSR_RT64_FILTERING")) {
         if (!std::strcmp(f, "Nearest")) {
             application->userConfig.filtering = RT64::UserConfiguration::Filtering::Nearest;
@@ -195,6 +217,19 @@ static void set_application_user_config(RT64::Application* application,
             application->userConfig.upscale2D = RT64::UserConfiguration::Upscale2D::All;
             std::fprintf(stderr, "[psr-rt64] forced upscale2D = All\n");
         }
+    }
+    if (const char* aa = std::getenv("PSR_RT64_MSAA")) {
+        using AA = RT64::UserConfiguration::Antialiasing;
+        if (!std::strcmp(aa, "None") || !std::strcmp(aa, "0")) {
+            application->userConfig.antialiasing = AA::None;
+        } else if (!std::strcmp(aa, "MSAA2X") || !std::strcmp(aa, "2")) {
+            application->userConfig.antialiasing = AA::MSAA2X;
+        } else if (!std::strcmp(aa, "MSAA4X") || !std::strcmp(aa, "4")) {
+            application->userConfig.antialiasing = AA::MSAA4X;
+        } else if (!std::strcmp(aa, "MSAA8X") || !std::strcmp(aa, "8")) {
+            application->userConfig.antialiasing = AA::MSAA8X;
+        }
+        std::fprintf(stderr, "[psr-rt64] forced antialiasing via PSR_RT64_MSAA='%s'\n", aa);
     }
     if (const char* tp = std::getenv("PSR_RT64_THREEPOINT")) {
         if (!std::strcmp(tp, "0") || !std::strcmp(tp, "false")) {

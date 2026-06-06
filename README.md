@@ -33,6 +33,12 @@ What this project adds, in plain terms:
 - **Your progress is saved** — registered Pokémon are remembered between
   sessions, and sound plays through whatever output device your system is
   set to use.
+- **The game looks sharper** — anti-aliasing is on by default (4× MSAA) to
+  smooth the N64 models' hard polygon edges, and the renderer can
+  **supersample** (render above the window resolution and filter down) to
+  clean up the thin, far-away geometry that aliasing alone can't fix. The
+  2D menus and HUD stay crisp at any internal resolution. See
+  [Configuration](#configuration).
 - **All the under-the-hood fixes** listed in the three companion projects
   above — graphics glitches, audio timing, and crashes/freezes. Each of
   those READMEs describes its own changes.
@@ -102,6 +108,20 @@ game (used for regression runs).
 ## Configuration
 
 - **RT64-backed rendering** with internal-resolution upscaling.
+- **Anti-aliasing and supersampling.** 4× MSAA is the default (smooths the
+  models' polygon silhouettes). For extra cleanup of sub-pixel-thin
+  geometry, supersampling is available via environment variables, all read
+  in `src/main/rt64_render_context.cpp` and off by default:
+  - `PSR_RT64_RES_MULT=<1.0–16.0>` — internal render-resolution multiplier.
+  - `PSR_RT64_DOWNSAMPLE=<1–8>` — box-filter the rendered image down by this
+    factor before presenting. The presented image is `RES_MULT /
+    DOWNSAMPLE`, so pairing e.g. `RES_MULT=6` with `DOWNSAMPLE=2` at a 720p
+    window renders 1440p, outputs 720p, and 2×2-supersamples the 3D without
+    a non-native present-rescale. The 2D menus stay correct because RT64
+    now scales every framebuffer layer of a screen uniformly.
+  - `PSR_RT64_MSAA=None|2X|4X|8X` (or `0|2|4|8`) — override the MSAA level.
+  - `PSR_RT64_UPSCALE2D`, `PSR_RT64_FILTERING`, `PSR_RT64_THREEPOINT` — 2D
+    upscaling, texture filtering, and three-point filtering knobs.
 - **Audio** plays through your system's default output device; override
   with `PSR_AUDIO_DEVICE=<name substring>`.
 - **Game-controller input** (including DualSense / DualShock).

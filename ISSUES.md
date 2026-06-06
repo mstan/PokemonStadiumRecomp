@@ -14,6 +14,10 @@ see the depth-bounded tailcall fix below.
 **OPEN as of 2026-06-05 (milestone snapshot):**
 - **#10 Occasional slight audio crackle (new).**
 
+**Just fixed 2026-06-05 (user-verified):** #12 — anti-aliasing default +
+supersampling now ship without breaking the 2D menus; see the FIXED entry
+below.
+
 **ACTIVE priority among OPEN issues:** #10. The issue numbers are stable IDs
 (referenced across this doc, commits, and memory), not the work order.
 
@@ -65,6 +69,110 @@ see the depth-bounded tailcall fix below.
     faint crackle during play. Distinct from the music-rate click fixed
     2026-05-28 (that was constant ~4/s decimation; this is occasional). See
     entry below.
+
+- [x] **#12 Model anti-aliasing — supersampling fixes models but breaks 2D
+      menus.** **FIXED 2026-06-05 (user-verified).**
+
+      *Resolution.* The 2D-menu breakage was the **per-pair tall-framebuffer
+      resolution-scale reduction** in RT64's workload queue. A single screen is
+      composited from several framebuffer layers of different heights; the rule
+      that halves the resolution scale for tall framebuffers was evaluated
+      *independently per pair*, so the 640×476 menu layer was halved to
+      `resScale=3` while its 320×240 companion layers stayed at 6×. The layers
+      then composited at mismatched scales and the 2D menu/HUD drew over-scaled
+      and clipped. Fix (`rt64/src/hle/rt64_workload_queue.cpp`): decide the
+      halving **once per workload from the tallest color framebuffer** drawn that
+      frame (`workloadHalveTall`) and apply the same decision to every pair, so
+      all layers share one scale. With that, MSAA 4× (default) + supersampling
+      (`PSR_RT64_RES_MULT`/`PSR_RT64_DOWNSAMPLE`/`PSR_RT64_MSAA`) ship cleanly:
+      models are supersampled, menus stay crisp. The "render pure-2D
+      framebuffers at native res" discriminator floated below was **not** needed
+      — the real bug was the desynced per-layer scale, not a 2D-vs-3D
+      distinction.
+
+      *Symptom.* In-battle 3D models show two distinct kinds of aliasing:
+      (a) hard polygon **silhouette jaggies**, and (b) **rainbow color speckle
+      on sub-pixel-thin geometry** (e.g. Krabby's legs/antennae), worst at a
+      distance. (a) is fixed by MSAA; (b) is not — thin triangles narrower than
+      a pixel need supersampling-level coverage.
+
+      *Shipped (not blocked).* MSAA 4× is now the default in
+      `src/main/rt64_render_context.cpp` (was `None`, which was the silhouette
+      cause). Fixes (a). Cannot affect 2D menus.
+
+      *The blocker.* The only thing that fixes (b) is **supersampling** — render
+      above output, box-filter down (RT64: `resolutionMultiplier` /
+      `downsampleMultiplier`, output = their ratio). But enabling it puts RT64
+      into **Manual-resolution mode**, which **breaks the 2D menu/HUD layout**:
+      clipped labels and half-positioned panels on Game Pak Check and "Please
+      Select", and a clipped WARNING banner. So supersampling cannot ship as a
+      default until the 2D layout holds under it.
+
+      *Key clue.* A **live window resize/drag fixes the 2D layout** (RT64
+      recomputes it on a genuine swapchain recreation). The model supersampling
+      itself is correct — only the 2D layout is wrong, and only until a resize.
+
+      *Tried and did NOT reproduce the resize's fix:*
+      - A one-time programmatic startup resize-nudge (`SDL_SetWindowSize` +1px
+        then restore, a few frames in) — reverted; did not take.
+      - `PSR_RT64_UPSCALE2D=Original` (draw 2D at native res) — still clipped.
+      - Matched-output downsample (`PSR_RT64_RES_MULT=6` + `PSR_RT64_DOWNSAMPLE=2`
+        so output lands at the window's native 3×/720p, no present-rescale) —
+        models supersample correctly, menus still clipped.
+
+      *Where the fix lives.* RT64 — 2D-layout / swapchain recompute under
+      Manual resolution. Investigate what a genuine resize (swapchain
+      recreation) recomputes that a programmatic `SDL_SetWindowSize` does not.
+
+      *Dev knobs to investigate with* (all in `rt64_render_context.cpp`,
+      off by default, harmless): `PSR_RT64_RES_MULT`, `PSR_RT64_DOWNSAMPLE`,
+      `PSR_RT64_MSAA`, `PSR_RT64_UPSCALE2D`, `PSR_RT64_FILTERING`.
+
+      *Investigation update 2026-06-05 (instrumented RT64 present/workload/VI
+      paths; repro `PSR_RT64_RES_MULT=6 PSR_RT64_DOWNSAMPLE=2 PSR_RT64_MSAA=4X`,
+      165 Hz monitor, 960×720 client).* Several earlier hypotheses **disproven
+      by measurement**:
+      - **Not the VI present viewport.** The menu is a **640×476** framebuffer
+        rendered into a **1920×1440** target at `resolutionScale=3,
+        downsampleMultiplier=1` (the tall-FB rule halves 6→3 / 2→1). The present
+        viewport/scissor are geometrically correct for the window
+        (`vp=(0,0,960,720)` at 4:3). Logged broken-vs-after-resize present params
+        are **identical** — so the distortion is in the **target *content***, not
+        the viewport.
+      - **Not interpolation.** `targetRate=0`, `framesToPresent=1` (refresh-rate
+        mode Original); interpolation is off.
+      - **Not a stale lower-res buffer being shown.** The title→menu *transition*
+        briefly cycles boot-era 320×240 buffers, but the **steady-state menu is
+        presented purely as the 640×476 buffer**. Skipping the low-res buffers
+        had no effect.
+      - **Not a startup-only invalidation.** A programmatic swapchain
+        `resize()`/`destroyAll` *before* the menu renders does nothing. A
+        `destroyAll` fired *at the resolution-mode transition frame* also does
+        nothing. A `destroyAll` fired ~30 presents *after* the menu stabilises
+        DID fix that one entry — but **navigating away and back re-breaks it**
+        (the bad state recurs on every fresh render of a hi-res 2D screen).
+      - **The cure a live resize applies must be done while the broken screen is
+        rendered**, and is non-persistent. Resizing back to the exact original
+        960×720 keeps it fixed for that entry (same present params), confirming
+        the resize re-rendered the target *content* correctly at the same
+        `resScale=3`.
+
+      *Refined root cause.* A **2D menu framebuffer supersampled to resScale=3
+      renders over-scaled/clipped on (each) first render**, while the very same
+      target re-rendered after a destroyAll comes out correct at the same
+      resScale. So high-res *can* render the menu correctly; some **stale
+      pipeline state** present at the menu's first render is what's wrong, and a
+      destroyAll-while-stable clears it. Exact RT64 code path not yet pinned
+      (resisted targeted probes into target resize/readHeight, fb selection,
+      interpolation).
+
+      *Discriminator idea (considered, NOT what shipped).* An earlier plan was
+      to detect **pure-2D framebuffers** (no perspective/3D projections — the
+      640×476 menus) and render them at native `resolutionScale=1` while 3D
+      framebuffers kept the supersampling. Continued root-causing instead found
+      the actual bug — the desynced *per-pair* tall-FB scale (see *Resolution.*
+      above) — so the simpler uniform-per-workload fix shipped and this 2D-vs-3D
+      discriminator was not needed.
 
 - [x] **GB Tower crashes on selecting any game.** **FIXED 2026-06-05
       (user-verified).** Selecting any cart (Red/Blue/Yellow) in GB Tower used
