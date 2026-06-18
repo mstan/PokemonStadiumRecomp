@@ -13,7 +13,15 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = 62a475436d9b66f4448ab52b415295255628789a
+sha = 233b4d80434fc85d990ab7d7f6a41f50a75b1a7b
+# 233b4d8 "Register interior computed-call entry points as dispatch aliases" —
+#   the runtime-overlay-discovery engine, promoted to N64Recomp main 2026-06-18.
+#   Pokemon Stadium was rebuilt + USER-VERIFIED fully functional against this
+#   engine this session (SS Anne launcher + gameplay; only pre-existing crackly
+#   audio). Carries the interior computed-call dispatch-alias pass + the
+#   self-healing fragment-discovery work. NOTE: the v0.4.0-beta RELEASE binary
+#   was built against 62a4754 (below); re-release against this sha to keep the
+#   GPL source-correspondence exact.
 # 62a4754 "docs: drop references to private methodology notes in comments" —
 #   the engine commit the v0.4.0-beta release binary was built against;
 #   comment-only changes on top of 25ecf9f below.
