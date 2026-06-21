@@ -48,6 +48,14 @@
 #include <SDL.h>
 #include <SDL_syswm.h>
 
+/* Round-2 audio: callback-driven clock-domain bridge replaces the per-chunk
+ * SDL_AudioCVT + sample-decimation valve (both crackle sources). Plus always-on,
+ * env-gated observability. See recomp_audio_drc.h / recomp_audio_debug.h. */
+#define RECOMP_AUDIO_DRC_IMPL
+#include "recomp_audio_drc.h"
+#define RECOMP_AUDIO_DEBUG_IMPL
+#include "recomp_audio_debug.h"
+
 #include "app_paths.h"
 
 namespace pkmnstadium {
@@ -163,6 +171,72 @@ static SDL_AudioCVT audio_convert{};
 static uint32_t sample_rate        = 32000;
 static uint32_t output_sample_rate = 48000;
 static uint32_t discarded_output_frames = 0;
+
+// ── Round-2 clock-domain bridge ─────────────────────────────────────
+// One persistent band-limited resampler + fill controller, pulled by a real
+// SDL audio callback. Replaces both crackle sources in the legacy push path:
+// the per-chunk SDL_AudioCVT (boundary discontinuities) and the skip_factor
+// sample-decimation valve (hard sample drops when the queue grew). The bridge
+// resamples sample_rate->output_sample_rate continuously and never drops a
+// sample; the game's osAiGetLength feedback reads the bridge fill instead of
+// the raw SDL queue. Env PSR_AUDIO_BRIDGE=0 falls back to the legacy path for
+// A/B measurement.
+static rab_bridge   g_bridge;
+static int          g_bridge_ready = 0;
+static SDL_mutex   *g_audio_mtx    = nullptr;
+static uint32_t     g_bridge_src   = 0;     // source rate the bridge was built at
+
+static bool audio_bridge_enabled() {
+    static const bool en = [] {
+        const char* v = std::getenv("PSR_AUDIO_BRIDGE");
+        return !(v && v[0] == '0' && v[1] == '\0');   // default ON
+    }();
+    return en;
+}
+
+// Audio thread: pull stereo frames from the bridge (int16) and convert to the
+// device's F32 format. Never stalls on producer jitter.
+static void psr_audio_cb(void* /*ud*/, Uint8* stream, int len) {
+    int frames = len / (int)(output_channels * sizeof(float));
+    if (!g_bridge_ready) { SDL_memset(stream, 0, (size_t)len); return; }
+    // Callback-delivery timing (Experiment 1): a clean buffer can still arrive
+    // late, which the OS papers over with a glitch the T3 content tap can't see.
+    if (recomp_audio_debug_enabled()) {
+        double now = recomp_audio_debug_now_ms();
+        static double s_prev = -1.0;
+        double expected = frames * 1000.0 / (output_sample_rate > 0 ? output_sample_rate : 48000);
+        if (s_prev >= 0.0) {
+            double delta = now - s_prev;
+            recomp_audio_debug_eventf("cbk", "frames=%d delta_ms=%.2f exp_ms=%.2f late_ms=%.2f",
+                                      frames, delta, expected, delta - expected);
+        }
+        s_prev = now;
+    }
+    static std::vector<int16_t> tmp;
+    if ((int)tmp.size() < frames * output_channels) tmp.resize((size_t)frames * output_channels);
+    SDL_LockMutex(g_audio_mtx);
+    rab_pull(&g_bridge, tmp.data(), frames);
+    SDL_UnlockMutex(g_audio_mtx);
+    float* out = reinterpret_cast<float*>(stream);
+    for (int i = 0; i < frames * output_channels; ++i)
+        out[i] = (float)tmp[i] * (1.0f / 32768.0f);
+    recomp_audio_debug_push_i16("t3_bridge_out", tmp.data(), frames,
+                                (double)output_sample_rate, output_channels);
+}
+
+// Build (or rebuild on rate change) the bridge for the current sample_rate.
+static void bridge_reinit_locked() {
+    if (g_bridge_ready) { rab_free(&g_bridge); g_bridge_ready = 0; }
+    rab_config rc; rab_config_defaults(&rc);
+    rc.channels       = output_channels;
+    rc.source_rate    = (double)sample_rate;
+    rc.host_rate      = (double)output_sample_rate;
+    rc.target_ms      = 80.0;       // a touch deeper than NES: N64 chunks are larger
+    rc.ring_ms        = 300.0;
+    rc.max_correction = 0.015;
+    g_bridge_ready = (rab_init(&g_bridge, &rc) == 0);
+    g_bridge_src   = sample_rate;
+}
 
 static void update_audio_converter() {
     int ret = SDL_BuildAudioCVT(&audio_convert, AUDIO_F32, input_channels, sample_rate,
@@ -369,6 +443,82 @@ extern "C" size_t recomp_audio_pcm_window(void) {
 
 static void queue_samples(int16_t* audio_data, size_t sample_count) {
     apcm_record(audio_data, sample_count);
+
+    // T1: raw emulator-rate PCM exactly as the game produced it (R,L order; the
+    // swap is irrelevant for discontinuity detection).
+    recomp_audio_debug_push_i16("t1_raw", audio_data,
+                                (int)(sample_count / input_channels),
+                                (double)sample_rate, input_channels);
+
+    // Headless capture: RECOMP_AUDIO_DEBUG_DUMP_SECS=N dumps + exits after N
+    // seconds of audio time (data collection, not an ear test).
+    if (recomp_audio_debug_enabled()) {
+        static double s_dump_secs = -2.0;
+        static double s_audio_secs = 0.0;
+        if (s_dump_secs == -2.0) {
+            const char* e = std::getenv("RECOMP_AUDIO_DEBUG_DUMP_SECS");
+            s_dump_secs = (e && *e) ? atof(e) : -1.0;
+        }
+        if (s_dump_secs > 0.0 && sample_rate > 0) {
+            s_audio_secs += (double)(sample_count / input_channels) / (double)sample_rate;
+            if (s_audio_secs >= s_dump_secs) {
+                recomp_audio_debug_dump(0.0, nullptr);
+                fprintf(stderr, "[audio-debug] dumped after %.1fs audio; exiting\n", s_audio_secs);
+                fflush(stderr);
+                std::exit(0);
+            }
+        }
+    }
+
+    // ── Round-2 bridge path ─────────────────────────────────────────
+    // Push de-swapped, volume-scaled int16 stereo straight into the bridge.
+    // The bridge resamples to the device rate continuously (no SDL_AudioCVT)
+    // and the audio callback drains it (no decimation valve).
+    if (audio_bridge_enabled()) {
+        const float main_volume = pkmnstadium::dbg::g_audio_volume.load();
+        size_t frames = sample_count / input_channels;
+        if (frames == 0) return;
+        static std::vector<int16_t> push_buf;
+        if (push_buf.size() < frames * output_channels) push_buf.resize(frames * output_channels);
+        // libultra interleaves R,L per word; emit L,R. Keep the legacy 0.5
+        // headroom so levels match the old path. volume==0 => silence (still
+        // pushed, so the buffer/feedback stay alive during muted harness runs).
+        // RECOMP_AUDIO_SYNTH=sine|square|impulse|silence replaces the game audio
+        // with a known-clean test signal through the EXACT same path. If a pure
+        // sine crackles, the defect is the path, not the game's HLE audio.
+        static int s_synth = -2;
+        static uint64_t s_synth_pos = 0;
+        if (s_synth == -2) s_synth = recomp_audio_synth_mode();
+        if (s_synth != RAD_SYNTH_OFF) {
+            recomp_audio_synth_fill(s_synth, push_buf.data(), (int)frames,
+                                    output_channels, (double)sample_rate, &s_synth_pos);
+        } else {
+            const float scale = 0.5f * main_volume;
+            for (size_t f = 0; f < frames; ++f) {
+                int l = (int)lrintf((float)audio_data[f * input_channels + 1] * scale);
+                int r = (int)lrintf((float)audio_data[f * input_channels + 0] * scale);
+                if (l >  32767) l =  32767; if (l < -32768) l = -32768;
+                if (r >  32767) r =  32767; if (r < -32768) r = -32768;
+                push_buf[f * output_channels + 0] = (int16_t)l;
+                push_buf[f * output_channels + 1] = (int16_t)r;
+            }
+        }
+        recomp_audio_debug_push_i16("t2_bridge_in", push_buf.data(), (int)frames,
+                                    (double)sample_rate, output_channels);
+        if (g_bridge_ready) {
+            SDL_LockMutex(g_audio_mtx);
+            if (g_bridge_src != sample_rate) bridge_reinit_locked();
+            rab_push(&g_bridge, push_buf.data(), (int)frames);
+            double fill = rab_fill_ms(&g_bridge);
+            rab_stats st; rab_get_stats(&g_bridge, &st);
+            SDL_UnlockMutex(g_audio_mtx);
+            recomp_audio_debug_eventf("bfill", "fill_ms=%.1f under=%llu over=%llu src=%u",
+                                      fill, (unsigned long long)st.underrun_events,
+                                      (unsigned long long)st.overflow_drops, sample_rate);
+        }
+        return;
+    }
+
     static std::vector<float> swap_buffer;
     static std::array<float, duplicated_input_frames * input_channels> duplicated_sample_buffer{};
 
@@ -452,6 +602,17 @@ static size_t get_frames_remaining() {
     if (pkmnstadium::dbg::g_fast_forward.load()) {
         return 0;
     }
+    // Bridge path: the game's AI_LEN pacing must read the BRIDGE fill (the real
+    // buffer now), not the SDL queue (which the callback keeps near-empty).
+    if (audio_bridge_enabled() && g_bridge_ready) {
+        SDL_LockMutex(g_audio_mtx);
+        double fill_ms = rab_fill_ms(&g_bridge);
+        SDL_UnlockMutex(g_audio_mtx);
+        double frames = fill_ms * 0.001 * (double)sample_rate;   // source frames buffered
+        double lag    = (double)(sample_rate / 60);              // hold ~1 VI of slack
+        double rem    = frames > lag ? frames - lag : 0.0;
+        return (size_t)rem;
+    }
     constexpr float buffer_offset_frames = 1.0f;
     uint64_t buffered_byte_count = SDL_GetQueuedAudioSize(audio_device);
     buffered_byte_count = buffered_byte_count * 2 * sample_rate / output_sample_rate / output_channels;
@@ -467,6 +628,11 @@ static size_t get_frames_remaining() {
 static void set_frequency(uint32_t freq) {
     sample_rate = freq;
     update_audio_converter();
+    if (audio_bridge_enabled() && audio_device != 0) {
+        SDL_LockMutex(g_audio_mtx);
+        bridge_reinit_locked();
+        SDL_UnlockMutex(g_audio_mtx);
+    }
 }
 
 // Pick the output device.
@@ -560,21 +726,54 @@ static const char* select_audio_device() {
 }
 
 static void reset_audio(uint32_t output_freq) {
+    bool use_bridge = audio_bridge_enabled();
     SDL_AudioSpec spec_desired{};
     spec_desired.freq    = (int)output_freq;
     spec_desired.format  = AUDIO_F32;
     spec_desired.channels = (Uint8)output_channels;
-    spec_desired.samples = 0x100;
+    // Callback buffer must exceed the WASAPI shared-mode engine period (~10 ms) so
+    // the OS isn't underfed every period (that underfeed was the perpetual crackle:
+    // 256 frames = 5.33 ms @48k sat UNDER the period; measured callbacks paced at
+    // ~9.4 ms with 53% "late"). But it must also stay BELOW the bridge fill so a
+    // single pull never drains the ring (1024 = 21.3 ms underran the ~27 ms fill).
+    // 512 frames = 10.67 ms @48k: above the engine period, below the fill. Matches
+    // the value NES uses (512 @44.1k = 11.6 ms), which is clean.
+    spec_desired.samples = 0x200;   /* 512 frames */
+    spec_desired.callback = use_bridge ? psr_audio_cb : nullptr;
 
     const char* dev_name = select_audio_device();
-    audio_device = SDL_OpenAudioDevice(dev_name, false, &spec_desired, nullptr, 0);
+    // CRITICAL (round-2 N64 crackle fix): read the OBTAINED spec and allow the
+    // frequency to change to the device/endpoint native rate. The old call passed
+    // obtained=nullptr + flags=0, which forced SDL to accept our hardcoded 48000
+    // and do its OWN internal conversion to the real endpoint rate (e.g. 44100) --
+    // a SECOND resample on top of the bridge's. We must target the rate the host
+    // actually opened so there is exactly ONE resampler (the bridge). Channels and
+    // format stay fixed (F32 stereo == typical WASAPI mix format -> no conversion).
+    SDL_AudioSpec obtained{};
+    audio_device = SDL_OpenAudioDevice(dev_name, false, &spec_desired, &obtained,
+                                       SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (audio_device == 0) {
         fprintf(stderr, "SDL error opening audio device: %s\n", SDL_GetError());
         std::exit(EXIT_FAILURE);
     }
-    SDL_PauseAudioDevice(audio_device, 0);
-    output_sample_rate = output_freq;
+    // Target everything at the rate SDL actually gave us, never the hardcoded one.
+    output_sample_rate = (obtained.freq > 0) ? (uint32_t)obtained.freq : output_freq;
     update_audio_converter();
+    fprintf(stderr, "[PSR][audio] driver=%s  desired=%dHz F32 %dch samp=%d  "
+            "obtained=%dHz fmt=0x%04x %dch samp=%d\n",
+            SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?",
+            spec_desired.freq, spec_desired.channels, spec_desired.samples,
+            obtained.freq, obtained.format, obtained.channels, obtained.samples);
+    if (use_bridge) {
+        if (!g_audio_mtx) g_audio_mtx = SDL_CreateMutex();
+        SDL_LockMutex(g_audio_mtx);
+        bridge_reinit_locked();          // uses output_sample_rate == obtained.freq
+        SDL_UnlockMutex(g_audio_mtx);
+        recomp_audio_debug_init();
+        fprintf(stderr, "[PSR][audio] bridge ON  src=%u -> host=%u (obtained)  ready=%d\n",
+                sample_rate, output_sample_rate, g_bridge_ready);
+    }
+    SDL_PauseAudioDevice(audio_device, 0);
 }
 
 // ---- Window / gfx callbacks (SDL2-backed) ----------------------------------
@@ -679,6 +878,15 @@ static void update_gfx(void*) {
         } else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_TAB) {
             pkmnstadium::dbg::g_fast_forward.store(
                 s_turbo_persistent.load());
+        } else if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_F9 &&
+                   ev.key.repeat == 0) {
+            // Audio observability: dump the trailing ring window NOW (press at
+            // the moment crackle is heard). No-op unless RECOMP_AUDIO_DEBUG is set.
+            if (recomp_audio_debug_enabled()) {
+                recomp_audio_debug_dump(0.0, nullptr);
+                std::fprintf(stderr, "[audio-debug] F9 dump written\n");
+                std::fflush(stderr);
+            }
         }
     }
 }
