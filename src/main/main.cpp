@@ -81,6 +81,7 @@ extern "C" const char* psr_app_file_c(const char* name, char* out, unsigned long
 #include <ultramodern/ultramodern.hpp>
 #include <ultramodern/scheduler_tick.hpp>
 #include <ultramodern/error_handling.hpp>
+#include <ultramodern/config.hpp>  // renderer::get/set_graphics_config, WindowMode (#18)
 
 #include "pokestadium_render.h"
 #include "debug_server.h"
@@ -1333,6 +1334,19 @@ int main(int argc, char** argv) {
     recomp::Version project_version{0, 1, 0, ""};
     recomp::register_config_path(std::filesystem::current_path());
     pkmnstadium::transfer_pak::initialize();
+
+    // Window mode (issue #18): open directly in fullscreen when the user set
+    // window_mode=fullscreen in launcher.cfg, or passed PSR_FULLSCREEN=1 /
+    // PSR_WINDOW_MODE=fullscreen — so they don't have to press Alt+Enter every
+    // launch. This must run before recomp::start creates the render context,
+    // which reads wm_option to decide the window's initial fullscreen state
+    // (rt64_render_context.cpp: app->setFullScreen(wm_option == Fullscreen)).
+    if (pkmnstadium::ui_seam::startup_fullscreen()) {
+        ultramodern::renderer::GraphicsConfig gconf = ultramodern::renderer::get_graphics_config();
+        gconf.wm_option = ultramodern::renderer::WindowMode::Fullscreen;
+        ultramodern::renderer::set_graphics_config(gconf);
+        std::fprintf(stderr, "[PSR] window_mode=fullscreen -> launching fullscreen\n");
+    }
 
     recomp::GameEntry game{};
     game.rom_hash               = 0x6E46EACF8F27011DULL;  // XXH3_64bits of baserom.z64 (US v1.0)

@@ -150,6 +150,13 @@ std::chrono::steady_clock::time_point g_autoplay_deadline;
 int g_autoplay_last_sec = -1;
 int g_launcher_frames = 0; // frames the launcher has actually rendered
 
+// Window mode preference (issue #18): persisted to launcher.cfg as
+// `window_mode=windowed|fullscreen`. Like g_autoplay_pref, this is the
+// file-backed user preference; the PSR_WINDOW_MODE / PSR_FULLSCREEN env vars
+// override it at launch without rewriting the file. Read on load, written back
+// on every rewrite so it survives launcher edits. Default windowed.
+bool g_window_fullscreen_pref = false;
+
 // Controller/keyboard navigation: a focus ring over the navigable items, with a
 // sub-mode for an open controller dropdown. A=activate, B=back, stick/dpad/arrows
 // move. Mouse still works independently.
@@ -486,6 +493,11 @@ void write_transfer_pak_cfg() {
     // at load time (it does not rewrite the file).
     f << "# autoplay=on|off : start the game automatically after a 5s countdown.\n";
     f << "autoplay=" << (g_autoplay_pref ? "on" : "off") << "\n";
+    // window_mode: open in fullscreen at launch without needing Alt+Enter
+    // (issue #18). Preserved across launcher rewrites; overridable per-launch
+    // with the PSR_WINDOW_MODE / PSR_FULLSCREEN env vars.
+    f << "# window_mode=windowed|fullscreen : how the game window opens.\n";
+    f << "window_mode=" << (g_window_fullscreen_pref ? "fullscreen" : "windowed") << "\n";
 }
 
 // Parse a cfg/env boolean. Accepts on/off, true/false, yes/no, 1/0 (any case).
@@ -520,6 +532,7 @@ void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem
         }
         g_autoplay_pref = false;
         g_autoplay = false;
+        g_window_fullscreen_pref = false; // default windowed on first run (#18)
         // apply_default_assignment() (run from attach_launcher_events, right
         // after this) gives P1 a device; reflect that choice in the file too.
         apply_default_assignment();
@@ -589,6 +602,22 @@ void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem
         g_autoplay_pref = parse_bool(env, g_autoplay_pref);
     }
     g_autoplay = g_autoplay_pref;
+
+    // Window-mode preference (issue #18): cfg `window_mode=windowed|fullscreen`
+    // (or the boolean alias `fullscreen=on|off`), default windowed. Kept in sync
+    // here so the launcher's rewrite preserves it. The per-launch env override
+    // (PSR_WINDOW_MODE / PSR_FULLSCREEN) is applied in startup_fullscreen(),
+    // which runs before the renderer is created; it intentionally does not
+    // rewrite the file (matching autoplay's env behavior).
+    if (cfg.count("window_mode")) {
+        std::string wm = cfg["window_mode"];
+        for (char& ch : wm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        g_window_fullscreen_pref = (wm == "fullscreen");
+    } else if (cfg.count("fullscreen")) {
+        g_window_fullscreen_pref = parse_bool(cfg["fullscreen"], false);
+    } else {
+        g_window_fullscreen_pref = false;
+    }
 }
 
 void add_click(Rml::ElementDocument* doc, const std::string& id, std::function<void()> fn) {
@@ -1275,6 +1304,53 @@ PortAssignment port_assignment(int port) {
         }
     }
     return pa;
+}
+
+// Resolve the launch window mode (issue #18). Runs before the renderer is
+// created, so it reads launcher.cfg directly rather than relying on the
+// launcher UI having populated its slot state yet.
+//
+// Precedence: PSR_WINDOW_MODE (windowed|fullscreen) > PSR_FULLSCREEN (boolean)
+// > the persisted launcher.cfg `window_mode`/`fullscreen` key > windowed.
+// The env overrides are transient — they do not rewrite the file — matching how
+// PSR_AUTOPLAY overrides the persisted autoplay preference.
+bool startup_fullscreen() {
+    // Persisted preference from launcher.cfg.
+    bool pref = false;
+    {
+        std::ifstream f(exe_dir() / "launcher.cfg");
+        std::string line;
+        while (std::getline(f, line)) {
+            const size_t c = line.find_first_of("#;");
+            if (c != std::string::npos) line.resize(c);
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = trim(line.substr(0, eq));
+            std::string v = trim(line.substr(eq + 1));
+            for (char& ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (k == "window_mode") {
+                std::string lv;
+                for (char ch : v) lv += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                pref = (lv == "fullscreen");
+            } else if (k == "fullscreen") {
+                pref = parse_bool(v, pref);
+            }
+        }
+    }
+    // Seed the launcher's in-memory preference so a later rewrite preserves it.
+    g_window_fullscreen_pref = pref;
+
+    // Per-launch environment overrides.
+    if (const char* wm = std::getenv("PSR_WINDOW_MODE"); wm != nullptr && wm[0] != '\0') {
+        std::string s;
+        for (const char* p = wm; *p != '\0'; ++p) s += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
+        if (s == "fullscreen") return true;
+        if (s == "windowed")   return false;
+    }
+    if (const char* fs = std::getenv("PSR_FULLSCREEN"); fs != nullptr && fs[0] != '\0') {
+        return parse_bool(fs, pref);
+    }
+    return pref;
 }
 
 } // namespace pkmnstadium::ui_seam

@@ -42,6 +42,14 @@ namespace pkmnstadium::ui_seam {
     // Per N64 port (0..3 == Player 1..4). Valid after play_requested(); the boot
     // thread reads it to wire input routing and Transfer Pak presence.
     PortAssignment port_assignment(int port);
+
+    // Resolve whether the app should open directly in fullscreen. Reads the
+    // PSR_WINDOW_MODE / PSR_FULLSCREEN environment overrides first, then the
+    // persisted `window_mode` (or `fullscreen`) key in launcher.cfg; defaults
+    // to windowed. main.cpp calls this before the renderer is created so users
+    // can launch fullscreen without pressing Alt+Enter (issue #18). Also seeds
+    // the launcher's in-memory preference so it round-trips through the cfg.
+    bool startup_fullscreen();
 }
 
 #endif // PKMNSTADIUM_UI_SEAM_H
