@@ -854,14 +854,23 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
         //   0x0008 C-Up      0x0004 C-Down    0x0002 C-Left    0x0001 C-Right
         if (pressed(SDL_CONTROLLER_BUTTON_A))             b |= 0x8000; // A
         if (pressed(SDL_CONTROLLER_BUTTON_B))             b |= 0x4000; // B
-        if (pressed(SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  b |= 0x2000; // Z
         if (pressed(SDL_CONTROLLER_BUTTON_START))         b |= 0x1000; // Start
         if (pressed(SDL_CONTROLLER_BUTTON_DPAD_UP))       b |= 0x0800;
         if (pressed(SDL_CONTROLLER_BUTTON_DPAD_DOWN))     b |= 0x0400;
         if (pressed(SDL_CONTROLLER_BUTTON_DPAD_LEFT))     b |= 0x0200;
         if (pressed(SDL_CONTROLLER_BUTTON_DPAD_RIGHT))    b |= 0x0100;
-        if (pressed(SDL_CONTROLLER_BUTTON_LEFTSTICK))     b |= 0x0020; // L
+        // N64 L/R are the physical shoulder buttons, so map them to the pad's
+        // bumpers; the N64 Z-trigger maps to the left analog trigger. The old
+        // default put N64 L on the LEFT-STICK CLICK (L3) with Z on the left
+        // bumper, so users couldn't find L at all (issue #8: "L button does not
+        // work" — a reporter found it on the stick click). Bumpers for L/R is
+        // both reachable and symmetric; LT for Z matches the N64 trigger feel.
+        if (pressed(SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  b |= 0x0020; // L
         if (pressed(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) b |= 0x0010; // R
+        // Triggers are analog axes (0..32767); treat a half-press as the Z bit.
+        if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  > 0x4000 ||
+            SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 0x4000)
+                                                          b |= 0x2000; // Z
 
         rx = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTX);
         ry = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTY);

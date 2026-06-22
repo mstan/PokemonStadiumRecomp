@@ -109,6 +109,28 @@ From the launcher you can:
 `PSR_AUTOBOOT=1` skips the launcher entirely and boots straight into the
 game (used for regression runs).
 
+## Controls
+
+Default bindings (per-button remapping in the launcher is planned).
+
+**Game controller** (Xbox-style layout; DualSense / DualShock map the same way):
+
+| N64 | Controller |
+|-----|------------|
+| A / B | A / B |
+| Start | Start |
+| **L** / **R** | **Left / Right bumper (LB / RB)** |
+| **Z** | **Either trigger (LT / RT)** |
+| D-Pad | D-Pad |
+| Control Stick | Left stick |
+| C-Buttons | Right stick (push up / down / left / right) |
+
+(Earlier builds put N64 **L** on the left-stick *click*, where it was easy to
+miss — issue #8. L and R are now the bumpers.)
+
+**Keyboard:** `X`→A, `Z`→B, `Enter`→Start, `Q`→L, `E`→R, `Left-Shift`/`Space`→Z,
+arrow keys→D-Pad, `W`/`A`/`S`/`D`→Control Stick, `I`/`K`/`J`/`L`→C-Up/Down/Left/Right.
+
 ## Configuration
 
 - **RT64-backed rendering** with internal-resolution upscaling.
