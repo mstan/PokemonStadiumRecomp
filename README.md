@@ -213,6 +213,26 @@ being worked on — it's in the recompiled N64 sound synthesis, not your
 device. `PSR_DISABLE_GBTOWER_AUDIO=1` silences only the GB Tower audio path
 if you want to isolate it.
 
+### It closes immediately / crashes on launch
+
+The most common cause is a problem creating the Direct3D 12 graphics device
+(a missing or broken D3D12 runtime, an old GPU/driver, or some virtualized /
+remote-desktop setups). The renderer now **falls back to Vulkan automatically**
+when the graphics API is left on its default (Auto), so most of these machines
+start working without any change.
+
+If it still won't start, force a backend explicitly:
+
+- `PSR_GRAPHICS_API=vulkan` — use the Vulkan renderer (the usual fix for D3D12
+  trouble). `PSR_GRAPHICS_API=d3d12` forces D3D12; `auto` is the default.
+- Update your **GPU drivers** and make sure Windows is current — D3D12 needs a
+  reasonably modern driver.
+
+If you get an error box ("Unable to initialize…" / "Unable to find compatible
+graphics device"), neither backend could start — that almost always means GPU
+drivers need updating. A `last_error.log` is written next to the exe; attach it
+to a bug report.
+
 ## ROM
 
 | Field | Value |

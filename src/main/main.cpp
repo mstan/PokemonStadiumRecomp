@@ -1357,6 +1357,33 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[PSR] window_mode=fullscreen -> launching fullscreen\n");
     }
 
+    // Graphics API override (issue #11): some machines crash in D3D12 device
+    // creation on startup ("Doesn't open at all" — an access violation in the
+    // D3D12 runtime before any game code runs). rt64 now auto-falls-back to
+    // Vulkan when the API is left on Auto (the default), but PSR_GRAPHICS_API
+    // lets a user force a backend explicitly without the launcher. Applied
+    // before recomp::start creates the render context.
+    if (const char* api_env = std::getenv("PSR_GRAPHICS_API"); api_env != nullptr && api_env[0] != '\0') {
+        std::string api;
+        for (const char* p = api_env; *p != '\0'; ++p) api += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
+        ultramodern::renderer::GraphicsConfig gconf = ultramodern::renderer::get_graphics_config();
+        bool ok = true;
+        if (api == "vulkan" || api == "vk") {
+            gconf.api_option = ultramodern::renderer::GraphicsApi::Vulkan;
+        } else if (api == "d3d12" || api == "dx12" || api == "directx") {
+            gconf.api_option = ultramodern::renderer::GraphicsApi::D3D12;
+        } else if (api == "auto") {
+            gconf.api_option = ultramodern::renderer::GraphicsApi::Auto;
+        } else {
+            ok = false;
+            std::fprintf(stderr, "[PSR] PSR_GRAPHICS_API='%s' unrecognized (use vulkan|d3d12|auto)\n", api_env);
+        }
+        if (ok) {
+            ultramodern::renderer::set_graphics_config(gconf);
+            std::fprintf(stderr, "[PSR] graphics API forced to %s\n", api.c_str());
+        }
+    }
+
     recomp::GameEntry game{};
     game.rom_hash               = 0x6E46EACF8F27011DULL;  // XXH3_64bits of baserom.z64 (US v1.0)
                                                          // computed by tools/compute_rom_hash.exe
