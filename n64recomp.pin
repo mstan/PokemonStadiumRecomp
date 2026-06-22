@@ -13,7 +13,11 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = 233b4d80434fc85d990ab7d7f6a41f50a75b1a7b
+sha = 94838144bb970ca6b415636924339e90bafa9ebd
+# 9483814 "Dispatch-entry reject: default arm signals unhandled, not prologue
+#   fall-through" — current N64Recomp main; the GB-mode dispatch-entry interp
+#   self-heal. This `work/github-issues` worktree builds against the engine
+#   worktree at N64Recomp-issues (same sha). Rolled forward from 233b4d8 below.
 # 233b4d8 "Register interior computed-call entry points as dispatch aliases" —
 #   the runtime-overlay-discovery engine, promoted to N64Recomp main 2026-06-18.
 #   Pokemon Stadium was rebuilt + USER-VERIFIED fully functional against this
