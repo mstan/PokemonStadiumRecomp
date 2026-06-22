@@ -129,9 +129,67 @@ game (used for regression runs).
     `8X`) if the default doesn't suit your GPU.
 - **Audio** plays through your system's default output device; override
   with `PSR_AUDIO_DEVICE=<name substring>`.
+- **Fullscreen at launch.** By default the game opens in a window; press
+  **Alt + Enter** to toggle fullscreen at any time. To have it *open*
+  fullscreen every time, set `window_mode=fullscreen` in `launcher.cfg`
+  (next to the exe), or launch with `PSR_FULLSCREEN=1` (equivalently
+  `PSR_WINDOW_MODE=fullscreen`). The env vars override the file for that one
+  run without changing it; `PSR_FULLSCREEN=0` / `PSR_WINDOW_MODE=windowed`
+  force windowed. See [Configuration](#configuration) keys below.
 - **Game-controller input** (including DualSense / DualShock).
 - Configured via environment variables and `*.cfg` files placed next to
   the exe (`rom.cfg`, `launcher.cfg`).
+
+## Troubleshooting
+
+### Windows says the download is a virus / SmartScreen blocks it
+
+Some antivirus products — and **Windows Smart App Control** in particular —
+flag the release `.zip` or the `.exe` and may delete it automatically. **This
+is a false positive.** Two things set heuristic scanners off:
+
+- The executable is **statically recompiled** N64 code. The instruction
+  patterns don't look like a normal compiler's output, which trips
+  signature-free heuristics.
+- The release binary is **not code-signed**. Code-signing requires a paid
+  (EV) certificate; until the project has one, unsigned builds will keep
+  drawing SmartScreen warnings regardless of what they contain.
+
+To proceed:
+
+1. Restore the file from quarantine, or add an exclusion for the folder you
+   extracted it to (Windows Security → *Virus & threat protection* →
+   *Manage settings* → *Exclusions*). With **Smart App Control** on, you may
+   need to turn it off (it can't be exclusion-listed) — note that this is a
+   one-way switch until a Windows reset.
+2. If you'd rather not trust a prebuilt binary at all, **build it yourself
+   from source** — the whole toolchain is in this repo and the companion
+   forks. See [Quick start](#quick-start). A build you compiled locally
+   won't be flagged.
+
+There is no malware in the release. The source is fully public; you're
+welcome to inspect or rebuild it.
+
+### No sound
+
+Audio plays through your system's **default output device**. If you get no
+sound at all:
+
+1. **Make sure you're on the latest release.** Early builds shipped before
+   the audio path was finished; current releases (v0.4.2-beta and later)
+   have working sound. Grab the newest from the
+   [Releases](https://github.com/mstan/PokemonStadiumRecomp/releases) page.
+2. **Check which device is default** in Windows Sound settings — the game
+   follows it. If your default is a device that's off or muted, you'll hear
+   nothing.
+3. **Force a specific device** with `PSR_AUDIO_DEVICE=<name substring>`
+   (e.g. `PSR_AUDIO_DEVICE=Speakers`). The match is a case-sensitive
+   substring of the device name; the first device that matches is used.
+
+A subtle **audio crackle** during gameplay is a separate, known issue that's
+being worked on — it's in the recompiled N64 sound synthesis, not your
+device. `PSR_DISABLE_GBTOWER_AUDIO=1` silences only the GB Tower audio path
+if you want to isolate it.
 
 ## ROM
 
