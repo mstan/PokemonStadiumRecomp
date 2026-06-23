@@ -90,6 +90,7 @@ extern "C" const char* psr_app_file_c(const char* name, char* out, unsigned long
 #include "ares_worker.h"
 #include "transfer_pak.h"
 #include "ui_seam.h"
+#include "input_bindings.h"
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
@@ -831,101 +832,36 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
     static uint16_t s_last_buttons = 0;
 
     uint16_t b = 0;
-    int16_t lx = 0, ly = 0, rx = 0, ry = 0;
+    int32_t lx = 0, ly = 0;
 
-    if (pad) {
-        auto pressed = [&](SDL_GameControllerButton btn) {
-            return SDL_GameControllerGetButton(pad, btn) ? 1 : 0;
-        };
-
-        // N64 button bit layout (libultra contStat):
-        //   0x8000 A         0x4000 B         0x2000 Z         0x1000 Start
-        //   0x0800 D-Up      0x0400 D-Down    0x0200 D-Left    0x0100 D-Right
-        //   0x0020 L         0x0010 R
-        //   0x0008 C-Up      0x0004 C-Down    0x0002 C-Left    0x0001 C-Right
-        if (pressed(SDL_CONTROLLER_BUTTON_A))             b |= 0x8000; // A
-        if (pressed(SDL_CONTROLLER_BUTTON_B))             b |= 0x4000; // B
-        if (pressed(SDL_CONTROLLER_BUTTON_START))         b |= 0x1000; // Start
-        if (pressed(SDL_CONTROLLER_BUTTON_DPAD_UP))       b |= 0x0800;
-        if (pressed(SDL_CONTROLLER_BUTTON_DPAD_DOWN))     b |= 0x0400;
-        if (pressed(SDL_CONTROLLER_BUTTON_DPAD_LEFT))     b |= 0x0200;
-        if (pressed(SDL_CONTROLLER_BUTTON_DPAD_RIGHT))    b |= 0x0100;
-        // N64 L/R are the physical shoulder buttons, so map them to the pad's
-        // bumpers; the N64 Z-trigger maps to the left analog trigger. The old
-        // default put N64 L on the LEFT-STICK CLICK (L3) with Z on the left
-        // bumper, so users couldn't find L at all (issue #8: "L button does not
-        // work" — a reporter found it on the stick click). Bumpers for L/R is
-        // both reachable and symmetric; LT for Z matches the N64 trigger feel.
-        if (pressed(SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  b |= 0x0020; // L
-        if (pressed(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) b |= 0x0010; // R
-        // Triggers are analog axes (0..32767); treat a half-press as the Z bit.
-        if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  > 0x4000 ||
-            SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 0x4000)
-                                                          b |= 0x2000; // Z
-
-        rx = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTX);
-        ry = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTY);
-        lx = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
-        ly = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
-    }
-
-    // Keyboard fallback / supplement. SDL_GetKeyboardState requires
-    // the VIDEO subsystem (initialized by create_gfx). The keyboard
-    // layout below is the standard for N64 emulators (Project64 /
-    // Mupen-style). Pressed keys OR-in to whatever the pad reports,
-    // so a pad and keyboard can coexist.
+    // All button + stick mapping now flows through the rebindable binding tables
+    // (input_bindings.cpp), edited per device type via the launcher's per-port
+    // rebind menu. The keyboard table is consulted iff a keyboard drives this
+    // port (use_kb); the controller table iff a pad does. accumulate() ORs the
+    // digital buttons into `b` and sums the analog-stick contribution into
+    // lx/ly (raw, signed, pre-deadzone): keyboard keys give full deflection, pad
+    // axes give proportional tilt — exactly what the old hardcoded path did.
     //
-    //   X       -> A           Z       -> B
-    //   Left-Shift -> Z trigger Enter   -> Start
-    //   Q       -> L            E       -> R
-    //   Arrows  -> D-pad
-    //   I/K/J/L -> C-Up/Down/Left/Right
-    //   W/A/S/D -> Analog stick (full deflection per key)
+    // The default bindings reproduce the historical layout precisely (X->A,
+    // Z->B, arrows->D-pad, Q/E->L/R, I/K/J/L->C, WASD->analog, LShift/Space->Z,
+    // Enter->Start; pad A/B/Start/dpad, bumpers->L/R, triggers->Z, right
+    // stick->C, left stick->analog — the issue-#8 layout), so a fresh build with
+    // no input.cfg behaves identically.
+    //
+    // SDL_GetKeyboardState requires the VIDEO subsystem (initialized by
+    // create_gfx). A pad and keyboard driving the same port still coexist
+    // because their tables are OR'd together.
     const Uint8* ks = use_kb ? SDL_GetKeyboardState(nullptr) : nullptr;
-    if (ks != nullptr) {
-        if (ks[SDL_SCANCODE_X])      b |= 0x8000;        // A
-        if (ks[SDL_SCANCODE_Z])      b |= 0x4000;        // B
-        if (ks[SDL_SCANCODE_LSHIFT] ||
-            ks[SDL_SCANCODE_SPACE])  b |= 0x2000;        // Z
-        if (ks[SDL_SCANCODE_RETURN] ||
-            ks[SDL_SCANCODE_KP_ENTER]) b |= 0x1000;      // Start
-        if (ks[SDL_SCANCODE_UP])     b |= 0x0800;        // D-Up
-        if (ks[SDL_SCANCODE_DOWN])   b |= 0x0400;        // D-Down
-        if (ks[SDL_SCANCODE_LEFT])   b |= 0x0200;        // D-Left
-        if (ks[SDL_SCANCODE_RIGHT])  b |= 0x0100;        // D-Right
-        if (ks[SDL_SCANCODE_Q])      b |= 0x0020;        // L
-        if (ks[SDL_SCANCODE_E])      b |= 0x0010;        // R
-        if (ks[SDL_SCANCODE_I])      b |= 0x0008;        // C-Up
-        if (ks[SDL_SCANCODE_K])      b |= 0x0004;        // C-Down
-        if (ks[SDL_SCANCODE_J])      b |= 0x0002;        // C-Left
-        if (ks[SDL_SCANCODE_L])      b |= 0x0001;        // C-Right
+    pkmnstadium::input::accumulate(pad, ks, &b, &lx, &ly);
 
-        // Digital-to-analog stick from WASD. Each key gives full
-        // deflection — diagonals saturate to (±32767, ±32767) before
-        // the deadzone-rescale. If a real pad is also tilting the
-        // stick, sum + saturate.
-        int32_t kx = 0, ky = 0;
-        if (ks[SDL_SCANCODE_A]) kx -= 32767;
-        if (ks[SDL_SCANCODE_D]) kx += 32767;
-        if (ks[SDL_SCANCODE_W]) ky -= 32767;  // SDL Y-axis: up = negative
-        if (ks[SDL_SCANCODE_S]) ky += 32767;
-        int32_t sx = int32_t(lx) + kx;
-        int32_t sy = int32_t(ly) + ky;
-        if (sx >  32767) sx =  32767;
-        if (sx < -32768) sx = -32768;
-        if (sy >  32767) sy =  32767;
-        if (sy < -32768) sy = -32768;
-        lx = (int16_t)sx;
-        ly = (int16_t)sy;
-    }
+    // Saturate the summed stick (a pad tilt plus keyboard keys can exceed the
+    // axis range) before the deadzone rescale.
+    if (lx >  32767) lx =  32767;
+    if (lx < -32768) lx = -32768;
+    if (ly >  32767) ly =  32767;
+    if (ly < -32768) ly = -32768;
+
     *buttons_out = b;
-
-    // C-buttons from right stick.
-    constexpr int16_t deadzone = 8000;
-    if (ry < -deadzone) *buttons_out |= 0x0008; // C-Up
-    if (ry >  deadzone) *buttons_out |= 0x0004; // C-Down
-    if (rx < -deadzone) *buttons_out |= 0x0002; // C-Left
-    if (rx >  deadzone) *buttons_out |= 0x0001; // C-Right
 
     // Radial deadzone: Xbox One controller sticks rest at ~±300-1500
     // raw; without a deadzone, Stadium reads idle noise as "player
@@ -934,13 +870,11 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
     // rather than "confirm," which is what was making the title screen
     // soft-reset back to the boot sequence on any button press.
     //
-    // 8000 raw matches the C-button deadzone we already use for the
-    // right stick; well above typical resting drift but well below
-    // intentional tilts. Re-scale OUTSIDE the deadzone so the player
-    // gets full N64 stick range from a partial Xbox tilt.
-    constexpr int16_t LSTICK_DEADZONE = 8000;
-    auto apply_deadzone = [](int16_t raw) -> float {
-        int32_t v = raw;
+    // 8000 raw matches the C-button deadzone; well above typical resting
+    // drift but well below intentional tilts. Re-scale OUTSIDE the deadzone
+    // so the player gets full N64 stick range from a partial Xbox tilt.
+    constexpr int32_t LSTICK_DEADZONE = 8000;
+    auto apply_deadzone = [](int32_t v) -> float {
         if (v >  LSTICK_DEADZONE) {
             return float(v - LSTICK_DEADZONE) / float(32767 - LSTICK_DEADZONE) * 80.0f;
         }
@@ -1294,6 +1228,12 @@ int main(int argc, char** argv) {
         };
         for (const char* m : k_8bitdo64_maps) SDL_GameControllerAddMapping(m);
     }
+
+    // Load the user's input bindings (per-device-type keyboard/controller maps,
+    // edited via the launcher's per-port rebind menu). Falls back to the
+    // historical default layout if input.cfg is absent, so the build is
+    // immediately playable. Must run before get_n64_input is first polled.
+    pkmnstadium::input::load();
 
     // Enumerate connected gamepads for the SS Anne launcher's controller
     // dropdowns. Done here (before the render hooks initialize) so the list is

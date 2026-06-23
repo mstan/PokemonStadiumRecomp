@@ -10,6 +10,7 @@ body {
 
 #app {
     box-sizing: border-box;
+    position: relative; /* containing block for the rebind overlay */
     width: 100%;
     height: 100%;
     display: flex;
@@ -134,7 +135,22 @@ img.cart { width: 132dp; height: 138dp; cursor: pointer; } /* click cart to chan
 .card__save { margin-top: 4dp; align-items: center; }
 
 .card__ctrllabel { color: #8a97a5ff; font-size: 11dp; margin-top: 10dp; margin-bottom: 4dp; }
-.card__ctrlwrap { position: relative; }
+.card__ctrlwrap { position: relative; display: flex; flex-direction: row; align-items: stretch; }
+.card__ctrlwrap .card__dropdown { flex-grow: 1; min-width: 0dp; }
+/* per-port controls cog: opens the rebind page for this port's device type */
+.card__cog {
+    display: flex; flex-direction: row; align-items: center; justify-content: center;
+    width: 34dp; margin-left: 6dp; flex-shrink: 0;
+    background-color: #0f141bff; border: 1dp #232c38ff; border-radius: 6dp;
+    color: #8a97a5ff; font-size: 16dp; cursor: pointer;
+}
+.card__cog:hover { border-color: #3b9ae8ff; }
+.card__cog.nav-focus { border-color: #66c0f4ff; }
+img.card__cog-ico { width: 16dp; height: 16dp; }
+/* no device assigned -> nothing to rebind: dim and non-interactive */
+.card__cog--off { border-color: #1a2027ff; background-color: #0c1014ff; cursor: arrow; }
+.card__cog--off:hover { border-color: #1a2027ff; }
+.card__cog--off img.card__cog-ico { image-color: #ffffff30; }
 /* popup option list */
 .ctrl-menu {
     position: absolute;
@@ -211,10 +227,27 @@ img#stadium__cart { width: 132dp; height: 91dp; margin-right: 18dp; }
 #stadium__title { color: #e6edf3ff; font-weight: bold; font-size: 18dp; }
 #stadium__verified { color: #3fb950ff; font-size: 14dp; font-weight: normal; margin-left: 8dp; }
 #stadium__actions { display: flex; flex-direction: row; align-items: center; margin-top: 8dp; }
-#stadium__actions .btn { margin-left: 0dp; margin-right: 10dp; }
+#stadium__actions .btn { margin-left: 0dp; margin-right: 14dp; }
+
+/* Sliding toggle (snesrecomp-style), used for Auto-play in the bottom-left. */
+.switch {
+    box-sizing: border-box;
+    width: 44dp; height: 24dp; border-radius: 12dp;
+    background-color: #2b3446ff; border: 1dp transparent;
+    display: block; cursor: pointer;
+}
+.switch.on { background-color: #3fb950ff; }
+.knob {
+    display: block; width: 18dp; height: 18dp; border-radius: 9dp;
+    background-color: #e6e9efff; margin: 3dp 0dp 0dp 3dp;
+}
+.switch.on .knob { margin-left: 23dp; }
+.switch.nav-focus { border-color: #66c0f4ff; }
+.switch-lbl { color: #c7d5e0ff; margin-left: 10dp; font-size: 14dp; cursor: pointer; }
+.switch-lbl:hover { color: #ffffffff; }
 
 #playwrap { display: flex; flex-direction: column; align-items: center; justify-content: center; }
-#autoplay-count { color: #8a97a5ff; font-size: 13dp; margin-bottom: 6dp; }
+#autoplay-count { color: #f0b429ff; font-size: 13dp; margin-left: 14dp; }
 #autoplay-row { color: #c7d5e0ff; font-size: 13dp; margin-top: 8dp; cursor: pointer; }
 #autoplay-row:hover { color: #ffffffff; }
 #play {
@@ -226,4 +259,75 @@ img#stadium__cart { width: 132dp; height: 91dp; margin-right: 18dp; }
 #play.play--disabled {
     background-color: #21303fff; border-color: #2b3640ff; color: #5a6573ff;
     cursor: arrow;
+}
+
+/* ---- Launcher / rebind view switching ----------------------------------- */
+/* The launcher content and the rebind page are sibling full-area views under
+   the persistent title bar; exactly one is visible (the other has .hidden). */
+#launcher-view {
+    box-sizing: border-box;
+    display: flex; flex-direction: column;
+    flex-grow: 1; width: 100%; min-height: 0dp;
+}
+
+/* ---- Rebind page (full-window overlay screen) --------------------------- */
+/* A modal screen that covers the entire window (over the launcher and title
+   bar). Base state hidden; shown by adding the `open` class. The id+class
+   selector (#rebind-view.open) outranks the base id rule, so toggling `open`
+   reliably switches visibility — a plain `.hidden` class would lose to the id
+   rule's `display`. */
+#rebind-view {
+    display: none;
+    position: absolute;
+    top: 0dp; left: 0dp; right: 0dp; bottom: 0dp;
+    box-sizing: border-box;
+    width: 100%; height: 100%;
+    background-color: #0d1117ff;
+    z-index: 100;
+    padding: 18dp 26dp;
+    flex-direction: column;
+}
+#rebind-view.open { display: flex; }
+#rebind-head {
+    display: flex; flex-direction: row; align-items: center; justify-content: space-between;
+    margin-bottom: 16dp; padding-bottom: 14dp;
+    border-bottom: 1dp #1e2631ff;
+    flex-shrink: 0;
+}
+#rebind-titles { display: flex; flex-direction: column; }
+#rebind-title { color: #e6edf3ff; font-weight: bold; font-size: 24dp; }
+#rebind-sub { color: #8a97a5ff; font-size: 13dp; margin-top: 5dp; }
+#rebind-actions { display: flex; flex-direction: row; align-items: center; }
+#rebind-back, #rebind-reset { font-size: 14dp; padding: 9dp 18dp; }
+
+/* Input rows wrap into two columns and the list scrolls if it overflows. */
+#rebind-list {
+    display: flex; flex-direction: row; flex-wrap: wrap;
+    align-content: flex-start;
+    flex-grow: 1; min-height: 0dp;
+    overflow-y: auto;
+}
+.rb-row {
+    box-sizing: border-box;
+    display: flex; flex-direction: row; align-items: center;
+    width: 50%;
+    padding: 6dp 16dp;
+}
+.rb-label { width: 110dp; flex-shrink: 0; color: #c7d5e0ff; font-size: 14dp; }
+.rb-chip {
+    box-sizing: border-box;
+    flex-grow: 1; min-width: 0dp;
+    margin-left: 6dp;
+    padding: 6dp 8dp;
+    background-color: #0f141bff;
+    border: 1dp #232c38ff; border-radius: 5dp;
+    color: #c7d5e0ff; font-size: 13dp;
+    text-align: center;
+    cursor: pointer;
+}
+.rb-chip--alt { background-color: #0c1117ff; color: #9aa7b4ff; }
+.rb-chip:hover { border-color: #3b9ae8ff; color: #ffffffff; }
+/* armed and waiting for the user to press a key/button */
+.rb-chip--scan {
+    border-color: #f0b429ff; color: #f0b429ff; background-color: #1d1a10ff;
 }

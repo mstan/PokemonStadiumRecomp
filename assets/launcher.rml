@@ -16,6 +16,9 @@
         </div>
     </div>
 
+    <!-- Launcher view (the first screen). Hidden while the rebind page shows. -->
+    <div id="launcher-view">
+
     <!-- Transient warning banner -->
     <div id="banner" class="hidden"></div>
 
@@ -49,6 +52,7 @@
                     <span class="card__ctrlname" id="card1-ctrl">None</span>
                     <img class="chev" src="carts/chev.png"/>
                 </div>
+                <span class="card__cog" id="card1-cog"><img class="card__cog-ico" src="carts/cog.png"/></span>
                 <div class="ctrl-menu hidden" id="card1-ctrlmenu"></div>
             </div>
             <div class="card__status" id="card1-status"><span class="dot dot--off"></span> Not assigned</div>
@@ -81,6 +85,7 @@
                     <span class="card__ctrlname" id="card2-ctrl">None</span>
                     <img class="chev" src="carts/chev.png"/>
                 </div>
+                <span class="card__cog" id="card2-cog"><img class="card__cog-ico" src="carts/cog.png"/></span>
                 <div class="ctrl-menu hidden" id="card2-ctrlmenu"></div>
             </div>
             <div class="card__status" id="card2-status"><span class="dot dot--off"></span> Not assigned</div>
@@ -113,6 +118,7 @@
                     <span class="card__ctrlname" id="card3-ctrl">None</span>
                     <img class="chev" src="carts/chev.png"/>
                 </div>
+                <span class="card__cog" id="card3-cog"><img class="card__cog-ico" src="carts/cog.png"/></span>
                 <div class="ctrl-menu hidden" id="card3-ctrlmenu"></div>
             </div>
             <div class="card__status" id="card3-status"><span class="dot dot--off"></span> Not assigned</div>
@@ -145,6 +151,7 @@
                     <span class="card__ctrlname" id="card4-ctrl">None</span>
                     <img class="chev" src="carts/chev.png"/>
                 </div>
+                <span class="card__cog" id="card4-cog"><img class="card__cog-ico" src="carts/cog.png"/></span>
                 <div class="ctrl-menu hidden" id="card4-ctrlmenu"></div>
             </div>
             <div class="card__status" id="card4-status"><span class="dot dot--off"></span> Not assigned</div>
@@ -160,14 +167,33 @@
                 <div id="stadium__title">Pokémon Stadium (USA) <span id="stadium__verified"><img class="ico-check" src="carts/check.png"/> Verified</span></div>
                 <div id="stadium__actions">
                     <span class="btn btn--ghost" id="stadium-change">Change</span>
+                    <span class="switch" id="autoplay-switch"><span class="knob"></span></span>
+                    <span class="switch-lbl" id="autoplay-row">Auto-play</span>
+                    <span id="autoplay-count" class="hidden"></span>
                 </div>
             </div>
         </div>
         <div id="playwrap">
-            <div id="autoplay-count" class="hidden"></div>
             <span id="play">PLAY</span>
-            <div id="autoplay-row"><span class="chk chk--on" id="autoplay-chk"></span> Auto-play</div>
         </div>
+    </div>
+
+    </div><!-- /#launcher-view -->
+
+    <!-- Rebind page (nested view). Built on demand by a player card's cog;
+         edits the per-device-type binding tables. Hidden until opened. -->
+    <div id="rebind-view">
+        <div id="rebind-head">
+            <div id="rebind-titles">
+                <div id="rebind-title">Controls</div>
+                <div id="rebind-sub"></div>
+            </div>
+            <div id="rebind-actions">
+                <span class="btn btn--ghost" id="rebind-reset">Reset to Defaults</span>
+                <span class="btn" id="rebind-back">&#8249; Back</span>
+            </div>
+        </div>
+        <div id="rebind-list"><!-- rows injected by ui_seam --></div>
     </div>
 
 </div>

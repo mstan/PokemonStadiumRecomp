@@ -48,6 +48,7 @@
 
 #include "rt64_render_hooks.h"
 #include "ui_seam.h"
+#include "input_bindings.h"
 
 // Windows' <combaseapi.h> (pulled in transitively above) defines `interface`
 // as a macro for `struct`, which collides with the `interface` parameter name
@@ -167,6 +168,21 @@ int g_nav_menu_slot = -1;   // >=0: navigating that slot's open dropdown
 int g_nav_menu_index = 0;
 bool g_nav_axis_x = false;   // stick debounce
 bool g_nav_axis_y = false;
+
+// ---- rebind page (per-port cog -> per-device-type control remapping) -------
+// A second full-screen "view" inside the same document (snesrecomp-style nested
+// pages): the launcher view hides and the rebind view shows. Bindings are per
+// device TYPE (one keyboard map, one controller map), so the page edits whichever
+// type the cog's port uses. Clicking a binding chip arms a scan (input_bindings)
+// that captures the next key/button press.
+enum class View { Launcher, Rebind };
+View g_view = View::Launcher;
+pkmnstadium::input::Device g_rebind_dev = pkmnstadium::input::Device::Keyboard;
+// While non-empty, the id of the chip awaiting a captured press; the next input
+// event is routed to the scan instead of nav/RmlUi.
+std::string g_scan_chip_id;
+pkmnstadium::input::N64Input g_scan_in = pkmnstadium::input::N64Input::A;
+int g_scan_idx = 0;
 
 int device_count() { return 2 + static_cast<int>(g_gamepads.size()); }
 
@@ -365,7 +381,7 @@ void set_cart(Rml::ElementDocument* doc, const std::string& id, const std::strin
 // the relative src ("carts/x.png") and the resolved absolute path so it matches
 // regardless of RmlUi's path resolution.
 void queue_cart_images(const std::filesystem::path& assets) {
-    const char* names[] = {"yellow", "red", "blue", "empty", "n64", "check", "chev"};
+    const char* names[] = {"yellow", "red", "blue", "empty", "n64", "check", "chev", "cog"};
     for (const char* n : names) {
         const std::filesystem::path p = assets / "carts" / (std::string(n) + ".png");
         std::ifstream f(p, std::ios::binary);
@@ -641,6 +657,8 @@ void update_slot_ui(Rml::ElementDocument* doc, int slot) {
     const bool assigned = g_slot_device[slot] != 0;
     set_text(doc, base + "-ctrl", device_name(g_slot_device[slot]));
     set_class(doc, base + "-chk", "chk--on", g_slot_enabled[slot]);
+    // The rebind cog is only meaningful once a device is assigned to the port.
+    set_class(doc, base + "-cog", "card__cog--off", !assigned);
     if (Rml::Element* st = doc->GetElementById(base + "-status")) {
         // The label must be wrapped in a span: RmlUi drops a bare text node that
         // is a direct child of a flex row, leaving just the dot.
@@ -670,7 +688,7 @@ void cancel_autoplay(Rml::ElementDocument* doc) {
     if (!g_autoplay) return;
     g_autoplay = false;
     g_autoplay_armed = false;
-    set_class(doc, "autoplay-chk", "chk--on", false);
+    set_class(doc, "autoplay-switch", "on", false);
     set_class(doc, "autoplay-count", "hidden", true);
 }
 
@@ -961,6 +979,121 @@ void open_stadium_dialog() {
     }).detach();
 }
 
+// ---- rebind page -----------------------------------------------------------
+
+void refresh_rebind_chip(Rml::ElementDocument* doc);
+void begin_scan_chip(Rml::ElementDocument* doc, pkmnstadium::input::N64Input in, int idx);
+
+// (Re)render every input row for the current device into #rebind-list and wire
+// each binding chip to arm a scan. Called on open and after a reset.
+void build_rebind_list(Rml::ElementDocument* doc) {
+    using namespace pkmnstadium::input;
+    Rml::Element* list = doc->GetElementById("rebind-list");
+    if (list == nullptr) return;
+
+    std::string rml;
+    for (int i = 0; i < static_cast<int>(N64Input::COUNT); ++i) {
+        const N64Input in = static_cast<N64Input>(i);
+        const char* key = input_key(in);
+        rml += "<div class=\"rb-row\">";
+        rml += "<span class=\"rb-label\">";
+        rml += input_label(in);
+        rml += "</span>";
+        for (int b = 0; b < bindings_per_input; ++b) {
+            rml += "<span class=\"rb-chip";
+            if (b == 1) rml += " rb-chip--alt";
+            rml += "\" id=\"rb-";
+            rml += key;
+            rml += "-";
+            rml += std::to_string(b);
+            rml += "\">";
+            rml += field_to_string(get_binding(g_rebind_dev, in, b));
+            rml += "</span>";
+        }
+        rml += "</div>";
+    }
+    list->SetInnerRML(rml);
+
+    // Wire each chip now that the elements exist.
+    for (int i = 0; i < static_cast<int>(N64Input::COUNT); ++i) {
+        const N64Input in = static_cast<N64Input>(i);
+        const char* key = input_key(in);
+        for (int b = 0; b < bindings_per_input; ++b) {
+            const std::string id = std::string("rb-") + key + "-" + std::to_string(b);
+            add_click(doc, id, [doc, in, b] { begin_scan_chip(doc, in, b); });
+        }
+    }
+}
+
+// Restore the currently-scanning chip's text to its bound value and drop the
+// scanning highlight. Uses the stored (g_scan_in, g_scan_idx).
+void refresh_rebind_chip(Rml::ElementDocument* doc) {
+    if (g_scan_chip_id.empty()) return;
+    if (Rml::Element* e = doc->GetElementById(g_scan_chip_id)) {
+        e->SetInnerRML(pkmnstadium::input::field_to_string(
+            pkmnstadium::input::get_binding(g_rebind_dev, g_scan_in, g_scan_idx)));
+        e->SetClass("rb-chip--scan", false);
+    }
+}
+
+// Arm a scan for a chip: the next key/button press (drained in draw_hook) is
+// captured into this binding. Shows a "Press ..." prompt on the chip meanwhile.
+void begin_scan_chip(Rml::ElementDocument* doc, pkmnstadium::input::N64Input in, int idx) {
+    using namespace pkmnstadium::input;
+    // If another chip was already armed, restore it first (one scan at a time).
+    if (!g_scan_chip_id.empty()) refresh_rebind_chip(doc);
+
+    g_scan_in = in;
+    g_scan_idx = idx;
+    g_scan_chip_id = std::string("rb-") + input_key(in) + "-" + std::to_string(idx);
+    start_scan(g_rebind_dev, in, idx);
+    if (Rml::Element* e = doc->GetElementById(g_scan_chip_id)) {
+        e->SetInnerRML(g_rebind_dev == Device::Keyboard ? "Press a key..."
+                                                        : "Press a button...");
+        e->SetClass("rb-chip--scan", true);
+    }
+}
+
+// Show the rebind page for a device type (hides the launcher view).
+void open_rebind_view(Rml::ElementDocument* doc, pkmnstadium::input::Device dev) {
+    using namespace pkmnstadium::input;
+    cancel_autoplay(doc);
+    hide_all_ctrl_menus(doc);
+    cancel_scan();
+    g_scan_chip_id.clear();
+    g_rebind_dev = dev;
+    g_view = View::Rebind;
+
+    const bool kb = (dev == Device::Keyboard);
+    set_text(doc, "rebind-title", kb ? "Keyboard Controls" : "Controller Controls");
+    set_text(doc, "rebind-sub", kb
+        ? "Shared by all keyboards. Click a binding, then press a key (Esc to cancel). Two bindings allowed per input."
+        : "Shared by all controllers. Click a binding, then press a button or move a stick (Esc to cancel).");
+    build_rebind_list(doc);
+
+    // Show the full-window overlay (covers the launcher). The `open` class
+    // (id+class specificity) wins over the base `#rebind-view { display:none }`.
+    set_class(doc, "rebind-view", "open", true);
+}
+
+// Return to the launcher view (hide the overlay).
+void close_rebind_view(Rml::ElementDocument* doc) {
+    pkmnstadium::input::cancel_scan();
+    g_scan_chip_id.clear();
+    g_view = View::Launcher;
+    set_class(doc, "rebind-view", "open", false);
+    apply_nav_highlight(doc);
+}
+
+// Reset both device tables to defaults and re-render the page.
+void rebind_reset(Rml::ElementDocument* doc) {
+    pkmnstadium::input::cancel_scan();
+    g_scan_chip_id.clear();
+    pkmnstadium::input::reset_defaults();
+    pkmnstadium::input::save();
+    build_rebind_list(doc);
+}
+
 // Wire up the launcher's interactive elements (Phase 3a/3b/3c/3d).
 void attach_launcher_events(Rml::ElementDocument* doc) {
     apply_default_assignment();
@@ -994,6 +1127,22 @@ void attach_launcher_events(Rml::ElementDocument* doc) {
         add_click(doc, base + "-dropdown", [doc, i] { toggle_ctrl_menu(doc, i); });
         g_nav_items.push_back(base + "-dropdown");
 
+        // Per-port controls cog: opens the rebind page for this port's device
+        // TYPE (keyboard map if the slot uses the keyboard, else the controller
+        // map — both maps are shared across ports). Reachable by mouse and by
+        // controller/keyboard nav (in g_nav_actions).
+        auto cog_fn = [doc, i] {
+            using namespace pkmnstadium::input;
+            // Disabled when the port has no device assigned: nothing to rebind.
+            if (g_slot_device[i] == 0) return;
+            cancel_autoplay(doc);
+            const Device dev = (g_slot_device[i] >= 2) ? Device::Controller : Device::Keyboard;
+            open_rebind_view(doc, dev);
+        };
+        add_click(doc, base + "-cog", cog_fn);
+        g_nav_items.push_back(base + "-cog");
+        g_nav_actions[base + "-cog"] = cog_fn;
+
         // ROM/save controls (open native dialogs -> mouse/keyboard; not in the
         // controller ring).
         add_click(doc, base + "-romchange", [doc, i] { cancel_autoplay(doc); open_change_dialog(i, ChangeKind::Rom); });
@@ -1006,12 +1155,16 @@ void attach_launcher_events(Rml::ElementDocument* doc) {
     // Stadium (N64) ROM picker.
     add_click(doc, "stadium-change", [doc] { cancel_autoplay(doc); open_stadium_dialog(); });
 
+    // Rebind page controls (the page itself is built on demand by the cog).
+    add_click(doc, "rebind-back",  [doc] { close_rebind_view(doc); });
+    add_click(doc, "rebind-reset", [doc] { rebind_reset(doc); });
+
     // Auto-play toggle. Flips the persisted preference (written back to
     // launcher.cfg) and the live runtime flag together.
     auto autoplay_fn = [doc] {
         g_autoplay_pref = !g_autoplay_pref;
         g_autoplay = g_autoplay_pref;
-        set_class(doc, "autoplay-chk", "chk--on", g_autoplay);
+        set_class(doc, "autoplay-switch", "on", g_autoplay);
         if (!g_autoplay) {
             g_autoplay_armed = false;
             set_class(doc, "autoplay-count", "hidden", true);
@@ -1021,11 +1174,14 @@ void attach_launcher_events(Rml::ElementDocument* doc) {
             write_transfer_pak_cfg();
         }
     };
+    // The sliding toggle (bottom-left) and its label both flip auto-play; nav
+    // focuses the switch.
+    add_click(doc, "autoplay-switch", autoplay_fn);
     add_click(doc, "autoplay-row", autoplay_fn);
-    g_nav_items.push_back("autoplay-row");
-    g_nav_actions["autoplay-row"] = autoplay_fn;
-    // Reflect the loaded preference (cfg/env) in the checkbox at startup.
-    set_class(doc, "autoplay-chk", "chk--on", g_autoplay);
+    g_nav_items.push_back("autoplay-switch");
+    g_nav_actions["autoplay-switch"] = autoplay_fn;
+    // Reflect the loaded preference (cfg/env) in the toggle at startup.
+    set_class(doc, "autoplay-switch", "on", g_autoplay);
     if (!g_autoplay) set_class(doc, "autoplay-count", "hidden", true);
 
     // PLAY: only launches when the config is valid.
@@ -1223,8 +1379,33 @@ void draw_hook(RT64::RenderCommandList* list, RT64::RenderFramebuffer* swap_chai
     // RmlUi so clicking still works alongside controller navigation.
     SDL_Event ev;
     while (g_event_queue.try_dequeue(ev)) {
+        // Rebind scan: while a chip is armed, the next key/button press IS the
+        // new binding (or Esc cancels). Swallow all events until it resolves.
+        if (!g_scan_chip_id.empty()) {
+            pkmnstadium::input::handle_scan_event(ev);
+            continue;
+        }
+        // Rebind page: Back (Esc/Backspace/controller B) returns to the launcher;
+        // mouse clicks drive the binding chips and Reset/Back buttons.
+        if (g_view == View::Rebind) {
+            const bool back =
+                (ev.type == SDL_KEYDOWN &&
+                 (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_BACKSPACE)) ||
+                (ev.type == SDL_CONTROLLERBUTTONDOWN && ev.cbutton.button == SDL_CONTROLLER_BUTTON_B);
+            if (back) {
+                if (g_doc != nullptr) close_rebind_view(g_doc);
+                continue;
+            }
+            RmlSDL::InputEventHandler(g_ui->context, ev);
+            continue;
+        }
         if (g_doc != nullptr && handle_nav_event(g_doc, ev)) continue;
         RmlSDL::InputEventHandler(g_ui->context, ev);
+    }
+    // A finished scan (capture or Esc-cancel) refreshes the armed chip's text.
+    if (!g_scan_chip_id.empty() && !pkmnstadium::input::scanning() && g_doc != nullptr) {
+        refresh_rebind_chip(g_doc);
+        g_scan_chip_id.clear();
     }
 
     int w = 0;
