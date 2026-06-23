@@ -161,13 +161,6 @@ std::atomic<uint16_t> g_buttons_override{0};
 std::atomic<int>      g_stick_x_override{0};  // -128..127
 std::atomic<int>      g_stick_y_override{0};
 
-// Default 1.0 (full volume). The previous default of 0 (muted) was meant
-// to prevent harness/test relaunches from blasting boot audio in a loop,
-// but in practice it just made every manual relaunch silent and required
-// a separate set_volume call. Set PSR_VOLUME=0 env var (or use TCP
-// set_volume) to mute for automated runs.
-std::atomic<float>    g_audio_volume{1.0f};
-
 std::atomic<uint64_t> g_send_dl_count{0};
 std::atomic<uint64_t> g_update_screen_count{0};
 std::atomic<uint64_t> g_send_dl_audio_count{0};
@@ -940,26 +933,6 @@ static std::string handle_command(const std::string& line) {
         }
         out += "]}";
         return out;
-    }
-    if (cmd == "set_volume") {
-        // Args: {"value": 0.0..1.0}. Out-of-range values are clamped.
-        // Float JSON parsing isn't in our crude get_int/get_str family,
-        // so use strtod against the raw substring.
-        std::string needle = "\"value\"";
-        size_t k = line.find(needle);
-        float v = 0.0f;
-        if (k != std::string::npos) {
-            size_t colon = line.find(':', k);
-            if (colon != std::string::npos) {
-                v = (float)std::strtod(line.c_str() + colon + 1, nullptr);
-            }
-        }
-        if (v < 0.0f) v = 0.0f;
-        if (v > 1.0f) v = 1.0f;
-        g_audio_volume.store(v);
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"value\":%.3f}", v);
-        return buf;
     }
     if (cmd == "claim_input") {
         // Arm the override flag without changing button/stick state.

@@ -385,18 +385,9 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
     }
 
     // Convert int16→float and swap stereo (libultra interleaves R,L per word).
-    // Master volume is configurable: defaults to 0 (mute) so harness/test
-    // re-launches don't blast the boot audio in a loop. Override per-launch
-    // via PSR_VOLUME env var or at runtime via TCP `set_volume`.
-    const float main_volume = pkmnstadium::dbg::g_audio_volume.load();
-    if (main_volume == 0.0f) {
-        // Skip the conversion entirely when muted — saves CPU cycles
-        // on the audio thread during long automated runs.
-        return;
-    }
     for (size_t i = 0; i < sample_count; i += input_channels) {
-        swap_buffer[i + 0 + duplicated_input_frames * input_channels] = audio_data[i + 1] * (0.5f / 32768.0f) * main_volume;
-        swap_buffer[i + 1 + duplicated_input_frames * input_channels] = audio_data[i + 0] * (0.5f / 32768.0f) * main_volume;
+        swap_buffer[i + 0 + duplicated_input_frames * input_channels] = audio_data[i + 1] * (0.5f / 32768.0f);
+        swap_buffer[i + 1 + duplicated_input_frames * input_channels] = audio_data[i + 0] * (0.5f / 32768.0f);
     }
 
     if (sample_count <= duplicated_input_frames * input_channels) {
@@ -1221,19 +1212,6 @@ int main(int argc, char** argv) {
 #endif
 
     std::fprintf(stderr, "[PSR] before SDL_InitSubSystem\n"); std::fflush(stderr);
-
-    // PSR_VOLUME env var overrides the default-muted master volume.
-    // Accepts e.g. "0.5", "1.0". Invalid / unset leaves volume at 0.
-    if (const char* vol_env = std::getenv("PSR_VOLUME")) {
-        float v = (float)std::strtod(vol_env, nullptr);
-        if (v < 0.0f) v = 0.0f;
-        if (v > 1.0f) v = 1.0f;
-        pkmnstadium::dbg::g_audio_volume.store(v);
-        std::fprintf(stderr, "[PSR] PSR_VOLUME=%s -> master volume %.3f\n", vol_env, v);
-    } else {
-        std::fprintf(stderr, "[PSR] master volume defaulting to 0 (muted). "
-            "Set PSR_VOLUME=1.0 to unmute, or use TCP `set_volume`.\n");
-    }
 
     // PSR_TURBO env var: turbo (fast-forward) now defaults OFF for
     // real-time playback. Turbo makes the game over-produce audio (the
