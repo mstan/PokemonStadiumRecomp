@@ -505,8 +505,10 @@ static const char* select_audio_device() {
         fprintf(stderr, "[PSR]   [%d] %s\n", i, nm ? nm : "(null)");
     }
 
-    // (1) Explicit pin always wins.
-    const char* want = std::getenv("PSR_AUDIO_DEVICE");
+    // (1) Explicit pin always wins. Resolved as PSR_AUDIO_DEVICE > launcher.cfg
+    // `audio_device` (Settings > Audio output) > empty (follow system default).
+    const std::string want_s = pkmnstadium::ui_seam::startup_audio_device();
+    const char* want = want_s.empty() ? nullptr : want_s.c_str();
     if (want && want[0]) {
         for (int i = 0; i < count; i++) {
             const char* name = SDL_GetAudioDeviceName(i, 0);
@@ -558,6 +560,14 @@ static void reset_audio(uint32_t output_freq) {
     spec_desired.format  = AUDIO_F32;
     spec_desired.channels = (Uint8)output_channels;
     spec_desired.samples = 0x100;
+
+    // Close any previously-opened device first (so reset_audio can be re-invoked
+    // to switch devices — e.g. the launcher's Settings > Audio output — without
+    // leaking the prior handle).
+    if (audio_device != 0) {
+        SDL_CloseAudioDevice(audio_device);
+        audio_device = 0;
+    }
 
     const char* dev_name = select_audio_device();
     audio_device = SDL_OpenAudioDevice(dev_name, false, &spec_desired, nullptr, 0);
@@ -1279,6 +1289,21 @@ int main(int argc, char** argv) {
         std::fflush(stderr);
         pkmnstadium::ui_seam::set_gamepads(pads);
     }
+
+    // Enumerate audio output devices for the launcher's Settings > Audio output
+    // dropdown. The actual device selection (select_audio_device) happens at
+    // reset_audio time and honors the saved name; this is just the picker list.
+    {
+        std::vector<std::string> audio_devs;
+        const int acount = SDL_GetNumAudioDevices(0 /* output */);
+        for (int i = 0; i < acount; ++i) {
+            const char* nm = SDL_GetAudioDeviceName(i, 0);
+            if (nm != nullptr && nm[0] != '\0') audio_devs.emplace_back(nm);
+        }
+        std::fprintf(stderr, "[PSR] %zu audio output device(s) for launcher\n", audio_devs.size());
+        pkmnstadium::ui_seam::set_audio_devices(audio_devs);
+    }
+
     reset_audio(48000);
     std::fprintf(stderr, "[PSR] reset_audio done\n"); std::fflush(stderr);
 
@@ -1305,44 +1330,40 @@ int main(int argc, char** argv) {
     recomp::register_config_path(std::filesystem::current_path());
     pkmnstadium::transfer_pak::initialize();
 
-    // Window mode (issue #18): open directly in fullscreen when the user set
-    // window_mode=fullscreen in launcher.cfg, or passed PSR_FULLSCREEN=1 /
-    // PSR_WINDOW_MODE=fullscreen — so they don't have to press Alt+Enter every
-    // launch. This must run before recomp::start creates the render context,
-    // which reads wm_option to decide the window's initial fullscreen state
-    // (rt64_render_context.cpp: app->setFullScreen(wm_option == Fullscreen)).
-    if (pkmnstadium::ui_seam::startup_fullscreen()) {
+    // Resolve all launch-time graphics settings from launcher.cfg (+ env
+    // overrides) and apply them BEFORE recomp::start creates the render context.
+    // The launcher's Settings page persists these; fullscreen + supersampling +
+    // MSAA also apply live there (update_config), but they must be seeded here so
+    // the very first context honors the saved values.
+    //   - Fullscreen (#18): wm_option.
+    //   - Graphics API (#11): api_option (Auto -> rt64 auto-falls-back D3D12->Vulkan).
+    //   - Supersampling: ds_option (1/2/4). MSAA: msaa_option.
+    {
         ultramodern::renderer::GraphicsConfig gconf = ultramodern::renderer::get_graphics_config();
-        gconf.wm_option = ultramodern::renderer::WindowMode::Fullscreen;
-        ultramodern::renderer::set_graphics_config(gconf);
-        std::fprintf(stderr, "[PSR] window_mode=fullscreen -> launching fullscreen\n");
-    }
 
-    // Graphics API override (issue #11): some machines crash in D3D12 device
-    // creation on startup ("Doesn't open at all" — an access violation in the
-    // D3D12 runtime before any game code runs). rt64 now auto-falls-back to
-    // Vulkan when the API is left on Auto (the default), but PSR_GRAPHICS_API
-    // lets a user force a backend explicitly without the launcher. Applied
-    // before recomp::start creates the render context.
-    if (const char* api_env = std::getenv("PSR_GRAPHICS_API"); api_env != nullptr && api_env[0] != '\0') {
-        std::string api;
-        for (const char* p = api_env; *p != '\0'; ++p) api += static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
-        ultramodern::renderer::GraphicsConfig gconf = ultramodern::renderer::get_graphics_config();
-        bool ok = true;
-        if (api == "vulkan" || api == "vk") {
-            gconf.api_option = ultramodern::renderer::GraphicsApi::Vulkan;
-        } else if (api == "d3d12" || api == "dx12" || api == "directx") {
-            gconf.api_option = ultramodern::renderer::GraphicsApi::D3D12;
-        } else if (api == "auto") {
-            gconf.api_option = ultramodern::renderer::GraphicsApi::Auto;
-        } else {
-            ok = false;
-            std::fprintf(stderr, "[PSR] PSR_GRAPHICS_API='%s' unrecognized (use vulkan|d3d12|auto)\n", api_env);
+        gconf.wm_option = pkmnstadium::ui_seam::startup_fullscreen()
+            ? ultramodern::renderer::WindowMode::Fullscreen
+            : ultramodern::renderer::WindowMode::Windowed;
+
+        const std::string api = pkmnstadium::ui_seam::startup_graphics_api();
+        if (api == "vulkan")     gconf.api_option = ultramodern::renderer::GraphicsApi::Vulkan;
+        else if (api == "d3d12") gconf.api_option = ultramodern::renderer::GraphicsApi::D3D12;
+        else                     gconf.api_option = ultramodern::renderer::GraphicsApi::Auto;
+
+        gconf.ds_option = pkmnstadium::ui_seam::startup_ds_option();
+
+        using AA = ultramodern::renderer::Antialiasing;
+        switch (pkmnstadium::ui_seam::startup_msaa()) {
+            case 0:  gconf.msaa_option = AA::None;   break;
+            case 2:  gconf.msaa_option = AA::MSAA2X; break;
+            case 8:  gconf.msaa_option = AA::MSAA8X; break;
+            default: gconf.msaa_option = AA::MSAA4X; break;
         }
-        if (ok) {
-            ultramodern::renderer::set_graphics_config(gconf);
-            std::fprintf(stderr, "[PSR] graphics API forced to %s\n", api.c_str());
-        }
+
+        ultramodern::renderer::set_graphics_config(gconf);
+        std::fprintf(stderr, "[PSR] graphics: wm=%s api=%s ds=%d msaa=%d\n",
+            gconf.wm_option == ultramodern::renderer::WindowMode::Fullscreen ? "fullscreen" : "windowed",
+            api.c_str(), gconf.ds_option, pkmnstadium::ui_seam::startup_msaa());
     }
 
     recomp::GameEntry game{};
@@ -1625,6 +1646,12 @@ int main(int argc, char** argv) {
             }
             // Lock in the launcher's controller/enabled config for input routing.
             apply_launcher_input_config();
+            // Apply the audio output device chosen in the launcher's Settings
+            // (re-selects from launcher.cfg). The launcher is shown only at boot,
+            // so this is where the choice takes effect for the game — no app
+            // relaunch needed. Re-selecting the same device is harmless (no audio
+            // is playing yet).
+            reset_audio(output_sample_rate);
         }
         recomp::start_game(game_id);
         std::fprintf(stderr, "[PSR] start_game fired\n"); std::fflush(stderr);

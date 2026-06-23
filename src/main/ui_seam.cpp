@@ -50,6 +50,8 @@
 #include "ui_seam.h"
 #include "input_bindings.h"
 
+#include <ultramodern/config.hpp> // renderer::get/set_graphics_config, WindowMode (live fullscreen)
+
 // Windows' <combaseapi.h> (pulled in transitively above) defines `interface`
 // as a macro for `struct`, which collides with the `interface` parameter name
 // in ui_renderer.h's RmlRenderInterface_RT64::init(). Drop the macro before
@@ -158,6 +160,18 @@ int g_launcher_frames = 0; // frames the launcher has actually rendered
 // on every rewrite so it survives launcher edits. Default windowed.
 bool g_window_fullscreen_pref = false;
 
+// ---- Settings page preferences (persisted in launcher.cfg, applied at next
+// launch). Each has an env override resolved in the startup_* getters, mirroring
+// window_mode/PSR_FULLSCREEN. ----------------------------------------------
+std::string g_graphics_api_pref  = "auto";  // auto | vulkan | d3d12
+std::string g_supersampling_pref = "2x";    // off | 2x | 4x   (menu-safe presets)
+std::string g_msaa_pref          = "4x";    // off | 2x | 4x | 8x
+std::string g_audio_device_pref;            // device-name substring; empty = system default
+
+// Audio output devices for the Settings dropdown (display names), enumerated by
+// main.cpp before the render hooks initialize (like g_gamepads).
+std::vector<std::string> g_audio_devices;
+
 // Controller/keyboard navigation: a focus ring over the navigable items, with a
 // sub-mode for an open controller dropdown. A=activate, B=back, stick/dpad/arrows
 // move. Mouse still works independently.
@@ -175,7 +189,7 @@ bool g_nav_axis_y = false;
 // device TYPE (one keyboard map, one controller map), so the page edits whichever
 // type the cog's port uses. Clicking a binding chip arms a scan (input_bindings)
 // that captures the next key/button press.
-enum class View { Launcher, Rebind };
+enum class View { Launcher, Rebind, Settings };
 View g_view = View::Launcher;
 pkmnstadium::input::Device g_rebind_dev = pkmnstadium::input::Device::Keyboard;
 // While non-empty, the id of the chip awaiting a captured press; the next input
@@ -514,6 +528,17 @@ void write_transfer_pak_cfg() {
     // with the PSR_WINDOW_MODE / PSR_FULLSCREEN env vars.
     f << "# window_mode=windowed|fullscreen : how the game window opens.\n";
     f << "window_mode=" << (g_window_fullscreen_pref ? "fullscreen" : "windowed") << "\n";
+    // Settings page (Display / Graphics / Audio). All take effect on next launch;
+    // each is overridable per-launch by its env var (PSR_GRAPHICS_API,
+    // PSR_RT64_*, PSR_AUDIO_DEVICE), which does not rewrite the file.
+    f << "# graphics_api=auto|vulkan|d3d12 : render backend.\n";
+    f << "graphics_api=" << g_graphics_api_pref << "\n";
+    f << "# supersampling=off|2x|4x : 3D supersampling depth (menu-safe presets).\n";
+    f << "supersampling=" << g_supersampling_pref << "\n";
+    f << "# antialiasing=off|2x|4x|8x : MSAA sample count.\n";
+    f << "antialiasing=" << g_msaa_pref << "\n";
+    f << "# audio_device : output device name substring (empty = system default).\n";
+    f << "audio_device=" << g_audio_device_pref << "\n";
 }
 
 // Parse a cfg/env boolean. Accepts on/off, true/false, yes/no, 1/0 (any case).
@@ -634,6 +659,20 @@ void populate_slots_from_config(Rml::ElementDocument* doc, const std::filesystem
     } else {
         g_window_fullscreen_pref = false;
     }
+
+    // Settings page preferences (Display / Graphics / Audio). Defaults match the
+    // historical hardcoded behavior, so an absent key changes nothing. These are
+    // the in-memory copies the Settings overlay edits and rewrites; the actual
+    // launch-time values are resolved (with env overrides) by the startup_*
+    // getters below.
+    auto lower = [](std::string s) {
+        for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return s;
+    };
+    if (cfg.count("graphics_api"))  g_graphics_api_pref  = lower(cfg["graphics_api"]);
+    if (cfg.count("supersampling")) g_supersampling_pref = lower(cfg["supersampling"]);
+    if (cfg.count("antialiasing"))  g_msaa_pref          = lower(cfg["antialiasing"]);
+    if (cfg.count("audio_device"))  g_audio_device_pref  = cfg["audio_device"]; // case-preserving
 }
 
 void add_click(Rml::ElementDocument* doc, const std::string& id, std::function<void()> fn) {
@@ -1094,6 +1133,129 @@ void rebind_reset(Rml::ElementDocument* doc) {
     build_rebind_list(doc);
 }
 
+// ---- settings page ---------------------------------------------------------
+
+const char* api_label(const std::string& v) {
+    if (v == "vulkan") return "Vulkan";
+    if (v == "d3d12")  return "Direct3D 12";
+    return "Automatic";
+}
+const char* ss_label(const std::string& v) {
+    if (v == "off") return "Off";
+    if (v == "4x")  return "4x";
+    return "2x";
+}
+const char* msaa_label(const std::string& v) {
+    if (v == "off") return "Off";
+    if (v == "2x")  return "2x MSAA";
+    if (v == "8x")  return "8x MSAA";
+    return "4x MSAA";
+}
+
+int ss_to_ds(const std::string& v) {
+    if (v == "off") return 1;
+    if (v == "4x")  return 4;
+    return 2;
+}
+ultramodern::renderer::Antialiasing msaa_to_aa(const std::string& v) {
+    using AA = ultramodern::renderer::Antialiasing;
+    if (v == "off") return AA::None;
+    if (v == "2x")  return AA::MSAA2X;
+    if (v == "8x")  return AA::MSAA8X;
+    return AA::MSAA4X;
+}
+
+// Push the current supersampling + MSAA prefs into the live graphics config so
+// RT64 applies them this boot, without an app relaunch (set_graphics_config ->
+// update_config -> updateUserConfig / updateMultisampling). The launcher is
+// shown only at boot, so "apply now" means the game uses them when PLAY starts
+// it in the same process.
+void apply_graphics_live() {
+    ultramodern::renderer::GraphicsConfig g = ultramodern::renderer::get_graphics_config();
+    g.ds_option   = ss_to_ds(g_supersampling_pref);
+    g.msaa_option = msaa_to_aa(g_msaa_pref);
+    ultramodern::renderer::set_graphics_config(g);
+}
+
+// Paint every settings control from the current prefs.
+void update_settings_ui(Rml::ElementDocument* doc) {
+    set_class(doc, "settings-fullscreen-switch", "on", g_window_fullscreen_pref);
+    set_text(doc, "settings-api",  api_label(g_graphics_api_pref));
+    set_text(doc, "settings-ss",   ss_label(g_supersampling_pref));
+    set_text(doc, "settings-msaa", msaa_label(g_msaa_pref));
+    set_text(doc, "settings-audio", g_audio_device_pref.empty() ? "Default" : g_audio_device_pref);
+}
+
+// Persist launcher.cfg (same storage as the launcher slots). Holds the mutex
+// write_transfer_pak_cfg requires.
+void persist_cfg() {
+    std::scoped_lock lk(g_change_mutex);
+    write_transfer_pak_cfg();
+}
+
+// Advance a preference to the next value in `opts` (wraps).
+void cycle_pref(std::string& pref, std::initializer_list<const char*> opts) {
+    std::vector<std::string> v(opts.begin(), opts.end());
+    size_t idx = 0;
+    for (size_t i = 0; i < v.size(); ++i) if (v[i] == pref) { idx = i; break; }
+    pref = v[(idx + 1) % v.size()];
+}
+
+void settings_select_audio(Rml::ElementDocument* doc, int idx); // fwd
+
+// Build the audio-output popup: "Default" (system default) + one row per device.
+void build_audio_menu(Rml::ElementDocument* doc) {
+    Rml::Element* menu = doc->GetElementById("settings-audio-menu");
+    if (menu == nullptr) return;
+    std::string rml = "<div class=\"set-opt\" id=\"settings-audio-opt--1\">Default</div>";
+    for (size_t i = 0; i < g_audio_devices.size(); ++i) {
+        rml += "<div class=\"set-opt\" id=\"settings-audio-opt-" + std::to_string(i) + "\">" +
+               g_audio_devices[i] + "</div>";
+    }
+    menu->SetInnerRML(rml);
+    add_click(doc, "settings-audio-opt--1", [doc] { settings_select_audio(doc, -1); });
+    for (size_t i = 0; i < g_audio_devices.size(); ++i) {
+        const int di = static_cast<int>(i);
+        add_click(doc, "settings-audio-opt-" + std::to_string(i), [doc, di] { settings_select_audio(doc, di); });
+    }
+}
+
+void settings_select_audio(Rml::ElementDocument* doc, int idx) {
+    g_audio_device_pref = (idx < 0) ? std::string() : g_audio_devices[static_cast<size_t>(idx)];
+    set_class(doc, "settings-audio-menu", "hidden", true);
+    update_settings_ui(doc);
+    persist_cfg();
+}
+
+void toggle_audio_menu(Rml::ElementDocument* doc) {
+    if (Rml::Element* m = doc->GetElementById("settings-audio-menu")) {
+        m->SetClass("hidden", !m->IsClassSet("hidden"));
+    }
+}
+
+void open_settings_view(Rml::ElementDocument* doc) {
+    cancel_autoplay(doc);
+    hide_all_ctrl_menus(doc);
+    g_view = View::Settings;
+    update_settings_ui(doc);
+    build_audio_menu(doc);
+    set_class(doc, "settings-audio-menu", "hidden", true);
+    set_class(doc, "settings-view", "open", true);
+}
+
+void close_settings_view(Rml::ElementDocument* doc) {
+    g_view = View::Launcher;
+    set_class(doc, "settings-audio-menu", "hidden", true);
+    set_class(doc, "settings-view", "open", false);
+    apply_nav_highlight(doc);
+}
+
+// Close whichever overlay (Rebind / Settings) is currently open.
+void close_active_overlay(Rml::ElementDocument* doc) {
+    if (g_view == View::Rebind)        close_rebind_view(doc);
+    else if (g_view == View::Settings) close_settings_view(doc);
+}
+
 // Wire up the launcher's interactive elements (Phase 3a/3b/3c/3d).
 void attach_launcher_events(Rml::ElementDocument* doc) {
     apply_default_assignment();
@@ -1158,6 +1320,46 @@ void attach_launcher_events(Rml::ElementDocument* doc) {
     // Rebind page controls (the page itself is built on demand by the cog).
     add_click(doc, "rebind-back",  [doc] { close_rebind_view(doc); });
     add_click(doc, "rebind-reset", [doc] { rebind_reset(doc); });
+
+    // Settings page (title-bar button opens it; nav-reachable).
+    add_click(doc, "settings-open", [doc] { open_settings_view(doc); });
+    g_nav_items.push_back("settings-open");
+    g_nav_actions["settings-open"] = [doc] { open_settings_view(doc); };
+    add_click(doc, "settings-back", [doc] { close_settings_view(doc); });
+    add_click(doc, "settings-fullscreen-switch", [doc] {
+        g_window_fullscreen_pref = !g_window_fullscreen_pref;
+        // Fullscreen is the one setting that applies immediately (like Alt+Enter):
+        // push wm_option into the live graphics config so RT64 toggles the window
+        // now (update_config -> app->setFullScreen). The cfg write below also makes
+        // it the launch default. On Linux RT64 lacks native fullscreen, so toggle
+        // the SDL window directly there (mirrors recompui's apply_graphics_config).
+        ultramodern::renderer::GraphicsConfig gconf = ultramodern::renderer::get_graphics_config();
+        gconf.wm_option = g_window_fullscreen_pref ? ultramodern::renderer::WindowMode::Fullscreen
+                                                   : ultramodern::renderer::WindowMode::Windowed;
+        ultramodern::renderer::set_graphics_config(gconf);
+#if defined(__linux__)
+        if (window != nullptr) {
+            SDL_SetWindowFullscreen(window, g_window_fullscreen_pref ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+        }
+#endif
+        update_settings_ui(doc); persist_cfg();
+    });
+    // Graphics API can't hot-swap the render backend, so it only takes effect on
+    // next launch (the UI shows a note); just persist it.
+    add_click(doc, "settings-api", [doc] {
+        cycle_pref(g_graphics_api_pref, {"auto", "vulkan", "d3d12"});
+        update_settings_ui(doc); persist_cfg();
+    });
+    // Supersampling + MSAA apply live (this boot) via the graphics config.
+    add_click(doc, "settings-ss", [doc] {
+        cycle_pref(g_supersampling_pref, {"off", "2x", "4x"});
+        update_settings_ui(doc); apply_graphics_live(); persist_cfg();
+    });
+    add_click(doc, "settings-msaa", [doc] {
+        cycle_pref(g_msaa_pref, {"off", "2x", "4x", "8x"});
+        update_settings_ui(doc); apply_graphics_live(); persist_cfg();
+    });
+    add_click(doc, "settings-audio", [doc] { toggle_audio_menu(doc); });
 
     // Auto-play toggle. Flips the persisted preference (written back to
     // launcher.cfg) and the live runtime flag together.
@@ -1385,15 +1587,15 @@ void draw_hook(RT64::RenderCommandList* list, RT64::RenderFramebuffer* swap_chai
             pkmnstadium::input::handle_scan_event(ev);
             continue;
         }
-        // Rebind page: Back (Esc/Backspace/controller B) returns to the launcher;
-        // mouse clicks drive the binding chips and Reset/Back buttons.
-        if (g_view == View::Rebind) {
+        // Overlay pages (Rebind / Settings): Back (Esc/Backspace/controller B)
+        // returns to the launcher; mouse clicks drive the controls + Back button.
+        if (g_view != View::Launcher) {
             const bool back =
                 (ev.type == SDL_KEYDOWN &&
                  (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_BACKSPACE)) ||
                 (ev.type == SDL_CONTROLLERBUTTONDOWN && ev.cbutton.button == SDL_CONTROLLER_BUTTON_B);
             if (back) {
-                if (g_doc != nullptr) close_rebind_view(g_doc);
+                if (g_doc != nullptr) close_active_overlay(g_doc);
                 continue;
             }
             RmlSDL::InputEventHandler(g_ui->context, ev);
@@ -1532,6 +1734,79 @@ bool startup_fullscreen() {
         return parse_bool(fs, pref);
     }
     return pref;
+}
+
+// Read launcher.cfg into a map with lowercased keys (values trimmed, case
+// preserved). Used by the settings getters, which run before the launcher UI
+// has loaded its in-memory prefs.
+static std::map<std::string, std::string> read_launcher_cfg_map() {
+    std::map<std::string, std::string> m;
+    std::ifstream f(exe_dir() / "launcher.cfg");
+    std::string line;
+    while (std::getline(f, line)) {
+        const size_t c = line.find_first_of("#;");
+        if (c != std::string::npos) line.resize(c);
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = trim(line.substr(0, eq));
+        std::string v = trim(line.substr(eq + 1));
+        for (char& ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        m[k] = v;
+    }
+    return m;
+}
+
+static std::string to_lower_str(std::string s) {
+    for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+}
+
+std::string startup_graphics_api() {
+    std::string val = "auto";
+    auto cfg = read_launcher_cfg_map();
+    if (cfg.count("graphics_api")) val = cfg["graphics_api"];
+    if (const char* e = std::getenv("PSR_GRAPHICS_API"); e != nullptr && e[0] != '\0') val = e;
+    val = to_lower_str(val);
+    if (val == "vk") val = "vulkan";
+    if (val == "dx12" || val == "directx") val = "d3d12";
+    if (val != "vulkan" && val != "d3d12") val = "auto";
+    return val;
+}
+
+int startup_ds_option() {
+    std::string val = "2x";
+    auto cfg = read_launcher_cfg_map();
+    if (cfg.count("supersampling")) val = cfg["supersampling"];
+    val = to_lower_str(val);
+    // Preset -> downsample multiplier (ds_option). rt64_render_context derives
+    // resolutionMultiplier = 3*ds, so output stays at the native 3x window scale
+    // (menu-safe, #12); only the supersampling depth varies.
+    if (val == "off") return 1;
+    if (val == "4x")  return 4;
+    return 2; // "2x" (default)
+}
+
+int startup_msaa() {
+    std::string val = "4x";
+    auto cfg = read_launcher_cfg_map();
+    if (cfg.count("antialiasing")) val = cfg["antialiasing"];
+    val = to_lower_str(val);
+    if (val == "off" || val == "0" || val == "none") return 0;
+    if (val == "2x"  || val == "2") return 2;
+    if (val == "8x"  || val == "8") return 8;
+    return 4; // default / "4x"
+}
+
+std::string startup_audio_device() {
+    std::string val;
+    auto cfg = read_launcher_cfg_map();
+    if (cfg.count("audio_device")) val = cfg["audio_device"];
+    if (const char* e = std::getenv("PSR_AUDIO_DEVICE"); e != nullptr && e[0] != '\0') val = e;
+    return val;
+}
+
+void set_audio_devices(const std::vector<std::string>& devices) {
+    g_audio_devices = devices;
 }
 
 } // namespace pkmnstadium::ui_seam

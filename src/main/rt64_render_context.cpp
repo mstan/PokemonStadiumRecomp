@@ -111,16 +111,25 @@ static RT64::UserConfiguration::InternalColorFormat to_rt64(ultramodern::rendere
 
 static void set_application_user_config(RT64::Application* application,
                                         const ultramodern::renderer::GraphicsConfig& config) {
-    // SUPERSAMPLING IS HARDCODED — NOT config-driven. The N64 models look awful
-    // without it (rainbow speckle on sub-pixel-thin geometry), so we do not let
-    // config.res_option (which may be Original/Original2x = no supersampling)
-    // decide it. Always render at 6x the N64 base (1920x1440) in Manual mode and
-    // box-filter down by 2 to 3x (960x720, the window) for 2x2 SSAA. This is the
-    // config verified to clear the speckle; Manual mode is the path the #12
-    // uniform framebuffer-scale fix keeps the 2D menus correct under.
+    // SUPERSAMPLING — Manual mode, driven by the launcher's menu-safe preset
+    // (Settings > Supersampling: off|2x|4x, default 2x). The N64 models look
+    // awful without SSAA (rainbow speckle on sub-pixel-thin geometry), so we do
+    // NOT let config.res_option decide it. The preset keeps the PRESENTED image
+    // at resMult/downsample == 3 (960x720, the window's native 3x scale) — the
+    // ratio the #12 uniform framebuffer-scale fix keeps the 2D menus correct
+    // under — and only varies the supersampling depth. Default 2x == render
+    // 1920x1440, box-filter down by 2 to 720p (the historical hardcoded value).
     application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
-    application->userConfig.resolutionMultiplier = 6.0;
-    application->userConfig.downsampleMultiplier = 2;
+    {
+        // ds_option carries the launcher's supersampling preset (1/2/4). Render
+        // at 3*ds the N64 base and box-filter down by ds, so the PRESENTED image
+        // stays at 3x (the native window scale the #12 menu fix needs). Guard an
+        // unset/invalid value to the historical 2x default.
+        int ds = config.ds_option;
+        if (ds != 1 && ds != 2 && ds != 4) ds = 2;
+        application->userConfig.resolutionMultiplier = 3.0 * static_cast<double>(ds);
+        application->userConfig.downsampleMultiplier = ds;
+    }
 
     switch (config.hr_option) {
         default:
@@ -137,11 +146,11 @@ static void set_application_user_config(RT64::Application* application,
     }
 
     application->userConfig.aspectRatio = to_rt64(config.ar_option);
-    // Anti-aliasing is HARDCODED to 4x MSAA — not config-driven. The N64 models'
-    // hard polygon silhouettes alias badly without it, and we don't want a
-    // stored/default config dialing it down. (PSR_RT64_MSAA below can still
-    // override for A/B testing or weaker GPUs.)
-    application->userConfig.antialiasing = RT64::UserConfiguration::Antialiasing::MSAA4X;
+    // Anti-aliasing — driven by the launcher's msaa_option (Settings >
+    // Antialiasing: off|2x|4x|8x, default 4x). The N64 models' hard polygon
+    // silhouettes alias badly without it, so the default stays 4x. (PSR_RT64_MSAA
+    // below still overrides raw for A/B testing.)
+    application->userConfig.antialiasing = to_rt64(config.msaa_option);
     application->userConfig.refreshRate = to_rt64(config.rr_option);
     application->userConfig.refreshRateTarget = config.rr_manual_value;
     application->userConfig.internalColorFormat = to_rt64(config.hpfb_option);

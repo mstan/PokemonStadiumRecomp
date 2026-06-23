@@ -50,6 +50,33 @@ namespace pkmnstadium::ui_seam {
     // can launch fullscreen without pressing Alt+Enter (issue #18). Also seeds
     // the launcher's in-memory preference so it round-trips through the cfg.
     bool startup_fullscreen();
+
+    // ---- Settings page (Display / Graphics / Audio) -------------------------
+    // Resolve the launch-time value of each setting BEFORE the renderer/audio are
+    // created. Precedence mirrors startup_fullscreen: env override > launcher.cfg
+    // > built-in default. Called from main.cpp (graphics API, audio device) and
+    // rt64_render_context.cpp (supersampling, MSAA).
+
+    // "auto" | "vulkan" | "d3d12".
+    std::string startup_graphics_api();
+
+    // 3D supersampling depth as the GraphicsConfig ds_option (downsample
+    // multiplier): 1 (off), 2, or 4. set_application_user_config derives the
+    // render resolution as 3x*ds and downsamples by ds, so the presented image
+    // stays at the native 3x window scale that keeps the 2D menus correct (#12);
+    // only the SSAA depth changes. Driving it through GraphicsConfig.ds_option
+    // lets the launcher apply it live (update_config) as well as at startup.
+    int startup_ds_option();
+
+    // MSAA sample count: 0 (off), 2, 4, or 8. Drives GraphicsConfig.msaa_option.
+    int startup_msaa();
+
+    // Audio output device name substring, or empty for the system default.
+    std::string startup_audio_device();
+
+    // Hand the launcher the list of audio output device display names (for the
+    // Settings audio dropdown). Called before the render hooks initialize.
+    void set_audio_devices(const std::vector<std::string>& devices);
 }
 
 #endif // PKMNSTADIUM_UI_SEAM_H

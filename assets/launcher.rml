@@ -14,6 +14,7 @@
             <span id="titlebar__sep">|</span>
             <span id="titlebar__sub">Pokémon Stadium Recomp</span>
         </div>
+        <span class="btn btn--settings" id="settings-open"><img class="btn__cog" src="carts/cog.png"/> Settings</span>
     </div>
 
     <!-- Launcher view (the first screen). Hidden while the rebind page shows. -->
@@ -194,6 +195,49 @@
             </div>
         </div>
         <div id="rebind-list"><!-- rows injected by ui_seam --></div>
+    </div>
+
+    <!-- Settings page (nested overlay). Opened from the title-bar Settings
+         button. All settings apply on next launch. -->
+    <div id="settings-view">
+        <div id="settings-head">
+            <div id="settings-titles">
+                <div id="settings-title">Settings</div>
+                <div id="settings-sub">Fullscreen applies instantly. Supersampling, antialiasing and audio apply when you start the game. Graphics API needs an app relaunch.</div>
+            </div>
+            <div id="settings-actions">
+                <span class="btn" id="settings-back">&#8249; Back</span>
+            </div>
+        </div>
+        <div id="settings-list">
+            <div class="set-section">Display</div>
+            <div class="set-row">
+                <span class="set-lbl">Fullscreen</span>
+                <span class="switch" id="settings-fullscreen-switch"><span class="knob"></span></span>
+            </div>
+            <div class="set-row">
+                <span class="set-lbl">Graphics API</span>
+                <span class="set-cycle" id="settings-api">Automatic</span>
+                <span class="set-note">applies on next launch</span>
+            </div>
+            <div class="set-section">Graphics</div>
+            <div class="set-row">
+                <span class="set-lbl">Supersampling</span>
+                <span class="set-cycle" id="settings-ss">2x</span>
+            </div>
+            <div class="set-row">
+                <span class="set-lbl">Antialiasing</span>
+                <span class="set-cycle" id="settings-msaa">4x MSAA</span>
+            </div>
+            <div class="set-section">Audio</div>
+            <div class="set-row">
+                <span class="set-lbl">Audio output</span>
+                <div class="set-dropwrap">
+                    <span class="set-cycle set-drop" id="settings-audio">Default</span>
+                    <div class="set-menu hidden" id="settings-audio-menu"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
 </div>

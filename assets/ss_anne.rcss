@@ -331,3 +331,54 @@ img#stadium__cart { width: 132dp; height: 91dp; margin-right: 18dp; }
 .rb-chip--scan {
     border-color: #f0b429ff; color: #f0b429ff; background-color: #1d1a10ff;
 }
+
+/* ---- Settings page (full-window overlay screen) ------------------------- */
+/* Same overlay mechanism as #rebind-view: base hidden, shown via `open`. */
+#settings-view {
+    display: none;
+    position: absolute;
+    top: 0dp; left: 0dp; right: 0dp; bottom: 0dp;
+    box-sizing: border-box;
+    width: 100%; height: 100%;
+    background-color: #0d1117ff;
+    z-index: 100;
+    padding: 18dp 26dp;
+    flex-direction: column;
+}
+#settings-view.open { display: flex; }
+#settings-head {
+    display: flex; flex-direction: row; align-items: center; justify-content: space-between;
+    margin-bottom: 14dp; padding-bottom: 14dp;
+    border-bottom: 1dp #1e2631ff; flex-shrink: 0;
+}
+#settings-titles { display: flex; flex-direction: column; }
+#settings-title { color: #e6edf3ff; font-weight: bold; font-size: 24dp; }
+#settings-sub { color: #8a97a5ff; font-size: 13dp; margin-top: 5dp; }
+#settings-actions { display: flex; flex-direction: row; align-items: center; }
+#settings-back { font-size: 14dp; padding: 9dp 18dp; }
+
+#settings-list { display: flex; flex-direction: column; flex-grow: 1; min-height: 0dp; overflow-y: auto; }
+.set-section { color: #66c0f4ff; font-size: 13dp; font-weight: bold; margin: 14dp 0dp 6dp 0dp; }
+.set-row { display: flex; flex-direction: row; align-items: center; height: 42dp; padding: 0dp 4dp; }
+.set-lbl { width: 240dp; flex-shrink: 0; color: #c7d5e0ff; font-size: 15dp; }
+.set-cycle {
+    box-sizing: border-box;
+    min-width: 170dp; text-align: center;
+    background-color: #0f141bff; border: 1dp #232c38ff; border-radius: 6dp;
+    color: #c7d5e0ff; font-size: 14dp; padding: 7dp 14dp; cursor: pointer;
+}
+.set-cycle:hover { border-color: #3b9ae8ff; color: #ffffffff; }
+.set-cycle.nav-focus { border-color: #66c0f4ff; }
+.set-note { color: #6b7686ff; font-size: 12dp; margin-left: 12dp; }
+.set-dropwrap { position: relative; display: flex; flex-direction: column; }
+.set-menu {
+    position: absolute; top: 42dp; left: 0dp; min-width: 280dp;
+    background-color: #0f141bff; border: 1dp #2f3a47ff; border-radius: 6dp;
+    padding: 4dp 0dp; z-index: 60;
+}
+.set-opt { display: block; padding: 7dp 12dp; color: #c7d5e0ff; font-size: 13dp; cursor: pointer; }
+.set-opt:hover { background-color: #1d2733ff; }
+
+/* title-bar Settings button (cog image + label) */
+.btn--settings { display: flex; flex-direction: row; align-items: center; }
+img.btn__cog { width: 14dp; height: 14dp; margin-right: 6dp; }
