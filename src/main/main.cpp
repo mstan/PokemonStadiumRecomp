@@ -1286,6 +1286,37 @@ int main(int argc, char** argv) {
     SDL_InitSubSystem(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
     std::fprintf(stderr, "[PSR] SDL audio/controller init OK\n"); std::fflush(stderr);
 
+    // ── Controller mapping database (issue #15: 8BitDo 64 & others) ───────────
+    // SDL only surfaces a device through the SDL_GameController API if it has a
+    // mapping; an unmapped joystick (e.g. the 8BitDo 64 in D-Input / Bluetooth
+    // mode) is invisible to both the launcher and the game (SDL_IsGameController
+    // returns false). Load the bundled community DB so thousands of controllers
+    // — including the 8BitDo 64's per-platform/transport GUIDs — are recognized,
+    // then add a hardcoded 8BitDo 64 fallback so it works even if the file is
+    // missing. Users can also drop an updated gamecontrollerdb.txt next to the
+    // exe (assets/) without a rebuild. Must run before any SDL_IsGameController.
+    {
+        const std::string db = pkmnstadium::app_file("assets/gamecontrollerdb.txt").string();
+        int added = SDL_GameControllerAddMappingsFromFile(db.c_str());
+        if (added < 0) {
+            std::fprintf(stderr, "[PSR] controller DB NOT loaded (%s): %s\n", db.c_str(), SDL_GetError());
+        } else {
+            std::fprintf(stderr, "[PSR] controller DB: %d mappings loaded from %s\n", added, db.c_str());
+        }
+        // Hardcoded 8BitDo 64 fallback (all platforms/transports). SDL silently
+        // ignores mapping lines whose platform field doesn't match the host, so
+        // listing every variant is safe and future-proofs the Linux/Mac builds.
+        static const char* const k_8bitdo64_maps[] = {
+            "03000000c82d00001930000000000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a3,righty:a4,start:b11,platform:Windows,",
+            "03000000c82d00001930000000000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
+            "03000000c82d00001930000000020000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
+            "03000000c82d00001930000001000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
+            "03000000c82d00001930000011010000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Linux,",
+            "05000000c82d00001930000001000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Linux,",
+        };
+        for (const char* m : k_8bitdo64_maps) SDL_GameControllerAddMapping(m);
+    }
+
     // Enumerate connected gamepads for the SS Anne launcher's controller
     // dropdowns. Done here (before the render hooks initialize) so the list is
     // ready when the launcher document loads.
@@ -1293,6 +1324,18 @@ int main(int argc, char** argv) {
         SDL_GameControllerUpdate();
         std::vector<std::pair<int, std::string>> pads;
         const int njoy = SDL_NumJoysticks();
+        // Issue #15 diagnostics: log EVERY joystick (not just recognized game
+        // controllers) with its SDL GUID, so an unmapped device in a user's log
+        // can be identified and given a precise mapping.
+        for (int i = 0; i < njoy; ++i) {
+            char guid[33] = {0};
+            SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), guid, sizeof(guid));
+            const char* jn = SDL_JoystickNameForIndex(i);
+            std::fprintf(stderr, "[PSR] joystick %d: '%s' guid=%s game_controller=%s\n",
+                i, jn ? jn : "?", guid,
+                SDL_IsGameController(i) ? "yes" : "NO (no SDL mapping)");
+        }
+        std::fflush(stderr);
         for (int i = 0; i < njoy; ++i) {
             if (!SDL_IsGameController(i)) continue;
             const char* nm = SDL_GameControllerNameForIndex(i);
