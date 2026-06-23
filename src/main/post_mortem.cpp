@@ -864,7 +864,7 @@ extern "C" void psr_post_mortem_dump(const char* reason,
     dump_seh_json(f, fault_info);
     dump_status_json(f);
     dump_hardware_state_json(f);
-    dump_trace_json(f, 256);
+    dump_trace_json(f, 65536);  /* deep guest backtrace for crash RE (256K ring) */
     dump_libultra_json(f, 128);
     dump_mesg_json(f, 256);
     dump_sp_task_json(f, 4096);

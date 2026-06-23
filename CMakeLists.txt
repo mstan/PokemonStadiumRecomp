@@ -123,6 +123,31 @@ target_sources(RecompiledFuncs PRIVATE ${FUNC_C_SOURCES})
 # still emits TRACE_ENTRY()/TRACE_RETURN() in generated/ (game.toml trace_mode=true),
 # but include/trace.h compiles them to no-ops without this define. A future regen
 # with trace_mode=false purges the emitted calls entirely.
+#
+# Opt-in re-enable for crash RE (issues #9/#16 gallery null-vtable): turning
+# PSR_TRACE_HOOKS ON defines PKMNSTADIUM_TRACE_HOOKS=1 for the recompiled funcs
+# so trace_recent (the guest function-entry ring) records again. The [jrdiag]
+# stderr block is now gated to 6 specific function names, so there is no flood.
+# Default OFF — release builds stay no-op. Pair with the enlarged TRACE_RING_CAP
+# in extras.c so the ring spans multiple frames, not <1 frame.
+option(PSR_TRACE_HOOKS "Compile the recompiled funcs with TRACE_ENTRY ring hooks (crash RE)" OFF)
+if(PSR_TRACE_HOOKS)
+    target_compile_definitions(RecompiledFuncs PRIVATE PKMNSTADIUM_TRACE_HOOKS=1)
+    message(STATUS "PSR_TRACE_HOOKS=ON — recompiled funcs record the trace_recent ring")
+endif()
+
+# Issue #9 geo probe: compile ONLY funcs_85.c (which defines process_geo_layout)
+# with the TRACE_ENTRY hook so extras.c can observe each process_geo_layout entry
+# and log its segptr (a1) + caller — splitting Case A (bad reload: first call gets
+# a graph-pool segptr) from Case B (double-processing: 2nd call gets the overwritten
+# pool ptr). One-file recompile; default OFF. (TRACE_ENTRY in funcs_85.c expands to
+# the ring hook only when PKMNSTADIUM_TRACE_HOOKS is defined for that TU.)
+option(PSR_GEO_PROBE "Trace-hook funcs_85.c to log process_geo_layout segptrs (#9 RE)" OFF)
+if(PSR_GEO_PROBE)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/generated/funcs_85.c
+        PROPERTIES COMPILE_DEFINITIONS PKMNSTADIUM_TRACE_HOOKS=1)
+    message(STATUS "PSR_GEO_PROBE=ON — funcs_85.c traces process_geo_layout segptrs")
+endif()
 
 # ---- Runner executable ------------------------------------------------------
 add_executable(PokemonStadiumRecomp
@@ -203,7 +228,14 @@ target_compile_definitions(PokemonStadiumRecomp PRIVATE NOMINMAX)
 # same address (which would corrupt the stack-walk symbol mapping).
 if (MSVC)
     target_compile_options(PokemonStadiumRecomp PRIVATE /Z7)
-    target_compile_options(RecompiledFuncs       PRIVATE /Z7)
+    # The 1007 generated funcs dominate compile memory/time. Their /Z7 CodeView
+    # only feeds the host SEH stack-walk, which is already unsymbolized for the
+    # recompiled code and irrelevant to the guest trace_recent ring. In a
+    # PSR_TRACE_HOOKS build we diagnose from the guest ring, so skip /Z7 here —
+    # it roughly halves per-object memory and avoids clang-cl thrashing/OOM.
+    if (NOT PSR_TRACE_HOOKS)
+        target_compile_options(RecompiledFuncs   PRIVATE /Z7)
+    endif()
     target_link_options(PokemonStadiumRecomp PRIVATE /DEBUG /OPT:REF /OPT:NOICF)
     if (TARGET librecomp)
         target_compile_options(librecomp PRIVATE /Z7)

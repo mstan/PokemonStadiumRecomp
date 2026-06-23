@@ -172,7 +172,13 @@ UNIMPL_LIBULTRA(rmonPrintf)
 /* trace_mode = true). See include/trace.h.                          */
 /* ------------------------------------------------------------------ */
 
-#define TRACE_RING_CAP 4096   /* power of two — wraps cheaply */
+/* 256K entries (2 MiB of const char*) — power of two, wraps cheaply.
+ * The old 4096 cap was overrun by audio/render in <1 frame, so a crash
+ * dump could not reach back to a constructor that ran a few frames
+ * earlier. 256K spans many frames of full per-function tracing, which is
+ * what the gallery null-vtable RE (issues #9/#16) needs. Only allocated/
+ * written when PSR_TRACE_HOOKS is on; harmless otherwise. */
+#define TRACE_RING_CAP (256u * 1024u)
 
 static const char* trace_ring[TRACE_RING_CAP];
 static volatile uint64_t trace_ring_write_idx = 0;  /* monotonic */
@@ -429,6 +435,44 @@ static void pkmnstadium_trace_entry_common(const char *func,
     if (func[0] == '_' && func[1] == 'n' && func[2] == '_') {
         ultramodern_scheduler_tick();
         return;
+    }
+    /* Issue #9 geo probe (only active when funcs_85.c is built with the hook,
+     * via -DPSR_GEO_PROBE=ON). process_geo_layout(pool=a0, segptr=a1) is the geo
+     * interpreter; a1 (ctx->r5) is the geo SOURCE pointer. Log it for TOP-LEVEL
+     * model-processing calls (caller in func_80019328/func_80019420 land,
+     * ra>=0x80019000) — recursive sub-layout calls (callers are geo handlers
+     * <0x80019000) are skipped to keep the log readable. Classify segptr vs the
+     * CURRENT frag-239 instance (gFragments[239]) so we can see whether the very
+     * first processing of a model already gets a graph-pool segptr (Case A: bad
+     * reload) or only a later one does (Case B: double-processing). */
+    if (ctx != NULL && func[0] == 'p' && __builtin_strcmp(func, "process_geo_layout") == 0) {
+        uint32_t ra  = (uint32_t)ctx->r31;
+        if (ra >= 0x80019000u && ra < 0x8001A000u) {  /* top-level model-processing call */
+            extern unsigned char* recomp_runtime_get_rdram(void);
+            unsigned char* rd = recomp_runtime_get_rdram();
+            uint32_t seg = (uint32_t)ctx->r5;
+            if (rd != NULL) {
+                /* gFragments[239] = {u32 vaddr, u32 size} at 0x800A58F0 + 239*8 */
+                uint32_t fe = 0x800A58F0u + 239u * 8u;
+                #define RD_BE32(va) ( ((uint32_t)rd[(((va)&0x1FFFFFFFu)+0)^3]<<24) | \
+                                      ((uint32_t)rd[(((va)&0x1FFFFFFFu)+1)^3]<<16) | \
+                                      ((uint32_t)rd[(((va)&0x1FFFFFFFu)+2)^3]<<8)  | \
+                                      ((uint32_t)rd[(((va)&0x1FFFFFFFu)+3)^3]) )
+                uint32_t fbase = RD_BE32(fe);
+                uint32_t fsize = RD_BE32(fe + 4u);
+                uint32_t fend  = fbase + fsize;
+                uint32_t segw  = (seg >= 0x80000000u && (seg & 0x1FFFFFFFu) < 0x00800000u) ? RD_BE32(seg) : 0;
+                const char* cls = "OTHER";
+                if (seg >= fbase && seg < fend) cls = "IN_FRAG239";
+                else if (seg == fend) cls = "FRAG_END";
+                else if (seg == fend + 4u) cls = "FRAG_END+4";
+                else if (seg >= fend && seg < fend + 0x40000u) cls = "PAST_FRAG_POOL";
+                #undef RD_BE32
+                fprintf(stderr, "[geoseg] seg=0x%08X caller=0x%08X frag239=[0x%08X,0x%08X) cls=%s firstword=0x%08X\n",
+                        seg, ra, fbase, fend, cls, segw);
+                fflush(stderr);
+            }
+        }
     }
     /* DIAG (dev/register-quit-softlock): log ENTRY of the registration-Quit
      * return chain + the pool-free path, so enter/return pairing pins which
