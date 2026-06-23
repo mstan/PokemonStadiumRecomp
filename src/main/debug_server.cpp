@@ -249,6 +249,13 @@ extern "C" uint64_t ultramodern_external_requeues(void);
 extern "C" void ultramodern_mesg_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t ultramodern_mesg_event_size(void);
+extern "C" size_t ultramodern_mesg_qstate_size(void);
+extern "C" void ultramodern_mesg_qstates_copy(void* out_void, size_t cap, size_t* n_written);
+extern "C" void recomp_coverage_live(
+    uint64_t* static_hits, uint64_t* lookup_misses, uint64_t* self_heals,
+    uint64_t* self_heal_misses, uint64_t* dispatch_entry_rejects,
+    uint64_t* interp_runs, uint64_t* jit_compiles, uint64_t* jit_failures);
+extern "C" uint64_t recomp_bubble_dispatch_count(void);
 extern "C" uint64_t ultramodern_submit_gfx_count(void);
 extern "C" uint64_t ultramodern_submit_audio_count(void);
 extern "C" uint64_t ultramodern_submit_other_count(void);
@@ -989,17 +996,22 @@ static std::string handle_command(const std::string& line) {
         // ring in ultramodern. Used to diagnose softlocks where the
         // game thread blocks on a queue waiting for a completion msg
         // that didn't arrive.
+        // MUST match mesg_log::Event in ultramodern/src/mesgqueue.cpp exactly
+        // (the size guard below loudly rejects drift rather than mis-parsing).
         struct MesgEvent {
             uint64_t seq;
             uint64_t ms;
             uint32_t mq;
             uint32_t msg;
+            uint32_t thread;
+            uint16_t thread_id;
             uint16_t valid_before;
             uint16_t valid_after;
             uint8_t  op;
             uint8_t  block;
             uint8_t  game_thread;
             uint8_t  pad;
+            uint16_t reserved;
         };
         if (ultramodern_mesg_event_size() != sizeof(MesgEvent)) {
             return R"({"ok":false,"error":"mesg event size mismatch"})";
@@ -1014,29 +1026,120 @@ static std::string handle_command(const std::string& line) {
         size_t got = 0;
         uint64_t widx = 0;
         ultramodern_mesg_recent_copy(buf.data(), buf.size(), &got, &widx);
-        const char* op_names[9] = {
+        const char* op_names[11] = {
             "?", "send_game", "send_external", "recv_enter",
             "recv_block", "recv_return_ok", "ext_deq_ok", "ext_deq_full",
-            "do_send_block"
+            "do_send_block", "ext_deq_drop", "do_send_drop"
         };
         std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
                         + R"(,"events":[)";
         for (size_t i = 0; i < got; i++) {
             const auto& e = buf[i];
-            const char* opn = (e.op < 9) ? op_names[e.op] : "?";
-            char b[256];
+            const char* opn = (e.op < 11) ? op_names[e.op] : "?";
+            char b[320];
             std::snprintf(b, sizeof(b),
                 "%s{\"seq\":%llu,\"ms\":%llu,\"op\":\"%s\",\"mq\":%u,"
-                "\"msg\":%u,\"vb\":%u,\"va\":%u,\"block\":%u,\"gt\":%u}",
+                "\"msg\":%u,\"thread\":%u,\"tid\":%u,\"vb\":%u,\"va\":%u,"
+                "\"block\":%u,\"gt\":%u}",
                 (i ? "," : ""),
                 (unsigned long long)e.seq, (unsigned long long)e.ms,
-                opn, e.mq, e.msg,
+                opn, e.mq, e.msg, e.thread, (unsigned)e.thread_id,
                 (unsigned)e.valid_before, (unsigned)e.valid_after,
                 (unsigned)e.block, (unsigned)e.game_thread);
             out += b;
         }
         out += "]}";
         return out;
+    }
+    if (cmd == "mesg_queues") {
+        // Per-QUEUE never-evict table from ultramodern: every OSMesgQueue the
+        // game ever touched, with the last 64 events on each — survives the main
+        // ring wrapping under the VI/audio flood. THE tool for a lost-wakeup:
+        // "after thread X blocked on recv of queue Q, did anyone ever send to Q,
+        // and was a send dropped (op do_send_drop)?"
+        //   mq=<addr>  : dump just that queue's recent events (default: list all)
+        //   tail=N     : events per queue when mq= is given (default 16, max 64)
+        struct MesgEvent {  // MUST match mesg_log::Event (see mesg_recent)
+            uint64_t seq; uint64_t ms; uint32_t mq; uint32_t msg;
+            uint32_t thread; uint16_t thread_id; uint16_t valid_before;
+            uint16_t valid_after; uint8_t op; uint8_t block; uint8_t game_thread;
+            uint8_t pad; uint16_t reserved;
+        };
+        struct QState { uint32_t queue; uint32_t count; MesgEvent last[64]; };
+        if (ultramodern_mesg_event_size() != sizeof(MesgEvent) ||
+            ultramodern_mesg_qstate_size() != sizeof(QState)) {
+            return R"({"ok":false,"error":"mesg qstate size mismatch"})";
+        }
+        const uint32_t want_mq = get_uint(line, "mq", 0);  // 0 = list all queues
+        int tail = get_int(line, "tail", 16);
+        if (tail < 1) tail = 1;
+        if (tail > 64) tail = 64;
+        const size_t QCAP = 1024;
+        std::vector<QState> qs(QCAP);
+        size_t got = 0;
+        ultramodern_mesg_qstates_copy(qs.data(), qs.size(), &got);
+        const char* op_names[11] = {
+            "?", "send_game", "send_external", "recv_enter",
+            "recv_block", "recv_return_ok", "ext_deq_ok", "ext_deq_full",
+            "do_send_block", "ext_deq_drop", "do_send_drop"
+        };
+        std::string out = R"({"ok":true,"queues":[)";
+        bool first = true;
+        for (size_t i = 0; i < got; i++) {
+            const QState& q = qs[i];
+            if (q.queue == 0) continue;
+            if (want_mq != 0 && q.queue != want_mq) continue;
+            if (!first) out += ",";
+            first = false;
+            char hdr[96];
+            std::snprintf(hdr, sizeof(hdr), "{\"mq\":%u,\"count\":%u,\"events\":[",
+                          q.queue, q.count);
+            out += hdr;
+            // When listing all queues, show only the latest op per queue to keep
+            // output bounded; when filtered to one queue, show the last `tail`.
+            uint32_t n = (want_mq == 0) ? (q.count ? 1u : 0u)
+                                        : std::min<uint32_t>(q.count, (uint32_t)tail);
+            uint32_t startc = q.count - n;
+            for (uint32_t k = 0; k < n; k++) {
+                const MesgEvent& e = q.last[(startc + k) & 63];
+                const char* opn = (e.op < 11) ? op_names[e.op] : "?";
+                char b[300];
+                std::snprintf(b, sizeof(b),
+                    "%s{\"seq\":%llu,\"op\":\"%s\",\"msg\":%u,\"tid\":%u,"
+                    "\"vb\":%u,\"va\":%u,\"block\":%u,\"gt\":%u}",
+                    (k ? "," : ""), (unsigned long long)e.seq, opn, e.msg,
+                    (unsigned)e.thread_id, (unsigned)e.valid_before,
+                    (unsigned)e.valid_after, (unsigned)e.block,
+                    (unsigned)e.game_thread);
+                out += b;
+            }
+            out += "]}";
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "coverage") {
+        // Live self-healing-tier counters straight from the atomics (the
+        // runtime_captures.json manifest only flushes on a NEW unique miss, so
+        // it goes stale mid-run). Lets a probe watch dispatch_entry_rejects /
+        // interp_runs / self_heals climb during a stall in real time — to tell a
+        // silently-self-healed dispatch reject from a truly clean dispatch.
+        uint64_t sh=0, lm=0, heals=0, hmiss=0, rej=0, interp=0, jc=0, jf=0;
+        recomp_coverage_live(&sh, &lm, &heals, &hmiss, &rej, &interp, &jc, &jf);
+        uint64_t bubbles = recomp_bubble_dispatch_count();
+        char b[600];
+        std::snprintf(b, sizeof(b),
+            "{\"ok\":true,\"static_dispatch_hits\":%llu,\"lookup_misses\":%llu,"
+            "\"self_heals\":%llu,\"self_heal_misses\":%llu,"
+            "\"dispatch_entry_rejects\":%llu,\"interp_runs\":%llu,"
+            "\"jit_compiles\":%llu,\"jit_failures\":%llu,"
+            "\"tailcall_bubble_dispatches\":%llu}",
+            (unsigned long long)sh, (unsigned long long)lm,
+            (unsigned long long)heals, (unsigned long long)hmiss,
+            (unsigned long long)rej, (unsigned long long)interp,
+            (unsigned long long)jc, (unsigned long long)jf,
+            (unsigned long long)bubbles);
+        return std::string(b);
     }
     if (cmd == "sp_task_recent") {
         // Returns the last N osSpTaskStartGo events from the always-on
