@@ -44,7 +44,6 @@
 #include "librecomp/ultra_trace.hpp"
 #include "librecomp/rsp.hpp"
 #include "librecomp/gbcart.hpp"
-#include "transfer_pak.h"
 #include "ares_bridge.h"
 #include "ares_worker.h"
 
@@ -882,15 +881,6 @@ static std::string handle_command(const std::string& line) {
         int tail = get_int(line, "tail", 400);
         const std::string path = "gbcart_ring.txt";
         librecomp::gbcart::ring_dump(path.c_str(), tail);
-        return std::string("{\"ok\":true,\"path\":\"") + path + "\"}";
-    }
-    if (cmd == "tpak_ring") {
-        // Dump PSR's app-level Transfer Pak block-I/O ring (the path that actually
-        // serves GB-Tower cart reads; librecomp::gbcart's ring stays empty). Shows
-        // which switchable ROM banks the full-cart read walked + where it stopped.
-        int tail = get_int(line, "tail", 400);
-        const std::string path = "tpak_ring.txt";
-        pkmnstadium::transfer_pak::ring_dump(path.c_str(), tail);
         return std::string("{\"ok\":true,\"path\":\"") + path + "\"}";
     }
     if (cmd == "gbtower_trace") {
