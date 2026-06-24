@@ -1,5 +1,6 @@
 #include "transfer_pak.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdio>
@@ -80,6 +81,7 @@ namespace {
         std::filesystem::path save_path;
         std::vector<uint8_t> rom;
         std::vector<uint8_t> ram;
+        size_t rom_open_bus_start = 0;
         Mbc mbc = Mbc::Unsupported;
         bool ram_enabled = false;
         bool dirty = false;
@@ -94,10 +96,29 @@ namespace {
             rom_path = configured_rom;
             save_path = configured_save;
             rom = read_file(rom_path);
+            rom_open_bus_start = rom.size();
             if (rom.size() < 0x150) {
                 std::fprintf(stderr, "[transfer-pak] ROM is missing or too small: %s\n",
                              rom_path.string().c_str());
                 return false;
+            }
+
+            const auto last_programmed = std::find_if(rom.rbegin(), rom.rend(), [](uint8_t byte) {
+                return byte != 0;
+            });
+            if (last_programmed != rom.rend()) {
+                const size_t trailing_zero_start = static_cast<size_t>(rom.rend() - last_programmed);
+                const size_t trailing_zero_size = rom.size() - trailing_zero_start;
+                // Some Gen-1 dumps are padded to the header-declared ROM size
+                // with whole unused banks of zeroes. Stadium's GB Tower treats
+                // that trailing cart area like open bus; returning the file's
+                // zeroes makes Red/Blue stop before installing MBC handlers.
+                if (trailing_zero_size >= 0x4000) {
+                    rom_open_bus_start = trailing_zero_start;
+                    std::fprintf(stderr,
+                                 "[transfer-pak] treating trailing zero ROM padding as open bus from 0x%zX: %s\n",
+                                 rom_open_bus_start, rom_path.string().c_str());
+                }
             }
 
             const uint8_t type = rom[0x147];
@@ -169,10 +190,16 @@ namespace {
                     bank = (bank_high & 0x03) << 5;
                 }
                 const size_t index = rom_index(bank, address);
+                if (index >= rom_open_bus_start) {
+                    return 0xFF;
+                }
                 return index < rom.size() ? rom[index] : 0xFF;
             }
             if (address < 0x8000) {
                 const size_t index = rom_index(selected_switchable_rom_bank(), address - 0x4000);
+                if (index >= rom_open_bus_start) {
+                    return 0xFF;
+                }
                 return index < rom.size() ? rom[index] : 0xFF;
             }
             if (address >= 0xA000 && address < 0xC000 && ram_enabled) {
@@ -339,7 +366,7 @@ namespace {
                 const bool was_enabled = cart_enabled;
                 cart_enabled = (value & 1) != 0;
                 if (!was_enabled && cart_enabled) {
-                    reset_state = 3;
+                    reset_state = 2;
                 }
                 return;
             }
@@ -549,8 +576,17 @@ int read_block(int port, uint16_t block_address, uint8_t* out) {
         return pfs_err_invalid;
     }
     const uint16_t byte_address = static_cast<uint16_t>(block_address * block_size);
-    for (int i = 0; i < block_size; i++) {
-        out[i] = ports[port].read(static_cast<uint16_t>(byte_address + i));
+    // Transfer Pak control registers are mirrored across the 32-byte accessory
+    // block. Read once so status() advances its reset latch once per block read.
+    if ((byte_address & transfer_pak_address_mask) <= 0x3FFF) {
+        const uint8_t value = ports[port].read(byte_address);
+        for (int i = 0; i < block_size; i++) {
+            out[i] = value;
+        }
+    } else {
+        for (int i = 0; i < block_size; i++) {
+            out[i] = ports[port].read(static_cast<uint16_t>(byte_address + i));
+        }
     }
     tpak_ring_append(port, 0, block_address, out[0]);
     if (debug_enabled) {
