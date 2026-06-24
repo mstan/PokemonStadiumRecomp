@@ -53,7 +53,11 @@ echo === CONFIGURE ===
 ::   would force the dynamic MSVC runtime, defeating the static-CRT linkage that
 ::   makes the release self-contained. The placeholder ares worker idles
 ::   harmlessly. Devs who need the oracle reconfigure with -DWITH_ARES_BRIDGE=ON.
-"%CMAKE%" -S "%PROJ%" -B "%PROJ%\build" -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Release -DPSR_NO_CONSOLE=ON -DWITH_ARES_BRIDGE=OFF > "%PROJ%\_cfg_ssanne.log" 2>&1
+:: -DWITH_DEV_DIVERGENCE=OFF => keep the dev-only static-vs-interp divergence
+::   tooling (force-interpret a fragment) out of shipped builds. Passed
+::   explicitly so a stale cache left ON by a debugging session can't leak the
+::   tooling into a release. Devs enable it with -DWITH_DEV_DIVERGENCE=ON.
+"%CMAKE%" -S "%PROJ%" -B "%PROJ%\build" -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Release -DPSR_NO_CONSOLE=ON -DWITH_ARES_BRIDGE=OFF -DWITH_DEV_DIVERGENCE=OFF > "%PROJ%\_cfg_ssanne.log" 2>&1
 set CFG_RC=%errorlevel%
 echo configure rc=%CFG_RC%
 if not "%CFG_RC%"=="0" ( echo CONFIGURE FAILED rc=%CFG_RC% & exit /b %CFG_RC% )
