@@ -92,6 +92,20 @@ InputField axis_pos(SDL_GameControllerAxis a) {
 InputField axis_neg(SDL_GameControllerAxis a) {
     return {static_cast<uint32_t>(FieldType::PadAxisNeg), static_cast<int32_t>(a)};
 }
+// Raw SDL_Joystick fields (issue #15): id is the raw joystick button/axis index.
+InputField joy_btn_field(int raw_button) {
+    return {static_cast<uint32_t>(FieldType::JoyButton), static_cast<int32_t>(raw_button)};
+}
+InputField joy_axis_pos(int raw_axis) {
+    return {static_cast<uint32_t>(FieldType::JoyAxisPos), static_cast<int32_t>(raw_axis)};
+}
+InputField joy_axis_neg(int raw_axis) {
+    return {static_cast<uint32_t>(FieldType::JoyAxisNeg), static_cast<int32_t>(raw_axis)};
+}
+// Raw joystick axis "pressed" threshold. The 8BitDo 64's C-buttons report as a
+// digital throw to the axis extreme, so a firm mid threshold reads cleanly while
+// rejecting resting drift.
+constexpr int kRawAxisThreshold = 16000;
 
 void set_default(Device dev, N64Input in, InputField a, InputField b = {}) {
     g_bindings[static_cast<int>(dev)][static_cast<int>(in)][0] = a;
@@ -165,6 +179,18 @@ bool field_active_digital(const InputField& f, SDL_GameController* pad, const ui
             return pad && SDL_GameControllerGetAxis(pad, static_cast<SDL_GameControllerAxis>(f.id)) >  axis_threshold(f.id);
         case FieldType::PadAxisNeg:
             return pad && SDL_GameControllerGetAxis(pad, static_cast<SDL_GameControllerAxis>(f.id)) < -axis_threshold(f.id);
+        case FieldType::JoyButton: {
+            SDL_Joystick* j = pad ? SDL_GameControllerGetJoystick(pad) : nullptr;
+            return j && f.id >= 0 && f.id < SDL_JoystickNumButtons(j) && SDL_JoystickGetButton(j, f.id);
+        }
+        case FieldType::JoyAxisPos: {
+            SDL_Joystick* j = pad ? SDL_GameControllerGetJoystick(pad) : nullptr;
+            return j && f.id >= 0 && f.id < SDL_JoystickNumAxes(j) && SDL_JoystickGetAxis(j, f.id) >  kRawAxisThreshold;
+        }
+        case FieldType::JoyAxisNeg: {
+            SDL_Joystick* j = pad ? SDL_GameControllerGetJoystick(pad) : nullptr;
+            return j && f.id >= 0 && f.id < SDL_JoystickNumAxes(j) && SDL_JoystickGetAxis(j, f.id) < -kRawAxisThreshold;
+        }
         default:
             return false;
     }
@@ -189,6 +215,22 @@ int field_stick_contribution(const InputField& f, SDL_GameController* pad, const
             int v = SDL_GameControllerGetAxis(pad, static_cast<SDL_GameControllerAxis>(f.id));
             return v < 0 ? -v : 0;
         }
+        case FieldType::JoyButton: {
+            SDL_Joystick* j = pad ? SDL_GameControllerGetJoystick(pad) : nullptr;
+            return (j && f.id >= 0 && f.id < SDL_JoystickNumButtons(j) && SDL_JoystickGetButton(j, f.id)) ? 32767 : 0;
+        }
+        case FieldType::JoyAxisPos: {
+            SDL_Joystick* j = pad ? SDL_GameControllerGetJoystick(pad) : nullptr;
+            if (!j || f.id < 0 || f.id >= SDL_JoystickNumAxes(j)) return 0;
+            int v = SDL_JoystickGetAxis(j, f.id);
+            return v > 0 ? v : 0;
+        }
+        case FieldType::JoyAxisNeg: {
+            SDL_Joystick* j = pad ? SDL_GameControllerGetJoystick(pad) : nullptr;
+            if (!j || f.id < 0 || f.id >= SDL_JoystickNumAxes(j)) return 0;
+            int v = SDL_JoystickGetAxis(j, f.id);
+            return v < 0 ? -v : 0;
+        }
         default:
             return 0;
     }
@@ -204,6 +246,9 @@ std::string encode_field(const InputField& f) {
         case FieldType::PadButton:  return "button:"+ std::to_string(f.id);
         case FieldType::PadAxisPos: return "axis+:" + std::to_string(f.id);
         case FieldType::PadAxisNeg: return "axis-:" + std::to_string(f.id);
+        case FieldType::JoyButton:  return "joybtn:"  + std::to_string(f.id);
+        case FieldType::JoyAxisPos: return "joyaxis+:"+ std::to_string(f.id);
+        case FieldType::JoyAxisNeg: return "joyaxis-:"+ std::to_string(f.id);
         default:                    return "none";
     }
 }
@@ -214,10 +259,13 @@ bool decode_field(const std::string& s, InputField* out) {
     std::string type = s.substr(0, colon);
     int id = 0;
     try { id = std::stoi(s.substr(colon + 1)); } catch (...) { return false; }
-    if      (type == "key")    out->type = static_cast<uint32_t>(FieldType::Key);
-    else if (type == "button") out->type = static_cast<uint32_t>(FieldType::PadButton);
-    else if (type == "axis+")  out->type = static_cast<uint32_t>(FieldType::PadAxisPos);
-    else if (type == "axis-")  out->type = static_cast<uint32_t>(FieldType::PadAxisNeg);
+    if      (type == "key")      out->type = static_cast<uint32_t>(FieldType::Key);
+    else if (type == "button")   out->type = static_cast<uint32_t>(FieldType::PadButton);
+    else if (type == "axis+")    out->type = static_cast<uint32_t>(FieldType::PadAxisPos);
+    else if (type == "axis-")    out->type = static_cast<uint32_t>(FieldType::PadAxisNeg);
+    else if (type == "joybtn")   out->type = static_cast<uint32_t>(FieldType::JoyButton);
+    else if (type == "joyaxis+") out->type = static_cast<uint32_t>(FieldType::JoyAxisPos);
+    else if (type == "joyaxis-") out->type = static_cast<uint32_t>(FieldType::JoyAxisNeg);
     else return false;
     out->id = id;
     return true;
@@ -295,6 +343,9 @@ std::string field_to_string(const InputField& field) {
         case FieldType::PadButton:  return button_label(field.id);
         case FieldType::PadAxisPos: return axis_label(field.id, true);
         case FieldType::PadAxisNeg: return axis_label(field.id, false);
+        case FieldType::JoyButton:  return "Btn " + std::to_string(field.id);
+        case FieldType::JoyAxisPos: return "Axis " + std::to_string(field.id) + "+";
+        case FieldType::JoyAxisNeg: return "Axis " + std::to_string(field.id) + "-";
         default:                    return "\xE2\x80\x94"; // em dash
     }
 }
@@ -438,6 +489,24 @@ bool scanning() {
     return g_scan.armed;
 }
 
+// Is this raw joystick button/axis already part of the controller's SDL
+// GameController mapping? If so, the scan should prefer the (cleaner, portable)
+// SDL_CONTROLLER* event and ignore the raw one — raw capture is reserved for
+// inputs the mapping can't express (issue #15: 8BitDo 64 C-buttons).
+static bool raw_input_is_mapped(SDL_GameController* gc, bool is_axis, int raw_index) {
+    if (!gc) return false;
+    auto hit = [&](SDL_GameControllerButtonBind b) {
+        if (!is_axis && b.bindType == SDL_CONTROLLER_BINDTYPE_BUTTON) return b.value.button == raw_index;
+        if ( is_axis && b.bindType == SDL_CONTROLLER_BINDTYPE_AXIS)   return b.value.axis   == raw_index;
+        return false;
+    };
+    for (int i = 0; i < SDL_CONTROLLER_BUTTON_MAX; ++i)
+        if (hit(SDL_GameControllerGetBindForButton(gc, static_cast<SDL_GameControllerButton>(i)))) return true;
+    for (int i = 0; i < SDL_CONTROLLER_AXIS_MAX; ++i)
+        if (hit(SDL_GameControllerGetBindForAxis(gc, static_cast<SDL_GameControllerAxis>(i)))) return true;
+    return false;
+}
+
 bool handle_scan_event(const SDL_Event& ev) {
     ScanState s;
     {
@@ -473,6 +542,29 @@ bool handle_scan_event(const SDL_Event& ev) {
             } else if (ev.caxis.value < -kScanThreshold) {
                 captured = axis_neg(static_cast<SDL_GameControllerAxis>(ev.caxis.axis));
                 got = true;
+            }
+        } else if (ev.type == SDL_JOYBUTTONDOWN) {
+            // Issue #15: raw fallback for inputs SDL_GameController can't express
+            // (e.g. 8BitDo 64 C-buttons on buttons 16/17). Diagnostic log surfaces
+            // the raw index in the user's log so we can set sane defaults later.
+            std::fprintf(stderr, "[input] scan: joy button %d (instance %d)\n",
+                         (int)ev.jbutton.button, (int)ev.jbutton.which);
+            SDL_GameController* gc = SDL_GameControllerFromInstanceID(ev.jbutton.which);
+            if (!raw_input_is_mapped(gc, /*is_axis=*/false, ev.jbutton.button)) {
+                captured = joy_btn_field(ev.jbutton.button);
+                got = true;
+            }
+        } else if (ev.type == SDL_JOYAXISMOTION) {
+            constexpr int kScanThreshold = 20000;
+            if (ev.jaxis.value > kScanThreshold || ev.jaxis.value < -kScanThreshold) {
+                std::fprintf(stderr, "[input] scan: joy axis %d = %d (instance %d)\n",
+                             (int)ev.jaxis.axis, (int)ev.jaxis.value, (int)ev.jaxis.which);
+                SDL_GameController* gc = SDL_GameControllerFromInstanceID(ev.jaxis.which);
+                if (!raw_input_is_mapped(gc, /*is_axis=*/true, ev.jaxis.axis)) {
+                    captured = (ev.jaxis.value > 0) ? joy_axis_pos(ev.jaxis.axis)
+                                                    : joy_axis_neg(ev.jaxis.axis);
+                    got = true;
+                }
             }
         }
     }

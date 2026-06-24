@@ -1206,6 +1206,10 @@ int main(int argc, char** argv) {
     }
 
     SDL_InitSubSystem(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
+    // Deliver raw SDL_JOY* events too, not just SDL_CONTROLLER* ones, so the
+    // rebind scan can capture inputs the GameController mapping can't express
+    // (issue #15: 8BitDo 64 C-buttons on raw buttons 16/17 + a Z-rotation axis).
+    SDL_JoystickEventState(SDL_ENABLE);
     std::fprintf(stderr, "[PSR] SDL audio/controller init OK\n"); std::fflush(stderr);
 
     // ── Controller mapping database (issue #15: 8BitDo 64 & others) ───────────

@@ -37,12 +37,24 @@ namespace pkmnstadium::input {
 //   PadButton  -> SDL_GameControllerButton
 //   PadAxisPos -> SDL_GameControllerAxis, active/positive when value >  +threshold
 //   PadAxisNeg -> SDL_GameControllerAxis, active/negative when value <  -threshold
+//   JoyButton  -> raw SDL_Joystick button index
+//   JoyAxisPos -> raw SDL_Joystick axis index, active when value >  +threshold
+//   JoyAxisNeg -> raw SDL_Joystick axis index, active when value <  -threshold
+//
+// The Joy* types (issue #15) cover inputs the SDL_GameController mapping can't
+// express — e.g. the 8BitDo 64's C-buttons, which report as raw joystick buttons
+// / a Z-rotation axis with no GameController binding. They read the underlying
+// joystick (SDL_GameControllerGetJoystick) so they require a pad that is an
+// opened game controller, same as the Pad* types.
 enum class FieldType : uint32_t {
     None       = 0,
     Key        = 1,
     PadButton  = 2,
     PadAxisPos = 3,
     PadAxisNeg = 4,
+    JoyButton  = 5,
+    JoyAxisPos = 6,
+    JoyAxisNeg = 7,
 };
 
 struct InputField {
