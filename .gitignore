@@ -93,3 +93,8 @@ lib/
 # the full snapshot of these files at the point they were untracked.
 CLAUDE.md
 TO_ADAPT_FROM_BATTLESHIP.md
+
+# Issue #17 raw GB-Tower ring dumps — large (100MB+) UTF-16 debug captures,
+# regenerable from a live run via the debug server (gbtower_trace / tpak_ring).
+# Analysis lives in memory + the session handoff; the raw dumps are not source.
+_issue_logs/issue17_*.json

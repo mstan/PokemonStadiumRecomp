@@ -666,6 +666,20 @@ static uint8_t frag9_load8(uint8_t* rdram, uint32_t link_offset) {
     return load_be8_v(rdram, frag9_runtime_vaddr(link_offset));
 }
 
+/* Live peek of any fragment-9 (GB Tower) global by its LINK offset, resolved
+ * through section_addresses[9] to the runtime copy. Used by the debug server's
+ * "frag9" command to read e.g. the CPU-step gate cRam024589ee (offset 0x2C512)
+ * for Red(DMG) vs Yellow(CGB) without a full trace-struct change. */
+uint32_t pkmnstadium_frag9_peek32(uint8_t* rdram, uint32_t link_offset) {
+    return frag9_load32(rdram, link_offset);
+}
+uint32_t pkmnstadium_frag9_base(void) {
+    if (section_addresses != NULL && section_addresses[9] != 0) {
+        return (uint32_t)section_addresses[9];
+    }
+    return 0x81200000u;
+}
+
 void pkmnstadium_gbtower_state_trace(uint8_t* rdram, uint32_t tag,
                                      uint32_t s0, const void* raw_ctx) {
     static int trace_cpu_tags = -1;

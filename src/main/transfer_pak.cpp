@@ -358,6 +358,50 @@ namespace {
     std::mutex port_mutex;
     bool debug_enabled = false;
 
+    // ---- Always-on block-I/O ring (matches librecomp gbcart's ring) -----------
+    // PSR's GB-Tower reads the GB cart through THIS app-level Transfer Pak HLE
+    // (not librecomp::gbcart), so the gbcart ring stays empty. Record every
+    // read_block/write_block with the cart's selected ROM bank + the mapped GB
+    // bus address so a probe can see exactly which ROM banks the full-cart read
+    // walked and where it stopped (issue #17: Red/Blue stall — data ends at bank
+    // 44, Yellow fills 64). Caller holds port_mutex.
+    struct TpakRingEntry {
+        uint32_t seq;
+        uint16_t block_addr;   // libultra block address (x32 = accessory byte addr)
+        uint16_t bus_addr;     // mapped GB bus address (0x0000-0xFFFF)
+        uint16_t rom_bank;     // cart's currently-selected switchable ROM bank
+        uint8_t  port;
+        uint8_t  kind;         // 0 = read, 1 = write
+        uint8_t  addr_bank;    // Transfer Pak bank register (0..3)
+        uint8_t  flags;        // bit0 pak_enabled, bit1 cart_enabled, bit2 ram_enabled
+        uint8_t  b0;           // first data byte read/written
+    };
+    constexpr size_t tpak_ring_cap = 65536;
+    TpakRingEntry g_tpak_ring[tpak_ring_cap];
+    uint32_t g_tpak_ring_seq = 0;  // total appended; guarded by port_mutex
+
+    void tpak_ring_append(int port, uint8_t kind, uint16_t block_address, uint8_t b0) {
+        const Port& p = ports[port];
+        const uint16_t byte_address = static_cast<uint16_t>(block_address * block_size);
+        const uint16_t masked = byte_address & transfer_pak_address_mask;
+        const uint16_t bus_addr = (masked > 0x3FFF)
+            ? static_cast<uint16_t>(transfer_pak_cart_window * p.address_bank +
+                                    masked - transfer_pak_cart_window)
+            : masked;
+        TpakRingEntry& e = g_tpak_ring[g_tpak_ring_seq % tpak_ring_cap];
+        e.seq = g_tpak_ring_seq;
+        e.block_addr = block_address;
+        e.bus_addr = bus_addr;
+        e.rom_bank = static_cast<uint16_t>(p.cart.selected_switchable_rom_bank());
+        e.port = static_cast<uint8_t>(port);
+        e.kind = kind;
+        e.addr_bank = p.address_bank;
+        e.flags = static_cast<uint8_t>((p.pak_enabled ? 1 : 0) | (p.cart_enabled ? 2 : 0) |
+                                       (p.cart.ram_enabled ? 4 : 0));
+        e.b0 = b0;
+        g_tpak_ring_seq++;
+    }
+
     uint32_t si_dma_latency_us() {
         static uint32_t value = []() {
             constexpr uint32_t default_latency_us = 50;
@@ -508,6 +552,7 @@ int read_block(int port, uint16_t block_address, uint8_t* out) {
     for (int i = 0; i < block_size; i++) {
         out[i] = ports[port].read(static_cast<uint16_t>(byte_address + i));
     }
+    tpak_ring_append(port, 0, block_address, out[0]);
     if (debug_enabled) {
         static int header_read_logs = 0;
         if (block_address >= 0x600 && block_address < 0x610 && header_read_logs++ < 16) {
@@ -543,8 +588,58 @@ int write_block(int port, uint16_t block_address, const uint8_t* data) {
     for (int i = 0; i < block_size; i++) {
         ports[port].write(static_cast<uint16_t>(byte_address + i), data[i]);
     }
+    tpak_ring_append(port, 1, block_address, data[0]);
     ports[port].cart.flush_save();
     return 0;
+}
+
+void ring_dump(const char* path, int tail) {
+    std::scoped_lock lock(port_mutex);
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) {
+        return;
+    }
+    const uint32_t total = g_tpak_ring_seq;
+    const uint32_t avail = total < tpak_ring_cap ? total : static_cast<uint32_t>(tpak_ring_cap);
+    if (tail <= 0 || static_cast<uint32_t>(tail) > avail) {
+        tail = static_cast<int>(avail);
+    }
+    uint32_t reads = 0, writes = 0, max_bank = 0, max_bus = 0;
+    uint64_t bank_seen = 0;  // bitmask of switchable ROM banks 0..63 touched by cart-window reads
+    const uint32_t start = total > tpak_ring_cap ? total - static_cast<uint32_t>(tpak_ring_cap) : 0;
+    for (uint32_t s = start; s < total; s++) {
+        const TpakRingEntry& e = g_tpak_ring[s % tpak_ring_cap];
+        if (e.kind == 0) {
+            reads++;
+            if (e.bus_addr >= 0x4000 && e.bus_addr < 0x8000) {
+                if (e.rom_bank < 64) bank_seen |= (1ull << e.rom_bank);
+                if (e.rom_bank > max_bank) max_bank = e.rom_bank;
+            }
+            if (e.bus_addr > max_bus) max_bus = e.bus_addr;
+        } else {
+            writes++;
+        }
+    }
+    f << "=== transfer_pak block-I/O ring (total=" << total << " avail=" << avail
+      << " reads=" << reads << " writes=" << writes << ") ===\n";
+    f << "switchable_rom_banks_read (max=" << max_bank << "): ";
+    for (int b = 0; b < 64; b++) {
+        if (bank_seen & (1ull << b)) f << b << ' ';
+    }
+    f << "\nmax cart-window bus_addr=0x" << std::hex << max_bus << std::dec << "\n";
+    f << "--- last " << tail << " entries (blk=libultra block, bus=GB addr, rb=rom bank;"
+         " k=0 read/1 write; P/C/R=pak/cart/ram enabled) ---\n";
+    f << "seq port k blk bus rb tpb b0 PCR\n";
+    const uint32_t first = (static_cast<uint32_t>(tail) >= avail) ? start : (total - static_cast<uint32_t>(tail));
+    for (uint32_t s = first; s < total; s++) {
+        const TpakRingEntry& e = g_tpak_ring[s % tpak_ring_cap];
+        f << e.seq << ' ' << int(e.port) << ' ' << int(e.kind)
+          << " 0x" << std::hex << e.block_addr << " 0x" << e.bus_addr << std::dec
+          << ' ' << e.rom_bank << ' ' << int(e.addr_bank)
+          << " 0x" << std::hex << int(e.b0) << std::dec
+          << ' ' << ((e.flags & 1) ? 'P' : '-') << ((e.flags & 2) ? 'C' : '-')
+          << ((e.flags & 4) ? 'R' : '-') << '\n';
+    }
 }
 }
 

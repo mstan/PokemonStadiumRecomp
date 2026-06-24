@@ -43,6 +43,8 @@
 #include "app_paths.h"
 #include "librecomp/ultra_trace.hpp"
 #include "librecomp/rsp.hpp"
+#include "librecomp/gbcart.hpp"
+#include "transfer_pak.h"
 #include "ares_bridge.h"
 #include "ares_worker.h"
 
@@ -256,6 +258,11 @@ extern "C" void recomp_coverage_live(
     uint64_t* self_heal_misses, uint64_t* dispatch_entry_rejects,
     uint64_t* interp_runs, uint64_t* jit_compiles, uint64_t* jit_failures);
 extern "C" uint64_t recomp_bubble_dispatch_count(void);
+extern "C" uint64_t recomp_host_return_break_count(void);
+extern "C" uint32_t recomp_host_return_break_last_target(void);
+extern "C" uint32_t recomp_host_return_break_last_depth(void);
+extern "C" uint32_t pkmnstadium_frag9_peek32(uint8_t* rdram, uint32_t link_offset);
+extern "C" uint32_t pkmnstadium_frag9_base(void);
 extern "C" uint64_t ultramodern_submit_gfx_count(void);
 extern "C" uint64_t ultramodern_submit_audio_count(void);
 extern "C" uint64_t ultramodern_submit_other_count(void);
@@ -841,6 +848,51 @@ static std::string handle_command(const std::string& line) {
         out += "]}";
         return out;
     }
+    if (cmd == "frag9") {
+        // Read a fragment-9 (GB Tower) global by LINK offset, resolved via
+        // section_addresses[9] to the runtime copy. Key target: the CPU-step
+        // gate cRam024589ee @ 0x2C512 (nonzero => GB CPU frame-step is skipped
+        // for a hardware-register busy-wait). Reads up to 8 consecutive 32-bit
+        // words. Args: {"off":0x2C512,"words":1}
+        uint32_t off = get_uint(line, "off", 0x2C512u);
+        int words = get_int(line, "words", 1);
+        if (words < 1) words = 1;
+        if (words > 8) words = 8;
+        uint8_t* rdram = recomp_runtime_get_rdram();
+        if (rdram == nullptr) {
+            return R"({"ok":false,"error":"rdram not yet captured"})";
+        }
+        std::string vals;
+        for (int i = 0; i < words; i++) {
+            char t[16];
+            std::snprintf(t, sizeof(t), "%s\"0x%08X\"", i ? "," : "",
+                          pkmnstadium_frag9_peek32(rdram, off + (uint32_t)i * 4u));
+            vals += t;
+        }
+        char hdr[64];
+        std::snprintf(hdr, sizeof(hdr), "0x%08X", pkmnstadium_frag9_base());
+        return std::string("{\"ok\":true,\"frag9_base\":\"") + hdr +
+               "\",\"off\":" + std::to_string(off) + ",\"words\":[" + vals + "]}";
+    }
+    if (cmd == "gbcart_ring") {
+        // Dump the always-on gbcart block-I/O ring (every Transfer Pak cart
+        // read/write + bank state + which ROM banks were walked). Compares the
+        // GB-Tower cart-access pattern Red(MBC3) vs Yellow(MBC5): did the
+        // emulator's full-cart read complete, or stall, and at which bank/addr.
+        int tail = get_int(line, "tail", 400);
+        const std::string path = "gbcart_ring.txt";
+        librecomp::gbcart::ring_dump(path.c_str(), tail);
+        return std::string("{\"ok\":true,\"path\":\"") + path + "\"}";
+    }
+    if (cmd == "tpak_ring") {
+        // Dump PSR's app-level Transfer Pak block-I/O ring (the path that actually
+        // serves GB-Tower cart reads; librecomp::gbcart's ring stays empty). Shows
+        // which switchable ROM banks the full-cart read walked + where it stopped.
+        int tail = get_int(line, "tail", 400);
+        const std::string path = "tpak_ring.txt";
+        pkmnstadium::transfer_pak::ring_dump(path.c_str(), tail);
+        return std::string("{\"ok\":true,\"path\":\"") + path + "\"}";
+    }
     if (cmd == "gbtower_trace") {
         // Returns the last N GB Tower state-machine checkpoints captured
         // from func_8120572C and its helper calls. Tags are the original
@@ -1127,18 +1179,24 @@ static std::string handle_command(const std::string& line) {
         uint64_t sh=0, lm=0, heals=0, hmiss=0, rej=0, interp=0, jc=0, jf=0;
         recomp_coverage_live(&sh, &lm, &heals, &hmiss, &rej, &interp, &jc, &jf);
         uint64_t bubbles = recomp_bubble_dispatch_count();
-        char b[600];
+        uint64_t hrbreaks = recomp_host_return_break_count();
+        uint32_t hrbreak_last = recomp_host_return_break_last_target();
+        uint32_t hrbreak_depth = recomp_host_return_break_last_depth();
+        char b[700];
         std::snprintf(b, sizeof(b),
             "{\"ok\":true,\"static_dispatch_hits\":%llu,\"lookup_misses\":%llu,"
             "\"self_heals\":%llu,\"self_heal_misses\":%llu,"
             "\"dispatch_entry_rejects\":%llu,\"interp_runs\":%llu,"
             "\"jit_compiles\":%llu,\"jit_failures\":%llu,"
-            "\"tailcall_bubble_dispatches\":%llu}",
+            "\"tailcall_bubble_dispatches\":%llu,"
+            "\"host_return_breaks\":%llu,\"host_return_break_last_target\":\"0x%08X\","
+            "\"host_return_break_last_depth\":%u}",
             (unsigned long long)sh, (unsigned long long)lm,
             (unsigned long long)heals, (unsigned long long)hmiss,
             (unsigned long long)rej, (unsigned long long)interp,
             (unsigned long long)jc, (unsigned long long)jf,
-            (unsigned long long)bubbles);
+            (unsigned long long)bubbles,
+            (unsigned long long)hrbreaks, (unsigned)hrbreak_last, (unsigned)hrbreak_depth);
         return std::string(b);
     }
     if (cmd == "sp_task_recent") {
