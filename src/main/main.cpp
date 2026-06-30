@@ -584,14 +584,12 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
     // The bridge resamples to the device rate continuously (no SDL_AudioCVT)
     // and the audio callback drains it (no decimation valve).
     if (audio_bridge_enabled()) {
-        const float main_volume = pkmnstadium::dbg::g_audio_volume.load();
         size_t frames = sample_count / input_channels;
         if (frames == 0) return;
         static std::vector<int16_t> push_buf;
         if (push_buf.size() < frames * output_channels) push_buf.resize(frames * output_channels);
         // libultra interleaves R,L per word; emit L,R. Keep the legacy 0.5
-        // headroom so levels match the old path. volume==0 => silence (still
-        // pushed, so the buffer/feedback stay alive during muted harness runs).
+        // headroom so levels match the old path.
         // RECOMP_AUDIO_SYNTH=sine|square|impulse|silence replaces the game audio
         // with a known-clean test signal through the EXACT same path. If a pure
         // sine crackles, the defect is the path, not the game's HLE audio.
@@ -602,7 +600,7 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
             recomp_audio_synth_fill(s_synth, push_buf.data(), (int)frames,
                                     output_channels, (double)sample_rate, &s_synth_pos);
         } else {
-            const float scale = 0.5f * main_volume;
+            const float scale = 0.5f;
             for (size_t f = 0; f < frames; ++f) {
                 int l = (int)lrintf((float)audio_data[f * input_channels + 1] * scale);
                 int r = (int)lrintf((float)audio_data[f * input_channels + 0] * scale);
