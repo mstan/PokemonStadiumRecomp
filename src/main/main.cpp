@@ -138,6 +138,92 @@ static bool task_boot_matches(uint8_t* rdram, const OSTask* task,
            rdram_be_word_matches(rdram, boot + 4, word1);
 }
 
+// Single-task replay capture (Milestone 1): wrap aspMain so we can dump the
+// RDRAM the task reads (before) and writes (after). Paired with the input dump
+// in rsp_aspmain_hook.cpp. Armed only when PSR_ASPMAIN_CAPTURE=<dir> is set;
+// otherwise psr_aspmain_capture_dir() returns null and this is a cheap passthrough.
+extern "C" const char* psr_aspmain_capture_dir(void);
+extern "C" void psr_aspmain_capture_done(void);
+// Recomp-side RSP DMA trace ring (librecomp). Mirrors the struct in
+// debug_server.cpp / librecomp/src/rsp.cpp. Gated by PSR_RSP_DMA_TRACE=1.
+struct PsrRspDmaTraceEvent {
+    uint64_t seq;
+    uint32_t write;
+    uint32_t dmem_addr;
+    uint32_t dram_addr;
+    uint32_t byte_count;
+    uint32_t nonzero_bytes;
+    int32_t first_nonzero;
+    uint8_t first16[16];
+};
+extern "C" void recomp_rsp_dma_recent_copy(
+    PsrRspDmaTraceEvent* out, uint32_t out_cap,
+    uint32_t* out_count, uint64_t* out_write_index);
+static RspExitReason aspMain_capture(uint8_t* rdram, uint32_t ucode_addr) {
+    const char* dir = psr_aspmain_capture_dir();
+    static uint8_t* before = nullptr;   // 8 MiB snapshot of RDRAM pre-task
+    if (dir && !before) before = (uint8_t*)malloc(0x800000u);
+    if (dir && before) memcpy(before, rdram, 0x800000u);
+
+    // Snapshot the DMA-trace write index BEFORE the task so we can isolate
+    // exactly this task's DMAs (the ring accumulates across all audio frames).
+    uint64_t dma_idx_before = 0;
+    if (dir) recomp_rsp_dma_recent_copy(nullptr, 0, nullptr, &dma_idx_before);
+
+    RspExitReason r = aspMain(rdram, ucode_addr);
+
+    if (dir && before) {
+        // Skip SILENT/near-silent tasks: voice-state-only frames change only ~200
+        // bytes (no PCM). Require a substantial change so we capture a task that
+        // actually renders audio (the output mix buffer is ~700B PCM + voice state).
+        // Override threshold via PSR_ASPMAIN_MIN_DELTA.
+        size_t changed = 0;
+        for (size_t i = 0; i < 0x800000u; i++) if (before[i] != rdram[i]) changed++;
+        size_t min_delta = 4096;
+        if (const char* e = getenv("PSR_ASPMAIN_MIN_DELTA")) min_delta = (size_t)strtoul(e, nullptr, 0);
+        if (changed < min_delta) {
+            return r;   // stay armed; hook re-dumps input next task
+        }
+        fprintf(stderr, "[aspmain_capture] task changed %zu bytes (>= %zu)\n", changed, min_delta);
+        char path[640];
+        snprintf(path, sizeof(path), "%s/rdram_before.bin", dir);
+        if (FILE* f = fopen(path, "wb")) { fwrite(before, 1, 0x800000u, f); fclose(f); }
+        snprintf(path, sizeof(path), "%s/rdram_after.bin", dir);
+        if (FILE* f = fopen(path, "wb")) { fwrite(rdram, 1, 0x800000u, f); fclose(f); }
+
+        // Dump THIS task's ordered DMA trace (recomp side) for oracle comparison
+        // against the ares replay. Requires PSR_RSP_DMA_TRACE=1.
+        {
+            static std::vector<PsrRspDmaTraceEvent> dbuf(4096);
+            uint32_t got = 0; uint64_t widx = 0;
+            recomp_rsp_dma_recent_copy(dbuf.data(), (uint32_t)dbuf.size(), &got, &widx);
+            snprintf(path, sizeof(path), "%s/recomp_dma.txt", dir);
+            if (FILE* f = fopen(path, "w")) {
+                fprintf(f, "# recomp aspMain DMA trace (this task: seq >= %llu)\n",
+                        (unsigned long long)dma_idx_before);
+                uint32_t shown = 0;
+                for (uint32_t i = 0; i < got; i++) {
+                    const PsrRspDmaTraceEvent& e = dbuf[i];
+                    if (e.seq < dma_idx_before) continue;  // earlier task
+                    fprintf(f, "%3u %s dram=0x%06X dmem=0x%03X len=0x%X nz=%u first16=",
+                            shown++, e.write ? "WR" : "RD",
+                            e.dram_addr & 0xFFFFFF, e.dmem_addr & 0xFFF,
+                            e.byte_count, e.nonzero_bytes);
+                    for (int b = 0; b < 16; b++) fprintf(f, "%02X", e.first16[b]);
+                    fprintf(f, "\n");
+                }
+                fclose(f);
+                fprintf(stderr, "[aspmain_capture] wrote recomp_dma.txt (%u dmas this task)\n", shown);
+            }
+        }
+        fprintf(stderr, "[aspmain_capture] non-silent task captured to %s (exit=%d)\n",
+                dir, (int)r);
+        fflush(stderr);
+        psr_aspmain_capture_done();
+    }
+    return r;
+}
+
 static RspUcodeFunc* get_rsp_microcode(uint8_t* rdram, const OSTask* task) {
     if (task_boot_matches(rdram, task, 0xA40, 0x401A6000u, 0xC800207Cu)) {
         return gbTowerMain;
@@ -147,7 +233,7 @@ static RspUcodeFunc* get_rsp_microcode(uint8_t* rdram, const OSTask* task) {
     }
 
     switch (task->t.type) {
-        case M_AUDTASK:   return aspMain;
+        case M_AUDTASK:   return aspMain_capture;   /* passthrough unless capture armed */
         case M_NJPEGTASK: return njpgdspMain;
         default:
             fprintf(stderr, "[Pokemon Stadium] Unknown RSP task type: %u\n", task->t.type);
@@ -219,6 +305,27 @@ static void psr_audio_cb(void* /*ud*/, Uint8* stream, int len) {
     SDL_UnlockMutex(g_audio_mtx);
     float* out = reinterpret_cast<float*>(stream);
     for (int i = 0; i < frames * output_channels; ++i)
+        out[i] = (float)tmp[i] * (1.0f / 32768.0f);
+    recomp_audio_debug_push_i16("t3_bridge_out", tmp.data(), frames,
+                                (double)output_sample_rate, output_channels);
+}
+
+// Fill `frames` of interleaved F32 stereo from the bridge — the shared source for
+// BOTH the SDL callback and the native-WASAPI render path (audio_host_probe.cpp).
+// Mirrors psr_audio_cb's pull+convert so the two output backends are byte-identical.
+extern "C" void psr_audio_fill_f32(float* out, int frames) {
+    if (!out || frames <= 0) return;
+    if (!g_bridge_ready || !g_audio_mtx) {
+        for (int i = 0; i < frames * (int)output_channels; ++i) out[i] = 0.0f;
+        return;
+    }
+    static thread_local std::vector<int16_t> tmp;
+    if ((int)tmp.size() < frames * (int)output_channels)
+        tmp.resize((size_t)frames * output_channels);
+    SDL_LockMutex(g_audio_mtx);
+    rab_pull(&g_bridge, tmp.data(), frames);
+    SDL_UnlockMutex(g_audio_mtx);
+    for (int i = 0; i < frames * (int)output_channels; ++i)
         out[i] = (float)tmp[i] * (1.0f / 32768.0f);
     recomp_audio_debug_push_i16("t3_bridge_out", tmp.data(), frames,
                                 (double)output_sample_rate, output_channels);
@@ -725,8 +832,42 @@ static const char* select_audio_device() {
     return nullptr;  // nothing better — let SDL pick
 }
 
+// WASAPI host-boundary probes (audio_host_probe.cpp): (1) log the TRUE engine mix
+// format — SDL's `obtained` can hide a shared-mode resample; (2) opt-in T5 loopback
+// tap (PSR_AUDIO_T5_LOOPBACK=1) that captures what Windows sends the endpoint.
+extern "C" void psr_log_wasapi_mix_format(void);
+extern "C" void psr_audio_t5_start(void);
+// Native WASAPI render path (cpal-equivalent, audio_host_probe.cpp). Opt-in
+// alternative to SDL2 audio output via PSR_AUDIO_WASAPI=1.
+extern "C" int      psr_audio_wasapi_enabled(void);
+extern "C" int      psr_audio_wasapi_start(void);
+extern "C" unsigned psr_query_wasapi_mix_rate(void);
+
 static void reset_audio(uint32_t output_freq) {
     bool use_bridge = audio_bridge_enabled();
+    // ---- Native WASAPI render path (cpal-style: event-driven, shared-mode, native
+    // mix format, default engine buffer, Pro-Audio thread). Bypasses SDL2 audio so
+    // we can A/B against it by ear. The bridge still produces the PCM; only the
+    // host handoff changes. ----
+    if (use_bridge && psr_audio_wasapi_enabled()) {
+        psr_log_wasapi_mix_format();
+        unsigned mr = psr_query_wasapi_mix_rate();
+        output_sample_rate = mr ? mr : output_freq;
+        update_audio_converter();
+        if (!g_audio_mtx) g_audio_mtx = SDL_CreateMutex();
+        SDL_LockMutex(g_audio_mtx);
+        bridge_reinit_locked();          // host_rate == engine mix rate
+        SDL_UnlockMutex(g_audio_mtx);
+        recomp_audio_debug_init();
+        psr_audio_t5_start();
+        if (psr_audio_wasapi_start()) {
+            fprintf(stderr, "[PSR][audio] NATIVE WASAPI render ON  src=%u -> host=%u  ready=%d\n",
+                    sample_rate, output_sample_rate, g_bridge_ready);
+            return;  // do NOT open SDL audio output
+        }
+        fprintf(stderr, "[PSR][audio] WASAPI render failed to start — falling back to SDL\n");
+        // fall through to the SDL path below
+    }
     SDL_AudioSpec spec_desired{};
     spec_desired.freq    = (int)output_freq;
     spec_desired.format  = AUDIO_F32;
@@ -759,6 +900,10 @@ static void reset_audio(uint32_t output_freq) {
     // Target everything at the rate SDL actually gave us, never the hardcoded one.
     output_sample_rate = (obtained.freq > 0) ? (uint32_t)obtained.freq : output_freq;
     update_audio_converter();
+    // Report the TRUE WASAPI engine mix format + device period. If this rate differs
+    // from `obtained` above, Windows is doing a hidden shared-mode resample (the
+    // double-resample suspect) — target it to eliminate the second SRC.
+    psr_log_wasapi_mix_format();
     fprintf(stderr, "[PSR][audio] driver=%s  desired=%dHz F32 %dch samp=%d  "
             "obtained=%dHz fmt=0x%04x %dch samp=%d\n",
             SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?",
@@ -773,6 +918,9 @@ static void reset_audio(uint32_t output_freq) {
         fprintf(stderr, "[PSR][audio] bridge ON  src=%u -> host=%u (obtained)  ready=%d\n",
                 sample_rate, output_sample_rate, g_bridge_ready);
     }
+    // Start the T5 WASAPI-loopback tap if requested (needs RECOMP_AUDIO_DEBUG too).
+    // Captures exactly what Windows sends the endpoint — the first tap past T3.
+    psr_audio_t5_start();
     SDL_PauseAudioDevice(audio_device, 0);
 }
 

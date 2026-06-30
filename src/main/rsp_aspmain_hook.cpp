@@ -75,6 +75,10 @@ constexpr uint32_t kAudioCommandsDmemOffset = 0x2B0;
 // in the boot path and is documented scratch.
 constexpr uint32_t kBootDmaSafeDmemOffset = 0xFA0;
 
+static void aspmain_capture_input(uint8_t* rdram, ::RspContext* ctx,
+                                  uint32_t ucode_addr, uint32_t data_ptr,
+                                  uint32_t data_size, uint32_t chunk);
+
 void aspmain_pre_task(uint8_t* rdram,
                       ::RspContext* ctx,
                       const char* ucode_name,
@@ -186,6 +190,9 @@ void aspmain_pre_task(uint8_t* rdram,
     ctx->r3               = chunk - 1;
     ctx->r31              = 0x1144;
 
+    // Single-task replay capture (Milestone 1): dump this task's input state.
+    aspmain_capture_input(rdram, ctx, ucode_addr, data_ptr, data_size, chunk);
+
     // Per-task tracing is opt-in via PSR_ASPMAIN_DEBUG; without it
     // this fires every audio frame and floods stderr.
     static const bool s_aspmain_debug = getenv("PSR_ASPMAIN_DEBUG") != nullptr;
@@ -209,6 +216,64 @@ void aspmain_pre_task(uint8_t* rdram,
         fprintf(stderr, "[aspmain_chunk0] ops: %s\n", ops);
         fflush(stderr);
     }
+}
+
+// ── Single-task replay capture (round-2 N64 crackle oracle, Milestone 1) ──
+// PSR_ASPMAIN_CAPTURE=<dir> dumps ONE real aspMain task's complete starting
+// state so it can be replayed through ares and diffed against our recompiled
+// RSP's output (which is the recompiled-RSP audio-accuracy bug we're hunting).
+// The hook (here) dumps the seeded register/DMEM state and arms the wrapper;
+// the wrapper around aspMain (main.cpp) dumps RDRAM before+after the task.
+// One-shot: captures the first audio task with a non-empty command list.
+namespace {
+    char     g_cap_dir[512] = {0};
+    int      g_cap_state    = -2;   // -2 unqueried, -1 disabled, 0 armed, 1 done
+}
+// Exposed to the aspMain wrapper in main.cpp.
+extern "C" const char* psr_aspmain_capture_dir(void) {
+    return (g_cap_state == 0) ? g_cap_dir : nullptr;
+}
+extern "C" void psr_aspmain_capture_done(void) { g_cap_state = 1; }
+
+static void aspmain_capture_input(uint8_t* rdram, ::RspContext* ctx,
+                                  uint32_t ucode_addr, uint32_t data_ptr,
+                                  uint32_t data_size, uint32_t chunk) {
+    if (g_cap_state == -2) {
+        const char* e = getenv("PSR_ASPMAIN_CAPTURE");
+        if (e && *e) { strncpy(g_cap_dir, e, sizeof(g_cap_dir) - 1); g_cap_state = 0; }
+        else g_cap_state = -1;
+    }
+    if (g_cap_state != 0) return;
+
+    char path[640];
+    // DMEM (4 KiB) — exact bytes the recompiled aspMain starts against.
+    snprintf(path, sizeof(path), "%s/dmem.bin", g_cap_dir);
+    if (FILE* f = fopen(path, "wb")) { fwrite(dmem, 1, 0x1000, f); fclose(f); }
+
+    // Seeded scalar context (r1..r31 + dma regs + entry) as a flat binary the
+    // replay harness reads to set ares' RSP registers identically.
+    snprintf(path, sizeof(path), "%s/ctx.bin", g_cap_dir);
+    if (FILE* f = fopen(path, "wb")) {
+        fwrite(&ctx->r1, sizeof(uint32_t), 31, f);            // r1..r31
+        fwrite(&ctx->dma_mem_address, sizeof(uint32_t), 1, f);
+        fwrite(&ctx->dma_dram_address, sizeof(uint32_t), 1, f);
+        fwrite(&ucode_addr, sizeof(uint32_t), 1, f);
+        fclose(f);
+    }
+    // Human-readable metadata.
+    snprintf(path, sizeof(path), "%s/meta.txt", g_cap_dir);
+    if (FILE* f = fopen(path, "w")) {
+        fprintf(f, "ucode_addr=0x%08X\ndata_ptr=0x%08X\ndata_size=0x%X\nchunk=0x%X\n",
+                ucode_addr, data_ptr, data_size, chunk);
+        fprintf(f, "r28(data_ptr)=0x%08X r27(data_size)=0x%08X r29=0x%08X r30=%d\n",
+                ctx->r28, ctx->r27, ctx->r29, (int)ctx->r30);
+        fprintf(f, "dma_mem=0x%08X dma_dram=0x%08X r3=0x%08X r31=0x%08X\n",
+                ctx->dma_mem_address, ctx->dma_dram_address, ctx->r3, ctx->r31);
+        fclose(f);
+    }
+    fprintf(stderr, "[aspmain_capture] input state dumped to %s (DMEM+ctx+meta); "
+                    "wrapper will dump RDRAM before/after\n", g_cap_dir);
+    fflush(stderr);
 }
 
 void register_pre_task_hooks() {
