@@ -161,6 +161,7 @@ add_executable(PokemonStadiumRecomp
     src/main/transfer_pak.cpp
     src/main/gb_audio.cpp
     src/main/input_bindings.cpp
+    src/main/audio_host_probe.cpp
     extras.c
     # Generated lookup table (provides get_entrypoint_address etc).
     generated/lookup.cpp
@@ -270,7 +271,7 @@ if (WIN32)
             $<TARGET_FILE_DIR:PokemonStadiumRecomp>
     )
 
-    target_link_libraries(PokemonStadiumRecomp PRIVATE SDL2 SDL2main Winmm.lib dbghelp.lib comdlg32.lib)
+    target_link_libraries(PokemonStadiumRecomp PRIVATE SDL2 SDL2main Winmm.lib dbghelp.lib comdlg32.lib ole32.lib avrt.lib)
 endif()
 
 target_link_libraries(PokemonStadiumRecomp PRIVATE
