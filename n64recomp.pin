@@ -13,7 +13,12 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-sha = 94838144bb970ca6b415636924339e90bafa9ebd
+# ── Rolled to N64Recomp main (tcc overlay backend) ──────────────
+# 0dc2a0a carries the in-process libtcc overlay JIT (replaces sljit)
+#   and the tcc_recompiler.h that N64ModernRuntime main's overlay tier
+#   requires. Canonical engine; GB Tower R/B/Y user-verified on this pin.
+sha = 0dc2a0a8d7f00d8471ef54897fdd31cc4ced07cd
+# --- previous pin ---
 # 9483814 "Dispatch-entry reject: default arm signals unhandled, not prologue
 #   fall-through" — current N64Recomp main; the GB-mode dispatch-entry interp
 #   self-heal. This `work/github-issues` worktree builds against the engine
