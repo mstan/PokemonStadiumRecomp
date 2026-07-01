@@ -255,6 +255,7 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms);
 std::string window_json(uint64_t count);
 std::string reset_json();
 std::string quiescence_json();
+std::string threads_json();
 std::string inject_json(const std::string& field, uint64_t value, uint32_t addr);
 } // namespace cosim
 namespace dbg {
@@ -469,6 +470,9 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "cosim_quiescence") {
         return pkmnstadium::cosim::quiescence_json();
+    }
+    if (cmd == "cosim_threads") {
+        return pkmnstadium::cosim::threads_json();
     }
     if (cmd == "cosim_inject") {
         std::string field = get_str(line, "field");
