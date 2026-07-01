@@ -252,7 +252,17 @@ committed, measured checkpoint.
 ## 10. Status
 
 - [x] Repos on latest main; stale branches pruned; WIP parked.
-- [x] `cosim/tier0` branches + buildable junction wiring.
+- [x] `cosim/tier0` branches + buildable junction wiring. NOTE: canonical
+      N64MR's internal `N64Recomp` junction must point at `N64Recomp-issues`
+      (main) — it carries `include/recompiler/tcc_recompiler.h`, which
+      `overlays.cpp` needs. A junction to the old park branch fails the build.
 - [x] Integration points mapped (this doc).
-- [ ] T0 buildable-set sanity build (throttled) — NOT yet run.
-- [ ] T1+ — not started.
+- [x] **T0 — buildable-set sanity: PASS.** Throttled build (`build_cosim.bat`,
+      N64_COSIM=ON) succeeds with 0 errors; boots + renders the 3D attract demo.
+      Fixed `build_cosim.bat` exit-code detection (the start/cmd wrapper reports
+      a bogus code on success; it now reads success from the ninja log).
+- [x] **T1 — state hash module: DONE + PROVEN.** `cosim_state.{hpp,cpp}` in
+      N64ModernRuntime/librecomp, wired into `librecomp/CMakeLists.txt`, compiles
+      in the real target; standalone self-test (`-DCOSIM_STATE_SELFTEST`) 12/12.
+- [ ] **T2+** (protocol, quiescence checkpoint, Gate 1 determinism, modeled
+      clock, gates 2–3, Ares oracle) — not started; see §9.

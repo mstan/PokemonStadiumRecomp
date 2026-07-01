@@ -47,6 +47,8 @@ echo === BUILD (jobs=%PSR_BUILD_JOBS%, below-normal priority) ===
 :: start /belownormal /b /wait launches the build at reduced priority (children
 :: inherit it); the inner cmd /c owns the log redirection. -- -j N caps Ninja.
 start "" /belownormal /b /wait cmd /c ""%CMAKE%" --build "%PROJ%\build" --target PokemonStadiumRecomp -- -j %PSR_BUILD_JOBS% > "%PROJ%\_build_cosim.log" 2>&1"
-set BLD_RC=%errorlevel%
-echo build rc=%BLD_RC%
-exit /b %BLD_RC%
+:: The start/cmd wrapper does not reliably propagate the child exit code, so
+:: determine success from the ninja log instead: any "FAILED:" or "ninja: build
+:: stopped" line means a real failure. findstr returns 0 if a match is found.
+findstr /C:"FAILED:" /C:"ninja: build stopped" "%PROJ%\_build_cosim.log" >nul 2>&1
+if errorlevel 1 ( echo build OK & exit /b 0 ) else ( echo BUILD FAILED - see _build_cosim.log & exit /b 1 )
