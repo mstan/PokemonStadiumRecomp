@@ -101,6 +101,9 @@ extern "C" const char* psr_app_file_c(const char* name, char* out, unsigned long
 #include "input_bindings.h"
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
+#ifdef N64_COSIM
+extern "C" void psr_cosim_register_context(uint8_t* rdram, recomp_context* ctx);
+#endif
 
 namespace pokestadium { void register_overlays(); }
 namespace pokestadium::rsp { void register_pre_task_hooks(); }
@@ -1735,6 +1738,11 @@ int main(int argc, char** argv) {
     game.has_compressed_code    = false;
     game.entrypoint_address     = get_entrypoint_address();
     game.entrypoint             = recomp_entrypoint;
+#ifdef N64_COSIM
+    game.thread_create_callback = [](uint8_t* rdram, recomp_context* ctx) {
+        psr_cosim_register_context(rdram, ctx);
+    };
+#endif
 
     // Activate Stadium's dead-code expansion-pak path before Util_InitMainPools
     // runs. Util_InitMainPools reads gExpansionRAMStart (vaddr 0x80068B90)
@@ -1753,7 +1761,10 @@ int main(int argc, char** argv) {
     // Util_InitMainPools entry; that worked but required a recompile-time
     // hook for a one-time runtime-init fact. See TEMP_PATCHES.md
     // 'force-expansion-ram' entry (retired by this change).
-    game.on_init_callback = [](uint8_t* rdram, recomp_context* /*ctx*/) {
+    game.on_init_callback = [](uint8_t* rdram, recomp_context* ctx) {
+#ifdef N64_COSIM
+        psr_cosim_register_context(rdram, ctx);
+#endif
         // gExpansionRAMStart at kseg0 0x80068B90 -> physical 0x00068B90.
         // Write u32 = 1 with XOR-3 byte order to match recompiled MEM_W.
         constexpr uint32_t paddr = 0x00068B90u;

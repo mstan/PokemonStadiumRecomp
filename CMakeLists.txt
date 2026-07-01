@@ -59,6 +59,7 @@ endif()
 # Release/windowed build: no console window. Off by default (the console is handy
 # for dev — stderr logs). Configure with -DPSR_NO_CONSOLE=ON for the release exe.
 option(PSR_NO_CONSOLE "Build a windowed release with no console window" OFF)
+option(N64_COSIM "Per-VI-frame differential co-simulation harness" OFF)
 
 # ---- ROM hash check ---------------------------------------------------------
 set(EXPECTED_BASEROM_MD5 "ed1378bc12115f71209a77844965ba50")
@@ -181,6 +182,18 @@ add_executable(PokemonStadiumRecomp
     ${CMAKE_SOURCE_DIR}/src/ui/ui_renderer.cpp
     ${CMAKE_SOURCE_DIR}/lib/RmlUi/Backends/RmlUi_Platform_SDL.cpp
 )
+
+if(N64_COSIM)
+    target_sources(PokemonStadiumRecomp PRIVATE src/main/cosim_harness.cpp)
+    target_compile_definitions(PokemonStadiumRecomp PRIVATE N64_COSIM=1)
+    if(TARGET librecomp)
+        target_compile_definitions(librecomp PUBLIC N64_COSIM=1)
+    endif()
+    if(TARGET ultramodern)
+        target_compile_definitions(ultramodern PUBLIC N64_COSIM=1)
+    endif()
+    message(STATUS "N64_COSIM=ON - co-sim TCP protocol and runtime context hooks enabled")
+endif()
 
 target_include_directories(PokemonStadiumRecomp PRIVATE
     ${CMAKE_SOURCE_DIR}/include

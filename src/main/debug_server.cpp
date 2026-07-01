@@ -33,6 +33,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -243,6 +244,21 @@ static std::thread        s_thread;
 static std::atomic<bool>  s_running{false};
 static SOCKET             s_listen_sock = INVALID_SOCKET;
 
+#ifdef N64_COSIM
+} // namespace dbg
+namespace cosim {
+std::string chain_json();
+std::string sub_json();
+std::string regs_json();
+std::string stride_json(uint64_t stride);
+std::string step_json(uint64_t frames);
+std::string window_json(uint64_t count);
+std::string reset_json();
+std::string inject_json(const std::string& field, uint64_t value, uint32_t addr);
+} // namespace cosim
+namespace dbg {
+#endif
+
 // Surfaced from librecomp's mesgqueue.cpp — counts external-message
 // re-queues, which happen when a target OSMesgQueue is full when the
 // drain pass reaches it. Surfaced via debug_server's `status` cmd.
@@ -387,6 +403,17 @@ static uint32_t get_uint(const std::string& body, const char* key, uint32_t dflt
     return (uint32_t)std::strtoul(p, nullptr, 0);
 }
 
+static uint64_t get_uint64(const std::string& body, const char* key, uint64_t dflt) {
+    std::string needle = std::string("\"") + key + "\"";
+    size_t k = body.find(needle);
+    if (k == std::string::npos) return dflt;
+    size_t colon = body.find(':', k);
+    if (colon == std::string::npos) return dflt;
+    const char* p = body.c_str() + colon + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    return (uint64_t)std::strtoull(p, nullptr, 0);
+}
+
 static bool get_bool(const std::string& body, const char* key, bool dflt) {
     std::string needle = std::string("\"") + key + "\"";
     size_t k = body.find(needle);
@@ -413,6 +440,38 @@ static std::string handle_command(const std::string& line) {
     if (cmd == "ping") {
         return R"({"ok":true,"pong":true})";
     }
+#ifdef N64_COSIM
+    if (cmd == "cosim_chain") {
+        return pkmnstadium::cosim::chain_json();
+    }
+    if (cmd == "cosim_sub") {
+        return pkmnstadium::cosim::sub_json();
+    }
+    if (cmd == "cosim_regs") {
+        return pkmnstadium::cosim::regs_json();
+    }
+    if (cmd == "cosim_stride") {
+        uint64_t n = get_uint64(line, "n", get_uint64(line, "stride", 1));
+        return pkmnstadium::cosim::stride_json(n);
+    }
+    if (cmd == "cosim_step") {
+        uint64_t frames = get_uint64(line, "frames", get_uint64(line, "n", 1));
+        return pkmnstadium::cosim::step_json(frames);
+    }
+    if (cmd == "cosim_window") {
+        uint64_t n = get_uint64(line, "n", 64);
+        return pkmnstadium::cosim::window_json(n);
+    }
+    if (cmd == "cosim_reset") {
+        return pkmnstadium::cosim::reset_json();
+    }
+    if (cmd == "cosim_inject") {
+        std::string field = get_str(line, "field");
+        uint64_t value = get_uint64(line, "val", get_uint64(line, "value", 0));
+        uint32_t addr = get_uint(line, "addr", 0);
+        return pkmnstadium::cosim::inject_json(field, value, addr);
+    }
+#endif
     if (cmd == "status") {
         // The librecomp accessor for the external-message requeue
         // counter — declared at file scope below for proper extern "C"

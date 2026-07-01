@@ -264,5 +264,11 @@ committed, measured checkpoint.
 - [x] **T1 — state hash module: DONE + PROVEN.** `cosim_state.{hpp,cpp}` in
       N64ModernRuntime/librecomp, wired into `librecomp/CMakeLists.txt`, compiles
       in the real target; standalone self-test (`-DCOSIM_STATE_SELFTEST`) 12/12.
-- [ ] **T2+** (protocol, quiescence checkpoint, Gate 1 determinism, modeled
-      clock, gates 2–3, Ares oracle) — not started; see §9.
+- [x] **T2a — protocol layer: DONE.** `N64_COSIM` CMake option, PSR
+      `cosim_harness.cpp`, debug-server commands `cosim_chain/sub/regs`,
+      `cosim_stride/window/reset/inject`, and runtime active-context publishing
+      are wired and build. Throttled cosim build passes; pre-game TCP smoke
+      verified `ping`, honest pre-context `cosim_chain` error, and T3-gated
+      `cosim_step` response.
+- [ ] **T2b/T3+** (`cosim_step` parked at frame quiescence, Gate 1 determinism,
+      modeled clock, gates 2–3, Ares oracle) — next; see §9.
