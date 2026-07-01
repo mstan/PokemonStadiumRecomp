@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +13,7 @@
 #include "recomp.h"
 #include "librecomp/cosim_state.hpp"
 #include "ultramodern/ultra_trace.hpp"
+#include "ultramodern/ultramodern.hpp"
 
 extern uint64_t total_vis;
 
@@ -22,11 +25,15 @@ constexpr size_t kWindowCap = 1024;
 
 std::atomic<recomp_context*> g_active_ctx{nullptr};
 std::mutex g_mu;
+std::mutex g_step_mu;
+std::condition_variable g_step_cv;
 std::vector<recomp_context*> g_contexts;
 std::vector<recomp::cosim::Checkpoint> g_window;
 uint64_t g_cp = 0;
 uint64_t g_chain = 0;
 uint64_t g_stride = 1;
+std::atomic<uint64_t> g_published_cp{0};
+ultramodern_cosim_quiescence_state g_last_quiescence{};
 
 uint64_t modeled_cycle_now() {
     return 0; // Reserved for T5 modeled guest-cycle clock.
@@ -119,7 +126,34 @@ bool snapshot(recomp::cosim::Checkpoint& out, bool advance_chain, std::string& e
             g_window.erase(g_window.begin());
         }
         g_window.push_back(out);
+        g_published_cp.store(out.cp, std::memory_order_release);
     }
+    return true;
+}
+
+std::string quiescence_json_fields(const ultramodern_cosim_quiescence_state& q) {
+    char buf[320];
+    std::snprintf(buf, sizeof(buf),
+        "\"vi_queue\":%u,\"running_head\":%u,\"known_threads\":%u,"
+        "\"blocked_on_vi\":%u,\"blocked_on_other\":%u,"
+        "\"runnable_or_unknown\":%u,\"external_pending\":%u,\"quiescent\":%s",
+        q.vi_queue,
+        q.running_head,
+        q.known_threads,
+        q.blocked_on_vi,
+        q.blocked_on_other,
+        q.runnable_or_unknown,
+        q.external_pending,
+        q.quiescent ? "true" : "false");
+    return std::string(buf);
+}
+
+bool latest_checkpoint(recomp::cosim::Checkpoint& out) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (g_window.empty()) {
+        return false;
+    }
+    out = g_window.back();
     return true;
 }
 
@@ -167,15 +201,38 @@ extern "C" void psr_cosim_set_active_context(unsigned char* rdram, void* ctx) {
     }
 }
 
+extern "C" void psr_cosim_on_quiescent_vi(
+    uint8_t* rdram,
+    const ultramodern_cosim_quiescence_state* state)
+{
+    if (rdram != nullptr) {
+        recomp_runtime_set_rdram(rdram);
+    }
+    if (state != nullptr) {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_last_quiescence = *state;
+    }
+
+    recomp::cosim::Checkpoint cp{};
+    std::string error;
+    if (snapshot(cp, true, error)) {
+        g_step_cv.notify_all();
+    }
+}
+
 namespace pkmnstadium::cosim {
 
 std::string chain_json() {
     recomp::cosim::Checkpoint cp{};
-    std::string error;
-    if (!snapshot(cp, true, error)) {
-        return std::string(R"({"ok":false,"error":")") + error + R"("})";
+    const char* mode = "t3_quiescent_observed_unparked";
+    if (!latest_checkpoint(cp)) {
+        std::string error;
+        if (!snapshot(cp, false, error)) {
+            return std::string(R"({"ok":false,"error":")") + error + R"("})";
+        }
+        mode = "t2_live_nonparked";
     }
-    return std::string(R"({"ok":true,"mode":"t2_live_nonparked",)") +
+    return std::string(R"({"ok":true,"mode":")") + mode + R"(",)" +
            checkpoint_json(cp, false).substr(1);
 }
 
@@ -252,17 +309,55 @@ std::string stride_json(uint64_t stride) {
     return std::string(R"({"ok":true,"stride":)") + std::to_string(g_stride) + "}";
 }
 
-std::string step_json(uint64_t frames) {
+std::string step_json(uint64_t frames, uint64_t timeout_ms) {
     if (frames == 0) {
         frames = 1;
     }
-    std::lock_guard<std::mutex> lock(g_mu);
-    return std::string(R"({"ok":false,"error":"cosim_step requires T3 quiescent VI parking",)"
-                       R"("requested_frames":)") +
-           std::to_string(frames) +
-           R"(,"stride":)" +
-           std::to_string(g_stride) +
-           R"(,"mode":"t2_protocol_only"})";
+    if (timeout_ms == 0) {
+        timeout_ms = 5000;
+    }
+
+    uint64_t stride = 1;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        stride = g_stride;
+    }
+
+    const uint64_t start = g_published_cp.load(std::memory_order_acquire);
+    const uint64_t target = start + frames * stride;
+    std::unique_lock<std::mutex> wait_lock(g_step_mu);
+    const bool reached = g_step_cv.wait_for(
+        wait_lock,
+        std::chrono::milliseconds(timeout_ms),
+        [&]() {
+            return g_published_cp.load(std::memory_order_acquire) >= target;
+        });
+
+    if (!reached) {
+        ultramodern_cosim_quiescence_state q{};
+        ultramodern_cosim_get_quiescence(&q);
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_last_quiescence = q;
+        return std::string(R"({"ok":false,"error":"timed out waiting for VI quiescence checkpoint",)"
+                           R"("start_cp":)") +
+               std::to_string(start) +
+               R"(,"target_cp":)" +
+               std::to_string(target) +
+               R"(,"stride":)" +
+               std::to_string(stride) +
+               R"(,"timeout_ms":)" +
+               std::to_string(timeout_ms) +
+               R"(,"mode":"t3_quiescent_observed_unparked","quiescence":{)" +
+               quiescence_json_fields(q) +
+               "}}";
+    }
+
+    recomp::cosim::Checkpoint cp{};
+    if (!latest_checkpoint(cp)) {
+        return R"({"ok":false,"error":"checkpoint reached but no row is available"})";
+    }
+    return std::string(R"({"ok":true,"mode":"t3_quiescent_observed_unparked",)") +
+           checkpoint_json(cp, false).substr(1);
 }
 
 std::string window_json(uint64_t count) {
@@ -286,7 +381,19 @@ std::string reset_json() {
     g_cp = 0;
     g_chain = 0;
     g_window.clear();
+    g_last_quiescence = {};
+    g_published_cp.store(0, std::memory_order_release);
     return R"({"ok":true,"cp":0,"chain":0})";
+}
+
+std::string quiescence_json() {
+    ultramodern_cosim_quiescence_state q{};
+    ultramodern_cosim_get_quiescence(&q);
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_last_quiescence = q;
+    }
+    return std::string(R"({"ok":true,)") + quiescence_json_fields(q) + "}";
 }
 
 std::string inject_json(const std::string& field, uint64_t value, uint32_t addr) {

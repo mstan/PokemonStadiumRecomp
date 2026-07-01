@@ -270,5 +270,13 @@ committed, measured checkpoint.
       are wired and build. Throttled cosim build passes; pre-game TCP smoke
       verified `ping`, honest pre-context `cosim_chain` error, and T3-gated
       `cosim_step` response.
-- [ ] **T2b/T3+** (`cosim_step` parked at frame quiescence, Gate 1 determinism,
-      modeled clock, gates 2–3, Ares oracle) — next; see §9.
+- [x] **T3a — VI-quiescence detector + checkpoint capture: DONE.**
+      N64ModernRuntime now exposes a cosim quiescence predicate over the
+      scheduler's per-thread block table and VI event queue; the PSR harness
+      captures checkpoint rows when that predicate fires. `cosim_step` now waits
+      for those rows with a bounded timeout and reports live quiescence counters
+      on failure. Throttled cosim build passes; pre-game TCP smoke verified
+      `cosim_quiescence` and timeout reporting. This is still
+      observed/unparked; deterministic VI delivery is next.
+- [ ] **T3b/T4+** (park/release control at frame quiescence, deterministic VI,
+      Gate 1 determinism, modeled clock, gates 2–3, Ares oracle) — next; see §9.
