@@ -278,5 +278,18 @@ committed, measured checkpoint.
       on failure. Throttled cosim build passes; pre-game TCP smoke verified
       `cosim_quiescence` and timeout reporting. This is still
       observed/unparked; deterministic VI delivery is next.
-- [ ] **T3b/T4+** (park/release control at frame quiescence, deterministic VI,
-      Gate 1 determinism, modeled clock, gates 2–3, Ares oracle) — next; see §9.
+- [ ] **T3b — deterministic VI drive + park/release: PARTIAL.**
+      `N64_COSIM` now routes game-started VI through a co-sim token gate instead
+      of wall clock; `cosim_step` can issue deterministic VI tokens while waiting
+      for the first parked checkpoint, and a parked checkpoint release advances
+      exactly one direct VI edge. The host voluntary-preemption monitor defaults
+      off in cosim builds. Throttled cosim build passes; pre-game TCP smoke is
+      green; protocol-only autoboot smoke proves `cosim_step timeout_ms=200`
+      advances deterministic VI/task traffic (`frame=13`, `submit_gfx=3`) rather
+      than wall-clock VI. **Not green yet:** the live quiescence predicate still
+      reports early boot as `known_threads=9`, `runnable_or_unknown=9`, so no
+      parked checkpoint is produced. Next: expose/refine live per-thread
+      scheduler classification until the real per-frame blocked-on-VI boundary
+      is identified.
+- [ ] **T4+** (Gate 1 determinism, modeled clock, gates 2–3, Ares oracle) —
+      next after T3b parks reliably; see §9.

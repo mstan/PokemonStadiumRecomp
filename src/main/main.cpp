@@ -1550,14 +1550,27 @@ int main(int argc, char** argv) {
     // has since been fixed by SecondaryVoiceTableLayout, but this gate
     // gives us a quick rollback if a new regression surfaces).
     {
+#ifdef N64_COSIM
+        bool enabled = false;
+        const char* cosim_en_env = std::getenv("PSR_COSIM_ENABLE_VOLUNTARY_PREEMPTION");
+        if (cosim_en_env && cosim_en_env[0] != '\0' && cosim_en_env[0] != '0') {
+            enabled = true;
+        }
+#else
         const char* dis_env = std::getenv("PSR_DISABLE_VOLUNTARY_PREEMPTION");
         bool enabled = true;
         if (dis_env && dis_env[0] != '\0' && dis_env[0] != '0') {
             enabled = false;
         }
+#endif
         ultramodern_voluntary_preemption_set_enabled(enabled ? 1 : 0);
         std::fprintf(stderr,
-            "[PSR] voluntary preemption %s (set PSR_DISABLE_VOLUNTARY_PREEMPTION=1 to disable)\n",
+            "[PSR] voluntary preemption %s "
+#ifdef N64_COSIM
+            "(N64_COSIM default off; set PSR_COSIM_ENABLE_VOLUNTARY_PREEMPTION=1 to enable)\n",
+#else
+            "(set PSR_DISABLE_VOLUNTARY_PREEMPTION=1 to disable)\n",
+#endif
             enabled ? "ENABLED" : "DISABLED");
         std::fflush(stderr);
     }

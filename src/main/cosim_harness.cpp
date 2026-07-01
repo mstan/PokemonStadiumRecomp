@@ -34,6 +34,9 @@ uint64_t g_chain = 0;
 uint64_t g_stride = 1;
 std::atomic<uint64_t> g_published_cp{0};
 ultramodern_cosim_quiescence_state g_last_quiescence{};
+bool g_parked = false;
+uint64_t g_parked_cp = 0;
+uint64_t g_release_count = 0;
 
 uint64_t modeled_cycle_now() {
     return 0; // Reserved for T5 modeled guest-cycle clock.
@@ -148,6 +151,16 @@ std::string quiescence_json_fields(const ultramodern_cosim_quiescence_state& q) 
     return std::string(buf);
 }
 
+std::string park_json_fields(bool parked, uint64_t parked_cp, uint64_t release_count) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "\"parked\":%s,\"parked_cp\":%llu,\"release_count\":%llu",
+        parked ? "true" : "false",
+        (unsigned long long)parked_cp,
+        (unsigned long long)release_count);
+    return std::string(buf);
+}
+
 bool latest_checkpoint(recomp::cosim::Checkpoint& out) {
     std::lock_guard<std::mutex> lock(g_mu);
     if (g_window.empty()) {
@@ -201,7 +214,7 @@ extern "C" void psr_cosim_set_active_context(unsigned char* rdram, void* ctx) {
     }
 }
 
-extern "C" void psr_cosim_on_quiescent_vi(
+extern "C" int psr_cosim_on_quiescent_vi(
     uint8_t* rdram,
     const ultramodern_cosim_quiescence_state* state)
 {
@@ -216,15 +229,35 @@ extern "C" void psr_cosim_on_quiescent_vi(
     recomp::cosim::Checkpoint cp{};
     std::string error;
     if (snapshot(cp, true, error)) {
+        {
+            std::unique_lock<std::mutex> lock(g_step_mu);
+            g_parked = true;
+            g_parked_cp = cp.cp;
+            g_step_cv.notify_all();
+            g_step_cv.wait(lock, []() {
+                return g_release_count != 0;
+            });
+            g_release_count--;
+            g_parked = false;
+        }
         g_step_cv.notify_all();
+        return 1;
     }
+    return 0;
 }
 
 namespace pkmnstadium::cosim {
 
 std::string chain_json() {
     recomp::cosim::Checkpoint cp{};
-    const char* mode = "t3_quiescent_observed_unparked";
+    bool parked = false;
+    {
+        std::lock_guard<std::mutex> lock(g_step_mu);
+        parked = g_parked;
+    }
+    const char* mode = parked
+        ? "t3_parked_deterministic_vi"
+        : "t3_quiescent_observed_unparked";
     if (!latest_checkpoint(cp)) {
         std::string error;
         if (!snapshot(cp, false, error)) {
@@ -317,29 +350,39 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
         timeout_ms = 5000;
     }
 
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+
     uint64_t stride = 1;
     {
         std::lock_guard<std::mutex> lock(g_mu);
         stride = g_stride;
     }
 
-    const uint64_t start = g_published_cp.load(std::memory_order_acquire);
-    const uint64_t target = start + frames * stride;
-    std::unique_lock<std::mutex> wait_lock(g_step_mu);
-    const bool reached = g_step_cv.wait_for(
-        wait_lock,
-        std::chrono::milliseconds(timeout_ms),
-        [&]() {
-            return g_published_cp.load(std::memory_order_acquire) >= target;
-        });
-
-    if (!reached) {
+    auto timeout_json = [&](const char* stage, uint64_t start, uint64_t target) {
         ultramodern_cosim_quiescence_state q{};
         ultramodern_cosim_get_quiescence(&q);
-        std::lock_guard<std::mutex> lock(g_mu);
-        g_last_quiescence = q;
+        bool parked = false;
+        uint64_t parked_cp = 0;
+        uint64_t release_count = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            g_last_quiescence = q;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_step_mu);
+            parked = g_parked;
+            parked_cp = g_parked_cp;
+            release_count = g_release_count;
+        }
         return std::string(R"({"ok":false,"error":"timed out waiting for VI quiescence checkpoint",)"
-                           R"("start_cp":)") +
+                           R"("stage":")") +
+               stage +
+               R"(","published_cp":)" +
+               std::to_string(g_published_cp.load(std::memory_order_acquire)) +
+               R"(,"park":{)" +
+               park_json_fields(parked, parked_cp, release_count) +
+               R"(},"start_cp":)" +
                std::to_string(start) +
                R"(,"target_cp":)" +
                std::to_string(target) +
@@ -347,16 +390,72 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
                std::to_string(stride) +
                R"(,"timeout_ms":)" +
                std::to_string(timeout_ms) +
-               R"(,"mode":"t3_quiescent_observed_unparked","quiescence":{)" +
+               R"(,"mode":"t3_parked_deterministic_vi","quiescence":{)" +
                quiescence_json_fields(q) +
                "}}";
+    };
+
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(g_step_mu);
+            if (g_parked) {
+                break;
+            }
+        }
+
+        ultramodern_cosim_request_vi(1);
+        const auto slice_deadline = std::min(
+            deadline,
+            Clock::now() + std::chrono::milliseconds(16));
+        {
+            std::unique_lock<std::mutex> lock(g_step_mu);
+            if (g_step_cv.wait_until(lock, slice_deadline, []() {
+                    return g_parked;
+                })) {
+                break;
+            }
+        }
+
+        if (Clock::now() >= deadline) {
+            const uint64_t cp = g_published_cp.load(std::memory_order_acquire);
+            return timeout_json("initial_park", cp, cp + frames * stride);
+        }
+    }
+
+    const uint64_t start = g_published_cp.load(std::memory_order_acquire);
+    const uint64_t target = start + frames * stride;
+
+    while (g_published_cp.load(std::memory_order_acquire) < target) {
+        const uint64_t before = g_published_cp.load(std::memory_order_acquire);
+        {
+            std::unique_lock<std::mutex> lock(g_step_mu);
+            const bool parked = g_step_cv.wait_until(lock, deadline, [&]() {
+                return g_parked && g_parked_cp >= before;
+            });
+            if (!parked) {
+                lock.unlock();
+                return timeout_json("release_ready", start, target);
+            }
+            g_release_count++;
+            g_step_cv.notify_all();
+        }
+        {
+            std::unique_lock<std::mutex> lock(g_step_mu);
+            const bool next_park = g_step_cv.wait_until(lock, deadline, [&]() {
+                return g_parked && g_published_cp.load(std::memory_order_acquire) > before;
+            });
+            if (!next_park) {
+                lock.unlock();
+                return timeout_json("next_park", start, target);
+            }
+        }
     }
 
     recomp::cosim::Checkpoint cp{};
     if (!latest_checkpoint(cp)) {
         return R"({"ok":false,"error":"checkpoint reached but no row is available"})";
     }
-    return std::string(R"({"ok":true,"mode":"t3_quiescent_observed_unparked",)") +
+    return std::string(R"({"ok":true,"mode":"t3_parked_deterministic_vi",)") +
            checkpoint_json(cp, false).substr(1);
 }
 
@@ -377,23 +476,47 @@ std::string window_json(uint64_t count) {
 }
 
 std::string reset_json() {
-    std::lock_guard<std::mutex> lock(g_mu);
-    g_cp = 0;
-    g_chain = 0;
-    g_window.clear();
-    g_last_quiescence = {};
-    g_published_cp.store(0, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_cp = 0;
+        g_chain = 0;
+        g_window.clear();
+        g_last_quiescence = {};
+        g_published_cp.store(0, std::memory_order_release);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_step_mu);
+        if (g_parked) {
+            g_release_count++;
+        }
+        g_parked = false;
+        g_parked_cp = 0;
+    }
+    g_step_cv.notify_all();
     return R"({"ok":true,"cp":0,"chain":0})";
 }
 
 std::string quiescence_json() {
     ultramodern_cosim_quiescence_state q{};
     ultramodern_cosim_get_quiescence(&q);
+    bool parked = false;
+    uint64_t parked_cp = 0;
+    uint64_t release_count = 0;
     {
         std::lock_guard<std::mutex> lock(g_mu);
         g_last_quiescence = q;
     }
-    return std::string(R"({"ok":true,)") + quiescence_json_fields(q) + "}";
+    {
+        std::lock_guard<std::mutex> lock(g_step_mu);
+        parked = g_parked;
+        parked_cp = g_parked_cp;
+        release_count = g_release_count;
+    }
+    return std::string(R"({"ok":true,)") +
+           quiescence_json_fields(q) +
+           R"(,"park":{)" +
+           park_json_fields(parked, parked_cp, release_count) +
+           "}}";
 }
 
 std::string inject_json(const std::string& field, uint64_t value, uint32_t addr) {
