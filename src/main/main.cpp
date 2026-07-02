@@ -1758,39 +1758,11 @@ int main(int argc, char** argv) {
     };
 #endif
 
-    // Activate Stadium's dead-code expansion-pak path before Util_InitMainPools
-    // runs. Util_InitMainPools reads gExpansionRAMStart (vaddr 0x80068B90)
-    // to choose POOL_END_4MB vs POOL_END_6MB. The 6MB path is only taken
-    // when gExpansionRAMStart > 0 AND osMemSize > 0x600000. Our runtime
-    // reports osMemSize=8MB correctly, but gExpansionRAMStart lives in
-    // BSS and has NO writer anywhere in the recompiled binary — on real
-    // hardware some hardware-detect path (RDP probe / silicon side-effect)
-    // sets it; in our HLE harness it stays zeroed and the 6MB code path is
-    // unreachable. Stadium's working set marginally exceeds the 3MB usable
-    // cap of the 4MB path, so the title-screen pokemon-models loader hits
-    // an alloc failure without this. Forcing the value at on_init_callback
-    // is the proper layer for this kind of "missing-from-HLE hardware-detect
-    // side-effect" — it fires once after rdram is wired up but before the
-    // game thread reads the global. Previously implemented as a hook on
-    // Util_InitMainPools entry; that worked but required a recompile-time
-    // hook for a one-time runtime-init fact. See TEMP_PATCHES.md
-    // 'force-expansion-ram' entry (retired by this change).
-    game.on_init_callback = [](uint8_t* rdram, recomp_context* ctx) {
 #ifdef N64_COSIM
+    game.on_init_callback = [](uint8_t* rdram, recomp_context* ctx) {
         psr_cosim_register_context(rdram, ctx);
-#endif
-        // gExpansionRAMStart at kseg0 0x80068B90 -> physical 0x00068B90.
-        // Write u32 = 1 with XOR-3 byte order to match recompiled MEM_W.
-        constexpr uint32_t paddr = 0x00068B90u;
-        rdram[(paddr + 0) ^ 3] = 0;
-        rdram[(paddr + 1) ^ 3] = 0;
-        rdram[(paddr + 2) ^ 3] = 0;
-        rdram[(paddr + 3) ^ 3] = 1;
-        std::fprintf(stderr,
-            "[PSR] on_init: forced gExpansionRAMStart=1 "
-            "(POOL_END_6MB path active)\n");
-        std::fflush(stderr);
     };
+#endif
 
     recomp::register_game(game);
     std::fprintf(stderr, "[PSR] game registered\n"); std::fflush(stderr);

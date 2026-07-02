@@ -348,3 +348,12 @@ committed, measured checkpoint.
       libultra/runtime state and made Gate 1 time out before `cp=1`; this
       mismatch must be handled at the oracle surface or by a faithful runtime
       model, not by mutating live RDRAM after HLE boot state exists.
+      Follow-up: the old PSR-only `gExpansionRAMStart=1` init patch is removed.
+      Ares leaves that BSS global zero through the sampled boot window, and
+      `disasm/src/util.c` confirms the expansion-RAM selector has no game-side
+      writer. A throttled build plus `gate1 --frames 60 --audit-every 15` passed
+      without the force (`cp=61/vis=60`). The oracle's diagnostic scan from
+      `0x400` now passes the former `0x00068B90` mismatch and reaches
+      `paddr=0x00077C97` (single-byte `01` vs `00` inside an otherwise matching
+      pointer table), while the primary IPL low-RDRAM mismatch at `0x00000001`
+      remains.
