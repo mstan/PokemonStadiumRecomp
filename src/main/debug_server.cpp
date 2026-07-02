@@ -326,6 +326,12 @@ extern "C" void recomp_task_pcm_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_task_pcm_event_size(void);
 extern "C" int64_t recomp_task_pcm_dump(const char* path);
+// Always-on audio command-list ring (main.cpp) — OSTask header + raw Acmd
+// bytes of every M_AUDTASK the game dispatches. Twin of the ares-bridge
+// oracle's audio-task ring; the organic A/B diffs the two dumps.
+extern "C" size_t recomp_audio_cmdlist_event_size(void);
+extern "C" uint64_t recomp_audio_cmdlist_count(void);
+extern "C" int64_t recomp_audio_cmdlist_dump(const char* path);
 // Always-on AI-submission ring (ultramodern/src/audio.cpp) — guest addr +
 // byte count of every audio buffer the game submits for playback.
 struct AiSubmitEventMirror {
@@ -1541,6 +1547,24 @@ static std::string handle_command(const std::string& line) {
         if (n < 0) return R"({"ok":false,"error":"open failed"})";
         return R"({"ok":true,"records":)" + std::to_string(n)
              + R"(,"record_size":)" + std::to_string(recomp_task_pcm_event_size())
+             + "}";
+    }
+    if (cmd == "audio_cmdlist_count") {
+        return R"({"ok":true,"count":)"
+             + std::to_string(recomp_audio_cmdlist_count())
+             + R"(,"event_size":)"
+             + std::to_string(recomp_audio_cmdlist_event_size()) + "}";
+    }
+    if (cmd == "audio_cmdlist_dump") {
+        // Dump the always-on audio command-list ring (oldest -> newest) as
+        // raw AudioCmdListEvent records for the organic-Ares A/B diff.
+        std::string p = get_str(line, "path");
+        if (p.empty()) return R"({"ok":false,"error":"missing path"})";
+        int64_t n = recomp_audio_cmdlist_dump(p.c_str());
+        if (n < 0) return R"({"ok":false,"error":"open failed"})";
+        return R"({"ok":true,"records":)" + std::to_string(n)
+             + R"(,"record_size":)"
+             + std::to_string(recomp_audio_cmdlist_event_size())
              + "}";
     }
     if (cmd == "task_pcm_recent") {

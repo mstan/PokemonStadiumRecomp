@@ -361,6 +361,91 @@ extern "C" int64_t recomp_task_pcm_dump(const char* path) {
     return written;
 }
 
+// ---- Always-on audio command-list ring --------------------------------------
+// Records, at every M_AUDTASK dispatch (before the task runs), the OSTask
+// header plus the raw Acmd command-list bytes the CPU just built at
+// data_ptr. This is OUR half of the organic-Ares command-list A/B: the
+// ares-bridge oracle captures the identical record (same binary layout,
+// ares_audio_task_event_t) at each task's first RSP instruction, and the
+// diff driver aligns the two streams by task index. Bytes are stored in
+// N64 wire order (big-endian stream) to match the Ares side.
+namespace {
+constexpr uint32_t AUDCMD_DATA_CAP = 4096;
+struct AudioCmdListEvent {
+    uint64_t idx;              // monotonic audio-task counter
+    uint64_t ms;               // wall clock since process start (aux slot;
+                               // the Ares-side twin carries instr_seq here)
+    uint32_t task_type;
+    uint32_t task_flags;
+    uint32_t ucode;
+    uint32_t ucode_data;
+    uint32_t data_ptr;
+    uint32_t data_size;
+    uint32_t output_buff;
+    uint32_t output_buff_size;
+    uint32_t captured_len;
+    uint32_t pad_;
+    uint8_t  data[AUDCMD_DATA_CAP];
+};
+constexpr size_t AUDCMD_RING_CAP = 8192;   // x ~4.1 KiB = ~34 MiB, ~2.3 min
+AudioCmdListEvent g_audcmd_ring[AUDCMD_RING_CAP];
+std::atomic<uint64_t> g_audcmd_idx{0};
+std::mutex g_audcmd_mtx;
+
+void audcmd_record(uint8_t* rdram, const OSTask* task) {
+    std::lock_guard<std::mutex> lk(g_audcmd_mtx);
+    const uint64_t s = g_audcmd_idx.load(std::memory_order_relaxed);
+    AudioCmdListEvent& e = g_audcmd_ring[s % AUDCMD_RING_CAP];
+    e.idx = s;
+    e.ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - g_taskpcm_t0).count();
+    e.task_type        = task->t.type;
+    e.task_flags       = task->t.flags;
+    e.ucode            = task->t.ucode;
+    e.ucode_data       = task->t.ucode_data;
+    e.data_ptr         = task->t.data_ptr;
+    e.data_size        = task->t.data_size;
+    e.output_buff      = task->t.output_buff;
+    e.output_buff_size = task->t.output_buff_size;
+    uint32_t want = e.data_size;
+    if (want > AUDCMD_DATA_CAP) want = AUDCMD_DATA_CAP;
+    const uint32_t paddr = e.data_ptr & 0xFFFFFFu;
+    if ((uint64_t)paddr + want > 0x800000u) want = 0;
+    for (uint32_t i = 0; i < want; i++) {
+        e.data[i] = rdram[(paddr + i) ^ 3];   // host XOR-3 -> wire order
+    }
+    e.captured_len = want;
+    e.pad_ = 0;
+    g_audcmd_idx.store(s + 1, std::memory_order_release);
+}
+}  // namespace
+
+extern "C" size_t recomp_audio_cmdlist_event_size(void) {
+    return sizeof(AudioCmdListEvent);
+}
+
+extern "C" uint64_t recomp_audio_cmdlist_count(void) {
+    return g_audcmd_idx.load(std::memory_order_acquire);
+}
+
+// Dump all resident entries (oldest -> newest) as raw AudioCmdListEvent
+// records. Records carry idx, so drivers dedup across periodic dumps.
+extern "C" int64_t recomp_audio_cmdlist_dump(const char* path) {
+    std::lock_guard<std::mutex> lk(g_audcmd_mtx);
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    const uint64_t s = g_audcmd_idx.load(std::memory_order_relaxed);
+    const size_t available = (s < AUDCMD_RING_CAP) ? size_t(s) : AUDCMD_RING_CAP;
+    const size_t start = (s - available) % AUDCMD_RING_CAP;
+    int64_t written = 0;
+    for (size_t i = 0; i < available; i++) {
+        const AudioCmdListEvent& e = g_audcmd_ring[(start + i) % AUDCMD_RING_CAP];
+        if (fwrite(&e, sizeof(e), 1, f) == 1) written++;
+    }
+    fclose(f);
+    return written;
+}
+
 static RspExitReason aspMain_capture(uint8_t* rdram, uint32_t ucode_addr) {
     const char* dir = psr_aspmain_capture_dir();
     const char* spike_base = psr_aspmain_spike_dir();
@@ -506,7 +591,10 @@ static RspUcodeFunc* get_rsp_microcode(uint8_t* rdram, const OSTask* task) {
     }
 
     switch (task->t.type) {
-        case M_AUDTASK:   return aspMain_capture;   /* passthrough unless capture armed */
+        case M_AUDTASK:
+            // Always-on: snapshot the CPU-built Acmd list before it runs.
+            audcmd_record(rdram, task);
+            return aspMain_capture;   /* passthrough unless capture armed */
         case M_NJPEGTASK: return njpgdspMain;
         default:
             fprintf(stderr, "[Pokemon Stadium] Unknown RSP task type: %u\n", task->t.type);
