@@ -1,5 +1,5 @@
-/*
- * main.cpp — PokemonStadiumRecomp runner entry point.
+﻿/*
+ * main.cpp â€” PokemonStadiumRecomp runner entry point.
  *
  * Adapted from Zelda64Recomp's src/main/main.cpp. Strips:
  *   - recompui (UI overlay; no menu yet)
@@ -153,7 +153,7 @@ extern "C" void psr_aspmain_capture_done(void);
 // dumped when a task begins with a seam discontinuity.
 extern "C" const char* psr_aspmain_spike_dir(void);
 extern "C" int psr_aspmain_spike_write_inputs(const char* dir);
-// Offline replay entry (aspmain_replay.cpp) — dispatched from main() when
+// Offline replay entry (aspmain_replay.cpp) â€” dispatched from main() when
 // PSR_ASPMAIN_REPLAY=<capture_dir> is set.
 extern "C" int psr_aspmain_replay_main(const char* dir);
 // Recomp-side RSP DMA trace ring (librecomp). Mirrors the struct in
@@ -166,16 +166,16 @@ struct PsrRspDmaTraceEvent {
     uint32_t byte_count;
     uint32_t nonzero_bytes;
     int32_t first_nonzero;
-    uint8_t first16[16];
+    uint8_t first16[80];
 };
 extern "C" void recomp_rsp_dma_recent_copy(
     PsrRspDmaTraceEvent* out, uint32_t out_cap,
     uint32_t* out_count, uint64_t* out_write_index);
 
-// ── Always-on per-TASK output-PCM ring ──────────────────────────────
+// â”€â”€ Always-on per-TASK output-PCM ring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // One aspMain task synthesizes one ENTIRE AI buffer (552 stereo frames
 // at 32 kHz, or 368 for the short cadence) as three (or two) sequential
-// 0x2E0-byte aSaveBuffer WRs — slice0/1/2 at base/+0x2E0/+0x5C0 of one
+// 0x2E0-byte aSaveBuffer WRs â€” slice0/1/2 at base/+0x2E0/+0x5C0 of one
 // of three rotating buffers. Submissions are 1:1 with tasks (measured
 // 2026-07-02: 4915 tasks vs 4923 submissions; per-address WR counts
 // match the 2208/1472-byte submission mix). This ring records ALL of a
@@ -291,7 +291,7 @@ int32_t taskpcm_record(uint8_t* rdram, uint64_t dma_idx_before,
     for (uint32_t i = n_samp; i < TASKPCM_MAX_SAMPLES; i++) e.samples[i] = 0;
 
     // Interior jaggedness: max per-channel frame-to-frame delta across
-    // this task's whole output — the crackle signature lives INSIDE
+    // this task's whole output â€” the crackle signature lives INSIDE
     // tasks (seam analysis 2026-07-02: inter-task seams are clean).
     int32_t interior = 0;
     for (uint32_t i = 2; i < n_samp; i++) {
@@ -317,7 +317,7 @@ int32_t taskpcm_record(uint8_t* rdram, uint64_t dma_idx_before,
     }
     g_taskpcm_seq.store(s + 1, std::memory_order_release);
     // The capture trigger fires on the WORSE of boundary seam and
-    // interior jaggedness — the latter is where the audible crackle
+    // interior jaggedness â€” the latter is where the audible crackle
     // actually lives; the former is kept as a cheap regression sentinel.
     return interior > seam ? interior : seam;
 }
@@ -384,7 +384,10 @@ struct AudioCmdListEvent {
     uint32_t output_buff;
     uint32_t output_buff_size;
     uint32_t captured_len;
-    uint32_t pad_;
+    uint32_t dma_seq32;   // low 32 bits of the RSP DMA-trace write index
+                          // at dispatch â€” join key: this task's DMA reads
+                          // are the trace events with seq >= this value
+                          // (up to the next task's dma_seq32).
     uint8_t  data[AUDCMD_DATA_CAP];
 };
 constexpr size_t AUDCMD_RING_CAP = 8192;   // x ~4.1 KiB = ~34 MiB, ~2.3 min
@@ -415,7 +418,9 @@ void audcmd_record(uint8_t* rdram, const OSTask* task) {
         e.data[i] = rdram[(paddr + i) ^ 3];   // host XOR-3 -> wire order
     }
     e.captured_len = want;
-    e.pad_ = 0;
+    uint64_t dma_widx = 0;
+    recomp_rsp_dma_recent_copy(nullptr, 0, nullptr, &dma_widx);
+    e.dma_seq32 = (uint32_t)dma_widx;
     g_audcmd_idx.store(s + 1, std::memory_order_release);
 }
 }  // namespace
@@ -466,7 +471,7 @@ static RspExitReason aspMain_capture(uint8_t* rdram, uint32_t ucode_addr) {
 
     // Spike-triggered capture: when THIS task begins with a discontinuity
     // against the previous task's output (the crackle signature), dump a
-    // full replay-grade capture of this task — the exact defective one —
+    // full replay-grade capture of this task â€” the exact defective one â€”
     // for the ground-truth RSP diff. Threshold via PSR_SPIKE_THRESHOLD
     // (default 8000), session cap via PSR_SPIKE_MAX (default 8).
     if (spike_base && before && seam >= 0) {
@@ -619,7 +624,7 @@ static uint32_t sample_rate        = 32000;
 static uint32_t output_sample_rate = 48000;
 static uint32_t discarded_output_frames = 0;
 
-// ── Round-2 clock-domain bridge ─────────────────────────────────────
+// â”€â”€ Round-2 clock-domain bridge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // One persistent band-limited resampler + fill controller, pulled by a real
 // SDL audio callback. Replaces both crackle sources in the legacy push path:
 // the per-chunk SDL_AudioCVT (boundary discontinuities) and the skip_factor
@@ -671,7 +676,7 @@ static void psr_audio_cb(void* /*ud*/, Uint8* stream, int len) {
                                 (double)output_sample_rate, output_channels);
 }
 
-// Fill `frames` of interleaved F32 stereo from the bridge — the shared source for
+// Fill `frames` of interleaved F32 stereo from the bridge â€” the shared source for
 // BOTH the SDL callback and the native-WASAPI render path (audio_host_probe.cpp).
 // Mirrors psr_audio_cb's pull+convert so the two output backends are byte-identical.
 extern "C" void psr_audio_fill_f32(float* out, int frames) {
@@ -695,7 +700,7 @@ extern "C" void psr_audio_fill_f32(float* out, int frames) {
 // Live bridge health for the debug server (audio_bridge_stats): fill level,
 // underrun/overflow counters, applied rate correction. The counters
 // accumulate inside rab_pull/rab_push regardless of any debug gating, so a
-// session can be interrogated after the fact — this just exposes them.
+// session can be interrogated after the fact â€” this just exposes them.
 extern "C" int recomp_audio_bridge_stats(
     double* fill_ms, double* correction,
     uint64_t* underruns, uint64_t* overflow_drops,
@@ -724,7 +729,7 @@ extern "C" int recomp_audio_bridge_stats(
 // at -1.4% = permanent detune, game-held fill ~21 ms, ~5 dry frames/sec in
 // rab_pull = the perpetual crackle). So: no warp (max_correction 0, exact
 // 32000->48000), and the fill equilibrium is set by under-reporting in
-// get_frames_remaining (PSR_AUDIO_LEAD_MS) — the game's own loop then holds
+// get_frames_remaining (PSR_AUDIO_LEAD_MS) â€” the game's own loop then holds
 // the ring deep enough that jittery ~10.7 ms callback pulls never run dry.
 // target_ms only gates priming once the controller is inert; keep it low so
 // audio starts promptly. Env overrides (PSR_AUDIO_MAX_CORR /
@@ -758,7 +763,7 @@ static void update_audio_converter() {
     discarded_output_frames = static_cast<uint32_t>(duplicated_input_frames * output_sample_rate / sample_rate);
 }
 
-// ── Always-on host audio-queue ring ─────────────────────────────────
+// â”€â”€ Always-on host audio-queue ring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Records one event per queue_samples() call so the host-side output
 // path can be inspected for the music-rate click. Captures the SDL
 // queue depth and whether the skip_factor sample-decimation fired
@@ -825,7 +830,7 @@ extern "C" size_t recomp_audio_queue_event_size(void) {
     return sizeof(AudioQueueEvent);
 }
 
-// ── Always-on synthesized-PCM ring ──────────────────────────────────
+// â”€â”€ Always-on synthesized-PCM ring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Records one event per queue_samples() call capturing the RAW int16
 // audio the game synthesized, BEFORE any host conversion/volume. Used to
 // localize the "static" artifact: high sample-to-sample jaggedness
@@ -842,10 +847,10 @@ struct AudioPcmEvent {
     uint32_t sample_count;   // int16 samples this chunk (L+R interleaved)
     int32_t  min_sample;
     int32_t  max_sample;
-    uint32_t mean_abs;       // mean |x| (one channel) — signal level reference
+    uint32_t mean_abs;       // mean |x| (one channel) â€” signal level reference
     uint32_t mean_abs_d1;    // mean |x[n]-x[n-1]|  (consecutive frames)
     uint32_t max_abs_d1;
-    uint32_t mean_abs_d2;    // mean |x[n]-2x[n-1]+x[n-2]| — HF energy / static signature
+    uint32_t mean_abs_d2;    // mean |x[n]-2x[n-1]+x[n-2]| â€” HF energy / static signature
     uint32_t max_abs_d2;
     uint32_t out_hf_milli;   // (mean|d2|/mean|x|)*1000 on the RESAMPLED output (one ch)
     int16_t  window[PCM_WINDOW];
@@ -904,7 +909,7 @@ void apcm_record(const int16_t* audio_data, size_t sample_count) {
 
 // Second-pass: HF ratio of the RESAMPLED output buffer (float, one channel).
 // Updates the most-recent event (same chunk; queue_samples runs serially on
-// the audio thread). Lets us compare output HF vs the clean input HF — if the
+// the audio thread). Lets us compare output HF vs the clean input HF â€” if the
 // resampler injects HF (imaging/aliasing), out_hf >> in_hf.
 void apcm_record_output(const float* out, size_t out_floats) {
     if (!g_apcm_enabled || out == nullptr || out_floats < 12) return;
@@ -980,7 +985,7 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
         }
     }
 
-    // ── Round-2 bridge path ─────────────────────────────────────────
+    // â”€â”€ Round-2 bridge path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Push de-swapped, volume-scaled int16 stereo straight into the bridge.
     // The bridge resamples to the device rate continuously (no SDL_AudioCVT)
     // and the audio callback drains it (no decimation valve).
@@ -1041,7 +1046,7 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
         swap_buffer[i] = duplicated_sample_buffer[i];
     }
 
-    // Convert int16→float and swap stereo (libultra interleaves R,L per word).
+    // Convert int16â†’float and swap stereo (libultra interleaves R,L per word).
     for (size_t i = 0; i < sample_count; i += input_channels) {
         swap_buffer[i + 0 + duplicated_input_frames * input_channels] = audio_data[i + 1] * (0.5f / 32768.0f);
         swap_buffer[i + 1 + duplicated_input_frames * input_channels] = audio_data[i + 0] * (0.5f / 32768.0f);
@@ -1068,7 +1073,7 @@ static void queue_samples(int16_t* audio_data, size_t sample_count) {
     float* samples_to_queue = swap_buffer.data() + output_channels * discarded_output_frames / 2;
 
     // PSR_AUDIO_NO_DECIMATE=1: disable the skip_factor sample-decimation
-    // entirely. Diagnostic lever for the music-rate click investigation —
+    // entirely. Diagnostic lever for the music-rate click investigation â€”
     // lets us observe whether the SDL queue self-stabilizes (game's
     // osAiGetLength feedback loop) or grows unbounded (true clock
     // mismatch) when the decimation drain is removed.
@@ -1106,7 +1111,7 @@ static size_t get_frames_remaining() {
     // The lead we subtract here SETS the steady-state ring depth: the game's
     // feedback loop drives the REPORTED remaining to its own small target, so
     // real fill = game target + lead. 1 VI (16.7 ms) of lead left only ~21 ms
-    // of real fill — shallow enough that callback pulls ran the ring dry ~5
+    // of real fill â€” shallow enough that callback pulls ran the ring dry ~5
     // frames/sec (the perpetual crackle). Default 50 ms holds the equilibrium
     // near 60 ms; PSR_AUDIO_LEAD_MS tunes the latency/safety trade by ear.
     if (audio_bridge_enabled() && g_bridge_ready) {
@@ -1144,7 +1149,7 @@ static void set_frequency(uint32_t freq) {
 // Pick the output device.
 //
 // Goal: follow the Windows *default* output endpoint, so the game plays
-// through whatever the user has chosen — and, on the WASAPI backend that
+// through whatever the user has chosen â€” and, on the WASAPI backend that
 // we force, live-migrates when they change the default mid-game (open with
 // nullptr to get that behavior). The one trap is a game-controller endpoint
 // (e.g. a DualSense's built-in speaker) becoming the system default: that
@@ -1158,7 +1163,7 @@ static void set_frequency(uint32_t freq) {
 // Returning nullptr means "let SDL track the system default."
 static const char* select_audio_device() {
     const int count = SDL_GetNumAudioDevices(0 /* iscapture=0 -> output */);
-    if (count <= 0) return nullptr;  // can't enumerate — use SDL default
+    if (count <= 0) return nullptr;  // can't enumerate â€” use SDL default
 
     auto low = [](std::string s) {
         for (auto& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
@@ -1206,7 +1211,7 @@ static const char* select_audio_device() {
     if (SDL_GetDefaultAudioInfo(&def_name, &def_spec, 0) == 0 && def_name) {
         const bool def_is_controller = is_controller_endpoint(def_name);
         fprintf(stderr, "[PSR] system default output: \"%s\"%s\n", def_name,
-                def_is_controller ? " (controller endpoint — avoiding)" : "");
+                def_is_controller ? " (controller endpoint â€” avoiding)" : "");
         SDL_free(def_name);
         if (!def_is_controller) {
             fprintf(stderr, "[PSR] -> audio device: SDL default "
@@ -1230,11 +1235,11 @@ static const char* select_audio_device() {
 
     fprintf(stderr, "[PSR] -> audio device: SDL default "
                     "(no non-controller device found)\n");
-    return nullptr;  // nothing better — let SDL pick
+    return nullptr;  // nothing better â€” let SDL pick
 }
 
 // WASAPI host-boundary probes (audio_host_probe.cpp): (1) log the TRUE engine mix
-// format — SDL's `obtained` can hide a shared-mode resample; (2) opt-in T5 loopback
+// format â€” SDL's `obtained` can hide a shared-mode resample; (2) opt-in T5 loopback
 // tap (PSR_AUDIO_T5_LOOPBACK=1) that captures what Windows sends the endpoint.
 extern "C" void psr_log_wasapi_mix_format(void);
 extern "C" void psr_audio_t5_start(void);
@@ -1266,7 +1271,7 @@ static void reset_audio(uint32_t output_freq) {
                     sample_rate, output_sample_rate, g_bridge_ready);
             return;  // do NOT open SDL audio output
         }
-        fprintf(stderr, "[PSR][audio] WASAPI render failed to start — falling back to SDL\n");
+        fprintf(stderr, "[PSR][audio] WASAPI render failed to start â€” falling back to SDL\n");
         // fall through to the SDL path below
     }
     SDL_AudioSpec spec_desired{};
@@ -1284,7 +1289,7 @@ static void reset_audio(uint32_t output_freq) {
     spec_desired.callback = use_bridge ? psr_audio_cb : nullptr;
 
     // Close any previously-opened device first (so reset_audio can be re-invoked
-    // to switch devices — e.g. the launcher's Settings > Audio output — without
+    // to switch devices â€” e.g. the launcher's Settings > Audio output â€” without
     // leaking the prior handle).
     if (audio_device != 0) {
         SDL_CloseAudioDevice(audio_device);
@@ -1311,7 +1316,7 @@ static void reset_audio(uint32_t output_freq) {
     update_audio_converter();
     // Report the TRUE WASAPI engine mix format + device period. If this rate differs
     // from `obtained` above, Windows is doing a hidden shared-mode resample (the
-    // double-resample suspect) — target it to eliminate the second SRC.
+    // double-resample suspect) â€” target it to eliminate the second SRC.
     psr_log_wasapi_mix_format();
     fprintf(stderr, "[PSR][audio] driver=%s  desired=%dHz F32 %dch samp=%d  "
             "obtained=%dHz fmt=0x%04x %dch samp=%d\n",
@@ -1328,7 +1333,7 @@ static void reset_audio(uint32_t output_freq) {
                 sample_rate, output_sample_rate, g_bridge_ready);
     }
     // Start the T5 WASAPI-loopback tap if requested (needs RECOMP_AUDIO_DEBUG too).
-    // Captures exactly what Windows sends the endpoint — the first tap past T3.
+    // Captures exactly what Windows sends the endpoint â€” the first tap past T3.
     psr_audio_t5_start();
     SDL_PauseAudioDevice(audio_device, 0);
 }
@@ -1407,9 +1412,9 @@ static void update_gfx(void*) {
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_QUIT) {
             // Clean-but-fast close. The full shutdown (recomp's join sequence)
-            // can deadlock on game_thread.join()/RT64/static destructors — that's
+            // can deadlock on game_thread.join()/RT64/static destructors â€” that's
             // the "hang on close". But we must NOT just _Exit: the N64 save
-            // (FlashRAM/SRAM/EEPROM — e.g. Stadium's registered teams) is written
+            // (FlashRAM/SRAM/EEPROM â€” e.g. Stadium's registered teams) is written
             // by a background thread that coalesces writes for up to ~1.3s, so a
             // bare _Exit can lose a just-made save.
             //
@@ -1450,7 +1455,7 @@ static void update_gfx(void*) {
 
 // ---- Input (minimal SDL GameController-only; no gyro / no remap UI) --------
 // Per principles: no stub. If a real controller isn't connected, polling
-// returns zeroed input — the game runs as if the player is idle, which is
+// returns zeroed input â€” the game runs as if the player is idle, which is
 // real behavior, not a fake. Real input takes effect when a controller is
 // plugged in and SDL_GameControllerOpen succeeds.
 
@@ -1500,7 +1505,7 @@ static SDL_GameController* open_pad_by_instance(int instance) {
 }
 
 // Lazy-detect/open the first SDL gamepad. Safe to call from any of the
-// input callbacks — both poll_inputs and get_connected_device_info
+// input callbacks â€” both poll_inputs and get_connected_device_info
 // invoke this so the device status is correct even when osContInit
 // queries before the first poll cycle.
 static void ensure_pad_open() {
@@ -1612,12 +1617,12 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
     // port (use_kb); the controller table iff a pad does. accumulate() ORs the
     // digital buttons into `b` and sums the analog-stick contribution into
     // lx/ly (raw, signed, pre-deadzone): keyboard keys give full deflection, pad
-    // axes give proportional tilt — exactly what the old hardcoded path did.
+    // axes give proportional tilt â€” exactly what the old hardcoded path did.
     //
     // The default bindings reproduce the historical layout precisely (X->A,
     // Z->B, arrows->D-pad, Q/E->L/R, I/K/J/L->C, WASD->analog, LShift/Space->Z,
     // Enter->Start; pad A/B/Start/dpad, bumpers->L/R, triggers->Z, right
-    // stick->C, left stick->analog — the issue-#8 layout), so a fresh build with
+    // stick->C, left stick->analog â€” the issue-#8 layout), so a fresh build with
     // no input.cfg behaves identically.
     //
     // SDL_GetKeyboardState requires the VIDEO subsystem (initialized by
@@ -1635,9 +1640,9 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
 
     *buttons_out = b;
 
-    // Radial deadzone: Xbox One controller sticks rest at ~±300-1500
+    // Radial deadzone: Xbox One controller sticks rest at ~Â±300-1500
     // raw; without a deadzone, Stadium reads idle noise as "player
-    // tilted the stick" and combines it with button presses — pressing
+    // tilted the stick" and combines it with button presses â€” pressing
     // Start with even small drift gets interpreted as "cancel/skip"
     // rather than "confirm," which is what was making the title screen
     // soft-reset back to the boot sequence on any button press.
@@ -1761,7 +1766,7 @@ extern "C" const char* pkmnstadium_trace_at(uint64_t idx);
 extern "C" uint64_t pkmnstadium_trace_write_idx(void);
 extern "C" uint32_t pkmnstadium_trace_capacity(void);
 
-// Forward decl — defined in post_mortem.cpp.
+// Forward decl â€” defined in post_mortem.cpp.
 extern "C" void psr_post_mortem_dump(const char* reason,
                                      EXCEPTION_POINTERS* fault_info);
 
@@ -1822,7 +1827,7 @@ static LONG WINAPI psr_crash_filter(EXCEPTION_POINTERS* info) {
                 fprintf(f, "  decoded vaddr: 0x%08X\n", vaddr);
             }
         }
-        // Dump last 32 trace ring entries — what the game thread was
+        // Dump last 32 trace ring entries â€” what the game thread was
         // executing right before the crash. Critical for diagnosis.
         uint64_t cap = (uint64_t)pkmnstadium_trace_capacity();
         uint64_t widx = pkmnstadium_trace_write_idx();
@@ -1866,7 +1871,7 @@ static LONG CALLBACK psr_vectored_exception_logger(EXCEPTION_POINTERS* info) {
 // ---- Error handling -------------------------------------------------------
 
 static void error_message_box(const char* msg) {
-    // Always-on persistent error log — this fires before
+    // Always-on persistent error log â€” this fires before
     // ultramodern::error_handling::quick_exit() terminates the process,
     // and stderr buffering can swallow the message in headless runs.
     // Write a known file path so post-mortem inspection is easy.
@@ -1893,7 +1898,7 @@ static std::string get_game_thread_name(const OSThread* t) {
 gpr get_entrypoint_address();
 
 int main(int argc, char** argv) {
-    // Crash-localization breadcrumbs — flushed immediately so a silent
+    // Crash-localization breadcrumbs â€” flushed immediately so a silent
     // exit reveals exactly how far we got.
     std::fprintf(stderr, "[PSR] main() entered\n"); std::fflush(stderr);
 
@@ -1960,7 +1965,7 @@ int main(int argc, char** argv) {
     // (free-battle-modal-softlock, petit-cup-softlock, asset-pending-bypass)
     // with a generic cooperative-scheduler preemption that fires when a
     // game thread monopolizes the CPU. If audio synth timing regresses
-    // (prior 2026-05-09 attempt flipped a pre-existing UAF — that UAF
+    // (prior 2026-05-09 attempt flipped a pre-existing UAF â€” that UAF
     // has since been fixed by SecondaryVoiceTableLayout, but this gate
     // gives us a quick rollback if a new regression surfaces).
     {
@@ -1983,12 +1988,12 @@ int main(int argc, char** argv) {
     SDL_JoystickEventState(SDL_ENABLE);
     std::fprintf(stderr, "[PSR] SDL audio/controller init OK\n"); std::fflush(stderr);
 
-    // ── Controller mapping database (issue #15: 8BitDo 64 & others) ───────────
+    // â”€â”€ Controller mapping database (issue #15: 8BitDo 64 & others) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // SDL only surfaces a device through the SDL_GameController API if it has a
     // mapping; an unmapped joystick (e.g. the 8BitDo 64 in D-Input / Bluetooth
     // mode) is invisible to both the launcher and the game (SDL_IsGameController
     // returns false). Load the bundled community DB so thousands of controllers
-    // — including the 8BitDo 64's per-platform/transport GUIDs — are recognized,
+    // â€” including the 8BitDo 64's per-platform/transport GUIDs â€” are recognized,
     // then add a hardcoded 8BitDo 64 fallback so it works even if the file is
     // missing. Users can also drop an updated gamecontrollerdb.txt next to the
     // exe (assets/) without a rebuild. Must run before any SDL_IsGameController.
@@ -2158,14 +2163,14 @@ int main(int argc, char** argv) {
     // to choose POOL_END_4MB vs POOL_END_6MB. The 6MB path is only taken
     // when gExpansionRAMStart > 0 AND osMemSize > 0x600000. Our runtime
     // reports osMemSize=8MB correctly, but gExpansionRAMStart lives in
-    // BSS and has NO writer anywhere in the recompiled binary — on real
+    // BSS and has NO writer anywhere in the recompiled binary â€” on real
     // hardware some hardware-detect path (RDP probe / silicon side-effect)
     // sets it; in our HLE harness it stays zeroed and the 6MB code path is
     // unreachable. Stadium's working set marginally exceeds the 3MB usable
     // cap of the 4MB path, so the title-screen pokemon-models loader hits
     // an alloc failure without this. Forcing the value at on_init_callback
     // is the proper layer for this kind of "missing-from-HLE hardware-detect
-    // side-effect" — it fires once after rdram is wired up but before the
+    // side-effect" â€” it fires once after rdram is wired up but before the
     // game thread reads the global. Previously implemented as a hook on
     // Util_InitMainPools entry; that worked but required a recompile-time
     // hook for a one-time runtime-init fact. See TEMP_PATCHES.md
@@ -2210,7 +2215,7 @@ int main(int argc, char** argv) {
     //
     // Walk strategy: pAllocList + pLameList in N_ALSynth catch every
     // voice the synth might still pull from on the next audio frame
-    // regardless of bus routing — a previous auxBus->sources walk
+    // regardless of bus routing â€” a previous auxBus->sources walk
     // missed voices that were allocated but routed elsewhere.
     //
     // Offsets verified against disasm/src/libnaudio/n_synthInternals.h
@@ -2240,7 +2245,7 @@ int main(int argc, char** argv) {
         librecomp::audio_uaf::register_voice_layout(layout);
     }
 
-    // Stadium-side secondary voice table — array-style high-level synth
+    // Stadium-side secondary voice table â€” array-style high-level synth
     // voices at D_800FC7D0 (count at 0x800FC7CC, array ptr at 0x800FC7D0).
     // The wavetable-pointer-ARRAY base lives at voice.unk_090 + 0x2C
     // (verified against the audio_diag hook capture: ctx->r11 = $t3 =
@@ -2248,7 +2253,7 @@ int main(int argc, char** argv) {
     // source (the 1 MiB SoundBank pool buffer freed at fragment36
     // cleanup), the array base AND its wavetable entries all live in
     // the same buffer, so range-checking the array base correctly
-    // catches the freed-bank case. Silence by zeroing voice.unk_038 —
+    // catches the freed-bank case. Silence by zeroing voice.unk_038 â€”
     // Stadium's func_8003AD58 skips voices whose unk_038 is null.
     // Routing this through audio_uaf_protect retires the per-scene
     // func_8004FF20 hook (was pkmnstadium_audio_stop_voices) and makes
@@ -2272,8 +2277,8 @@ int main(int argc, char** argv) {
     // active ROM so start_game can find it.
     //
     // Resolution order:
-    //   1. argv[1] (if not a flag) — backwards-compatible CLI override.
-    //   2. <exe_dir>/rom.cfg — last-used path from a prior successful pick.
+    //   1. argv[1] (if not a flag) â€” backwards-compatible CLI override.
+    //   2. <exe_dir>/rom.cfg â€” last-used path from a prior successful pick.
     //   3. legacy "baserom.z64" next to the exe (or parent dir, dev layout).
     //   4. Win32 file-picker dialog. Loop until a valid ROM is chosen or
     //      the user cancels (which exits the runner).
@@ -2357,7 +2362,7 @@ int main(int argc, char** argv) {
                     if (!cli_override) write_rom_cfg(rom_path);
                     break;
                 }
-                // Validation failed — describe to the user and re-pick.
+                // Validation failed â€” describe to the user and re-pick.
                 const char* err_name = "";
                 switch (err) {
                     case recomp::RomValidationError::FailedToOpen:    err_name = "could not open file"; break;
@@ -2374,21 +2379,21 @@ int main(int argc, char** argv) {
                                   "Required: Pokemon Stadium (US v1.0)\n"
                                   "Required MD5: ed1378bc12115f71209a77844965ba50\n\n"
                                   "Please select the correct ROM.";
-                MessageBoxA(NULL, msg.c_str(), "PokemonStadiumRecomp — wrong ROM", MB_ICONWARNING | MB_OK);
+                MessageBoxA(NULL, msg.c_str(), "PokemonStadiumRecomp â€” wrong ROM", MB_ICONWARNING | MB_OK);
 #endif
                 rom_path.clear();
             }
 
-            // No valid candidate — pick interactively.
+            // No valid candidate â€” pick interactively.
             if (!show_picker(rom_path)) {
 #ifdef _WIN32
                 MessageBoxA(NULL,
-                    "No ROM selected — exiting.\n\n"
+                    "No ROM selected â€” exiting.\n\n"
                     "PokemonStadiumRecomp needs a legal copy of Pokemon Stadium (US v1.0) "
                     "to run. Launch the runner again and pick the .z64 file when prompted.",
                     "PokemonStadiumRecomp", MB_ICONINFORMATION | MB_OK);
 #endif
-                std::fprintf(stderr, "[PSR] no ROM selected — exiting\n"); std::fflush(stderr);
+                std::fprintf(stderr, "[PSR] no ROM selected â€” exiting\n"); std::fflush(stderr);
                 return 1;
             }
         }
@@ -2423,7 +2428,7 @@ int main(int argc, char** argv) {
             apply_launcher_input_config();
             // Apply the audio output device chosen in the launcher's Settings
             // (re-selects from launcher.cfg). The launcher is shown only at boot,
-            // so this is where the choice takes effect for the game — no app
+            // so this is where the choice takes effect for the game â€” no app
             // relaunch needed. Re-selecting the same device is harmless (no audio
             // is playing yet).
             reset_audio(output_sample_rate);
@@ -2456,7 +2461,7 @@ int main(int argc, char** argv) {
         .create_window = create_window,
         .update_gfx    = update_gfx,
     };
-    // VI heartbeat — published to TCP debug server (g_vi_ticks) so a
+    // VI heartbeat â€” published to TCP debug server (g_vi_ticks) so a
     // debugger client can poll {"cmd":"status"} to confirm the renderer
     // is alive. Also bumps frame counter; counter / VI tick should
     // advance at roughly 60Hz when the game is running normally.

@@ -1,21 +1,21 @@
-/*
- * debug_server.cpp — Minimal TCP debug server for PokemonStadiumRecomp.
+﻿/*
+ * debug_server.cpp â€” Minimal TCP debug server for PokemonStadiumRecomp.
  *
  * A small single-client, JSON-line TCP debug server. Default port
  * 4370.
  *
  * Commands implemented for first-pass visibility:
  *
- *   ping                         → {"ok":true,"pong":true}
- *   status                       → frame counter, vi count, fast_forward state, errors
- *   set_button {name, down}      → simulate controller button press
- *   set_stick {x, y}             → analog stick override (-128..127)
- *   clear_input                  → drop overrides
- *   fast_forward {on}            → flip fast-forward state
- *   enable_instant_present       → tell the renderer to skip vsync
- *   screenshot {path}            → ask the renderer to dump the next framebuffer
- *   tail_errlog                  → returns last_error.log content (post-mortem inspection)
- *   quit                         → exit cleanly
+ *   ping                         â†’ {"ok":true,"pong":true}
+ *   status                       â†’ frame counter, vi count, fast_forward state, errors
+ *   set_button {name, down}      â†’ simulate controller button press
+ *   set_stick {x, y}             â†’ analog stick override (-128..127)
+ *   clear_input                  â†’ drop overrides
+ *   fast_forward {on}            â†’ flip fast-forward state
+ *   enable_instant_present       â†’ tell the renderer to skip vsync
+ *   screenshot {path}            â†’ ask the renderer to dump the next framebuffer
+ *   tail_errlog                  â†’ returns last_error.log content (post-mortem inspection)
+ *   quit                         â†’ exit cleanly
  *
  * Design rule: any state we want visible from outside grows TCP
  * commands here. Don't add side-channel logging.
@@ -214,7 +214,7 @@ static void record_input_event(const char* kind,
     ev.y = y;
 }
 
-// Public — called by post_mortem.cpp to dump history to JSON file.
+// Public â€” called by post_mortem.cpp to dump history to JSON file.
 extern "C" void psr_dump_input_history_json(const char* path) {
     FILE* f = std::fopen(path, "w");
     if (!f) return;
@@ -243,7 +243,7 @@ static std::thread        s_thread;
 static std::atomic<bool>  s_running{false};
 static SOCKET             s_listen_sock = INVALID_SOCKET;
 
-// Surfaced from librecomp's mesgqueue.cpp — counts external-message
+// Surfaced from librecomp's mesgqueue.cpp â€” counts external-message
 // re-queues, which happen when a target OSMesgQueue is full when the
 // drain pass reaches it. Surfaced via debug_server's `status` cmd.
 extern "C" uint64_t ultramodern_external_requeues(void);
@@ -289,7 +289,7 @@ struct RspDmaTraceEvent {
     uint32_t byte_count;
     uint32_t nonzero_bytes;
     int32_t first_nonzero;
-    uint8_t first16[16];
+    uint8_t first16[80];
 };
 extern "C" void recomp_rsp_dma_recent_copy(
     RspDmaTraceEvent* out, uint32_t out_cap,
@@ -309,7 +309,7 @@ extern "C" size_t recomp_audio_pcm_event_size(void);
 extern "C" size_t recomp_audio_pcm_window(void);
 extern "C" int psr_aspmain_capture_arm(const char* dir);
 extern "C" int psr_aspmain_capture_state(void);
-// Always-on per-task output-PCM ring (main.cpp) — the seam-analysis ring.
+// Always-on per-task output-PCM ring (main.cpp) â€” the seam-analysis ring.
 struct TaskPcmEventMirror {
     uint64_t seq;
     uint64_t ms;
@@ -326,19 +326,19 @@ extern "C" void recomp_task_pcm_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_task_pcm_event_size(void);
 extern "C" int64_t recomp_task_pcm_dump(const char* path);
-// Always-on audio command-list ring (main.cpp) — OSTask header + raw Acmd
+// Always-on audio command-list ring (main.cpp) â€” OSTask header + raw Acmd
 // bytes of every M_AUDTASK the game dispatches. Twin of the ares-bridge
 // oracle's audio-task ring; the organic A/B diffs the two dumps.
 extern "C" size_t recomp_audio_cmdlist_event_size(void);
 extern "C" uint64_t recomp_audio_cmdlist_count(void);
 extern "C" int64_t recomp_audio_cmdlist_dump(const char* path);
-// Clock-domain bridge health (main.cpp) — fill level + underrun/overflow
+// Clock-domain bridge health (main.cpp) â€” fill level + underrun/overflow
 // counters accumulated inside rab_push/rab_pull since process start.
 extern "C" int recomp_audio_bridge_stats(
     double* fill_ms, double* correction,
     uint64_t* underruns, uint64_t* overflow_drops,
     uint64_t* pushed, uint64_t* pulled);
-// Always-on AI-submission ring (ultramodern/src/audio.cpp) — guest addr +
+// Always-on AI-submission ring (ultramodern/src/audio.cpp) â€” guest addr +
 // byte count + submitted payload of every audio buffer the game submits.
 struct AiSubmitEventMirror {
     uint64_t seq;
@@ -373,10 +373,10 @@ extern "C" int rt64_sprite_ring_read(uint64_t seq, uint64_t* out_seq,
 // RT64_PSR_DEBUG_HOOKS=1 in the rt64 build (default in PSR's CMake).
 // Declared with weak-import semantics on platforms that support it
 // (none on MSVC) so a future RT64_PSR_DEBUG_HOOKS=0 build doesn't fail
-// the link — for now we just rely on the default being on.
+// the link â€” for now we just rely on the default being on.
 extern "C" void rt64_psr_segments_copy(uint32_t* out16, uint64_t* out_seq);
 
-// Map button name → N64 contStat bit.
+// Map button name â†’ N64 contStat bit.
 static uint16_t button_bit(const std::string& n) {
     if (n == "A")        return 0x8000;
     if (n == "B")        return 0x4000;
@@ -395,7 +395,7 @@ static uint16_t button_bit(const std::string& n) {
     return 0;
 }
 
-// Crude JSON value extraction — enough for our small command surface.
+// Crude JSON value extraction â€” enough for our small command surface.
 // We do not pull in a JSON library to avoid one more dep.
 static std::string get_str(const std::string& body, const char* key) {
     std::string needle = std::string("\"") + key + "\"";
@@ -450,7 +450,7 @@ static bool get_bool(const std::string& body, const char* key, bool dflt) {
 static std::string handle_command(const std::string& line) {
     auto cmd = get_str(line, "cmd");
     if (cmd.empty()) {
-        // Bare command (no JSON) — match against the line trimmed.
+        // Bare command (no JSON) â€” match against the line trimmed.
         std::string bare = line;
         while (!bare.empty() && (bare.back() == '\n' || bare.back() == '\r' || bare.back() == ' ')) bare.pop_back();
         cmd = bare;
@@ -461,7 +461,7 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "status") {
         // The librecomp accessor for the external-message requeue
-        // counter — declared at file scope below for proper extern "C"
+        // counter â€” declared at file scope below for proper extern "C"
         // linkage. A sustained nonzero value means some target
         // OSMesgQueue's receiver is being starved relative to
         // host-thread event posts.
@@ -505,7 +505,7 @@ static std::string handle_command(const std::string& line) {
         // the gfx event thread is currently inside renderer_context->send_dl
         // and the data_ptr/data_size identify exactly which DL is in flight.
         // For a stuck send_dl, entry_seq > exit_seq AND (now - entry_ms) is
-        // large — that's the hanging DL, and its raw bytes are at
+        // large â€” that's the hanging DL, and its raw bytes are at
         // [data_ptr, data_ptr+data_size) in rdram for offline analysis.
         uint64_t entry_seq = 0, exit_seq = 0, entry_ms = 0, exit_ms = 0;
         uint32_t data_ptr = 0, data_size = 0, ucode_ptr = 0;
@@ -549,14 +549,14 @@ static std::string handle_command(const std::string& line) {
     if (cmd == "vtx_ring") {
         // Always-on triangle vertex ring (RT64 hle/rt64_vtx_ring). Each
         // entry is one drawIndexedTri call's 3 post-MVP, post-divide,
-        // viewport-scaled screen-space positions — the same posScreen
+        // viewport-scaled screen-space positions â€” the same posScreen
         // values the renderer's drawRect logic reads. Used to answer
         // "do adjacent quads at the same world position produce
         // identical screen-space coords?" without RenderDoc.
         //
         // Args:
-        //   "count"      — how many entries to return (default 32)
-        //   "start_seq"  — starting sequence (default = write_idx - count + 1)
+        //   "count"      â€” how many entries to return (default 32)
+        //   "start_seq"  â€” starting sequence (default = write_idx - count + 1)
         //
         // Disable the writer entirely with RT64_VTX_RING_DISABLE=1.
         uint64_t write_idx = rt64_vtx_ring_write_idx();
@@ -609,8 +609,8 @@ static std::string handle_command(const std::string& line) {
         // source RDRAM addr+span, SETTIMG base, dims, and a content hash
         // of the loaded bytes. Used to diagnose the menu cursor/icon
         // sprite corruption (stale TMEM / freed texture source).
-        //   "count"     — entries to return (default 64)
-        //   "start_seq" — starting sequence (default = write_idx-count+1)
+        //   "count"     â€” entries to return (default 64)
+        //   "start_seq" â€” starting sequence (default = write_idx-count+1)
         // Disable the writer with RT64_TMEM_RING_DISABLE=1.
         uint64_t write_idx = rt64_tmem_ring_write_idx();
         uint32_t capacity = rt64_tmem_ring_capacity();
@@ -1034,7 +1034,7 @@ static std::string handle_command(const std::string& line) {
         // Needed by automated harnesses so libultra's osContInit (which
         // runs once during boot, before any set_button) sees a
         // controller present in port 1. Must be sent BEFORE osContInit
-        // — i.e. immediately after the TCP server accepts.
+        // â€” i.e. immediately after the TCP server accepts.
         g_input_override_active.store(true);
         record_input_event("claim");
         return R"({"ok":true})";
@@ -1050,7 +1050,7 @@ static std::string handle_command(const std::string& line) {
     if (cmd == "trace_recent") {
         // Returns the last N entries from the function-trace ring
         // (TRACE_ENTRY / TRACE_RETURN hits). N defaults to 64; max 512.
-        // Used to diagnose "where is the game looping?" — read it
+        // Used to diagnose "where is the game looping?" â€” read it
         // periodically and the same names should keep cycling.
         int n = get_int(line, "n", 64);
         if (n < 1) n = 1;
@@ -1072,7 +1072,7 @@ static std::string handle_command(const std::string& line) {
         return out;
     }
     if (cmd == "post_mortem_dump") {
-        // On-demand dump — runner stays alive. Produces
+        // On-demand dump â€” runner stays alive. Produces
         // build/last_run_report.json with status + rings + hardware
         // state + per-thread host stacks. Use this to inspect
         // softlocks (white-screen freezes) without restarting.
@@ -1141,7 +1141,7 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "mesg_queues") {
         // Per-QUEUE never-evict table from ultramodern: every OSMesgQueue the
-        // game ever touched, with the last 64 events on each — survives the main
+        // game ever touched, with the last 64 events on each â€” survives the main
         // ring wrapping under the VI/audio flood. THE tool for a lost-wakeup:
         // "after thread X blocked on recv of queue Q, did anyone ever send to Q,
         // and was a send dropped (op do_send_drop)?"
@@ -1210,7 +1210,7 @@ static std::string handle_command(const std::string& line) {
         // Live self-healing-tier counters straight from the atomics (the
         // runtime_captures.json manifest only flushes on a NEW unique miss, so
         // it goes stale mid-run). Lets a probe watch dispatch_entry_rejects /
-        // interp_runs / self_heals climb during a stall in real time — to tell a
+        // interp_runs / self_heals climb during a stall in real time â€” to tell a
         // silently-self-healed dispatch reject from a truly clean dispatch.
         uint64_t sh=0, lm=0, heals=0, hmiss=0, rej=0, interp=0, jc=0, jf=0;
         recomp_coverage_live(&sh, &lm, &heals, &hmiss, &rej, &interp, &jc, &jf);
@@ -1238,7 +1238,7 @@ static std::string handle_command(const std::string& line) {
     if (cmd == "sp_task_recent") {
         // Returns the last N osSpTaskStartGo events from the always-on
         // ring in librecomp/sp.cpp. Used to identify the LAST gfx task
-        // submitted before send_dl freezes — answers the gfx-submit-
+        // submitted before send_dl freezes â€” answers the gfx-submit-
         // freeze question at frame ~2400 / send_dl ~1157.
         struct SpTaskEvent {
             uint64_t seq;
@@ -1350,6 +1350,42 @@ static std::string handle_command(const std::string& line) {
         out += "]}";
         return out;
     }
+    if (cmd == "audio_rings_dump") {
+        // Atomic-enough multi-ring dump for cross-ring joins (announcer
+        // stream forensics): DMA trace (raw, full ring), cmd lists,
+        // task PCM, and AI payloads written back-to-back into one dir.
+        // The cmd-list events carry dma_seq32 (DMA write index at task
+        // dispatch), so the DMA dump's absolute seq range is the join
+        // epoch â€” no wall-clock alignment needed.
+        std::string dir = get_str(line, "dir");
+        if (dir.empty()) return R"({"ok":false,"error":"missing dir"})";
+        auto path = [&](const char* name) { return dir + "/" + name; };
+
+        // 1. DMA trace, raw records.
+        constexpr uint32_t kDmaCap = 65536;
+        std::vector<RspDmaTraceEvent> dbuf(kDmaCap);
+        uint32_t dgot = 0;
+        uint64_t dwidx = 0;
+        recomp_rsp_dma_recent_copy(dbuf.data(), kDmaCap, &dgot, &dwidx);
+        {
+            FILE* f = fopen(path("rspdma.bin").c_str(), "wb");
+            if (!f) return R"({"ok":false,"error":"open rspdma failed"})";
+            fwrite(dbuf.data(), sizeof(RspDmaTraceEvent), dgot, f);
+            fclose(f);
+        }
+        // 2-4. The existing ring dumps.
+        int64_t n_cmd = recomp_audio_cmdlist_dump(path("cmdlists.bin").c_str());
+        int64_t n_pcm = recomp_task_pcm_dump(path("taskpcm.bin").c_str());
+        int64_t n_ai  = ultramodern_ai_submit_dump(path("ai_payload.bin").c_str());
+        char b[256];
+        std::snprintf(b, sizeof(b),
+            "{\"ok\":true,\"dma\":%u,\"dma_write_idx\":%llu,"
+            "\"dma_event_size\":%zu,\"cmdlists\":%lld,\"taskpcm\":%lld,"
+            "\"ai\":%lld}",
+            dgot, (unsigned long long)dwidx, sizeof(RspDmaTraceEvent),
+            (long long)n_cmd, (long long)n_pcm, (long long)n_ai);
+        return b;
+    }
     if (cmd == "voice_events_recent") {
         // Returns the last N libnaudio voice events (key-on / key-off /
         // sample-change) from the always-on ring in librecomp's
@@ -1357,7 +1393,7 @@ static std::string handle_command(const std::string& line) {
         // periodic click against voice-start cadence and to inspect the
         // ADPCM predictor carry / dc_first flag at each key-on.
         //
-        // Mirror of voice_ring::VoiceEvent — kept in lockstep and
+        // Mirror of voice_ring::VoiceEvent â€” kept in lockstep and
         // validated via recomp_voice_event_size().
         struct VoiceEvent {
             uint64_t seq;
@@ -1432,7 +1468,7 @@ static std::string handle_command(const std::string& line) {
         // ground-truth A_INIT decision per decode (the task-time voice
         // ring cannot see it). `suspect`=1 marks a CONTINUE decode onto a
         // book that changed vs the prior decode on the same state buffer
-        // — i.e. stale predictor loaded for a new sample (click site).
+        // â€” i.e. stale predictor loaded for a new sample (click site).
         struct AdpcmEvent {
             uint64_t seq;
             uint64_t ms;
@@ -1645,7 +1681,7 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "aspmain_capture_arm") {
         // Arm (or re-arm) the one-shot aspMain single-task replay capture
-        // at runtime — same machinery as PSR_ASPMAIN_CAPTURE=<dir>, but
+        // at runtime â€” same machinery as PSR_ASPMAIN_CAPTURE=<dir>, but
         // triggerable mid-session so the captured task is the content
         // under investigation (e.g. a battle cry) rather than whatever
         // non-silent task fires first after boot. The next aspMain task
@@ -1668,7 +1704,7 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "audio_pcm_recent") {
         // Returns the last N synthesized-PCM events from the always-on
-        // ring in main.cpp — the RAW int16 audio the game produced before
+        // ring in main.cpp â€” the RAW int16 audio the game produced before
         // host conversion/volume. `mean_abs_d2`/`mean_abs` (HF ratio)
         // localizes the "static": high jaggedness vs amplitude => the
         // static is baked into the synthesized samples (aspMain/mixing),
@@ -1747,7 +1783,7 @@ static std::string handle_command(const std::string& line) {
             recomp_ultra_trace_event ev{};
             int valid = recomp_ultra_trace_get(off, &ev);
             char buf[320];
-            // Escape name minimally — known to be ASCII C symbols.
+            // Escape name minimally â€” known to be ASCII C symbols.
             std::snprintf(buf, sizeof(buf),
                 "%s{\"i\":%llu,\"valid\":%s,\"name\":\"%s\","
                 "\"pc\":%u,\"a0\":%u,\"a1\":%u,\"a2\":%u,\"a3\":%u,"
@@ -1769,7 +1805,7 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "libultra_boot") {
         // Returns a slice [start, start+n) from the non-evicting
-        // boot snapshot — the FIRST n events recorded since process
+        // boot snapshot â€” the FIRST n events recorded since process
         // start. Use this to answer "what did each thread do during
         // boot?" no matter how long the game has been running.
         //
@@ -1822,7 +1858,7 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "rdram_peek") {
         // Read N bytes from rdram at a virtual address. Generic
-        // diagnostic — useful for inspecting any global state in
+        // diagnostic â€” useful for inspecting any global state in
         // the recompiled game (struct fields, flags, queue
         // counts, etc.) without needing to add a per-field TCP
         // command for each.
@@ -1833,7 +1869,7 @@ static std::string handle_command(const std::string& line) {
         //   n:    bytes to read, 1..256.
         //
         // Returns hex string (big-endian byte order from N64's
-        // perspective — we XOR-3 the rdram index per the
+        // perspective â€” we XOR-3 the rdram index per the
         // recompiler's swap convention).
         uint32_t addr = get_uint(line, "addr", 0);
         int n = get_int(line, "n", 4);
@@ -1967,14 +2003,14 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"addr":)" + std::to_string(addr) +
                R"(,"n":)" + std::to_string(n) + R"(})";
     }
-    // NOTE: rdram_scan_u32 added 2026-05-08 — needs rebuild before use.
+    // NOTE: rdram_scan_u32 added 2026-05-08 â€” needs rebuild before use.
     if (cmd == "rdram_scan_u32") {
         // Host-side scan of all rdram for occurrences of a specific 4-byte
         // big-endian-from-N64-perspective value. Args: {"value": <u32>,
         // "limit": <max_hits>}. Returns list of vaddrs where the value is
         // stored. Useful for finding stale-pointer holders: if a DL target
         // is wrong at runtime, find every rdram word that equals that
-        // target value — the holder is one of them.
+        // target value â€” the holder is one of them.
         uint32_t want = get_uint(line, "value", 0);
         int limit = get_int(line, "limit", 64);
         if (limit < 1) limit = 1;
@@ -1985,7 +2021,7 @@ static std::string handle_command(const std::string& line) {
             return R"({"ok":false,"error":"rdram not yet captured"})";
         }
         constexpr uint32_t kRdramSize = 8u * 1024u * 1024u;
-        // Stride 4 — only word-aligned hits matter for pointer-storage.
+        // Stride 4 â€” only word-aligned hits matter for pointer-storage.
         std::string out = R"({"ok":true,"value":)" + std::to_string(want) +
                           R"(,"hits":[)";
         int hits = 0;
@@ -2035,7 +2071,7 @@ static std::string handle_command(const std::string& line) {
         });
     }
     if (cmd == "ares_init_oracle") {
-        // Args: {"rom_path": "..."}. ROM path is mandatory — caller picks
+        // Args: {"rom_path": "..."}. ROM path is mandatory â€” caller picks
         // the same baserom.z64 the runner is using.
         std::string rom = get_str(line, "rom_path");
         if (rom.empty()) return R"({"ok":false,"error":"missing rom_path"})";
@@ -2067,7 +2103,7 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "ares_step_frame") {
         // Args: {"n": <count>}. Default 1, max 600 (~10s of emulated
-        // time at 60Hz — keeps the server thread responsive).
+        // time at 60Hz â€” keeps the server thread responsive).
         int n = get_int(line, "n", 1);
         if (n < 1) n = 1;
         if (n > 600) n = 600;
@@ -2090,7 +2126,7 @@ static std::string handle_command(const std::string& line) {
     }
     // CPU-side accessors (ares_read_pc, ares_read_cpu_register,
     // ares_read_memory, ares_set_controller, ares_step_instruction) are
-    // intentionally NOT exposed yet — those bridge entry points are
+    // intentionally NOT exposed yet â€” those bridge entry points are
     // unimplemented in ares_core_glue.cpp (Phase 3+) and abort the
     // process. The aspMain divergence diff is RSP-side, so the trace
     // ring below has all the state we need; CPU accessors come online
@@ -2099,9 +2135,9 @@ static std::string handle_command(const std::string& line) {
         cmd == "ares_rsp_trace_at_pc") {
       return ares_worker::dispatch([&line, &cmd]() -> std::string {
         // Three RSP trace queries share the same event-rendering tail.
-        //   ares_rsp_trace_recent {n}        → last n events from sliding ring
-        //   ares_rsp_trace_boot {start, n}   → slice [start, start+n) from boot snapshot
-        //   ares_rsp_trace_at_pc {pc, n}     → up to n most-recent events whose pc == arg
+        //   ares_rsp_trace_recent {n}        â†’ last n events from sliding ring
+        //   ares_rsp_trace_boot {start, n}   â†’ slice [start, start+n) from boot snapshot
+        //   ares_rsp_trace_at_pc {pc, n}     â†’ up to n most-recent events whose pc == arg
         int n = get_int(line, "n", 32);
         if (n < 1) n = 1;
         if (n > 1024) n = 1024;
@@ -2213,14 +2249,14 @@ static std::string handle_command(const std::string& line) {
         return out;
     }
     if (cmd == "rt64_segments") {
-        // RT64's resolved segment table — gSegments[0..15] as the
+        // RT64's resolved segment table â€” gSegments[0..15] as the
         // interpreter sees them. Updated whenever the game emits
         // gsSPSegment via G_MOVEWORD. Used to triangulate stale-
         // segment binding bugs (e.g. menu sprite/border corruption
         // in Stadium where seg 3 textures resolve to wrong RDRAM).
         // Backed by the RT64_PSR_DEBUG_HOOKS-gated snapshot in
         // rt64_rsp.cpp; if that define is 0 the symbol won't exist
-        // and the link will fail — that's intentional, you opted out.
+        // and the link will fail â€” that's intentional, you opted out.
         uint32_t segs[16] = {};
         uint64_t seq = 0;
         rt64_psr_segments_copy(segs, &seq);
@@ -2262,7 +2298,7 @@ static std::string handle_command(const std::string& line) {
         size_t n = fread(chunk, 1, sizeof(chunk) - 1, f);
         chunk[n] = 0;
         fclose(f);
-        // Naive escape — replace " and \ with safe substitutes.
+        // Naive escape â€” replace " and \ with safe substitutes.
         std::string out = R"({"ok":true,"errlog":")";
         for (size_t i = 0; i < n; i++) {
             char c = chunk[i];
@@ -2349,7 +2385,7 @@ static std::string handle_command(const std::string& line) {
         return buf;
     }
     if (cmd == "quit") {
-        ExitProcess(0);  // hard exit — debug-driven shutdown
+        ExitProcess(0);  // hard exit â€” debug-driven shutdown
         return R"({"ok":true})";
     }
     return R"({"ok":false,"error":"unknown command"})";

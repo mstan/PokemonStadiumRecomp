@@ -1,5 +1,5 @@
-/*
- * aspmain_replay.cpp — offline replay of a captured aspMain audio task.
+﻿/*
+ * aspmain_replay.cpp â€” offline replay of a captured aspMain audio task.
  *
  * Companion to the single-task capture in rsp_aspmain_hook.cpp /
  * main.cpp (PSR_ASPMAIN_CAPTURE=<dir>, or the debug-server command
@@ -10,13 +10,13 @@
  * and instead of booting the game it:
  *   1. Restores the captured task's inputs: dmem.bin into the RSP DMEM,
  *      rdram_before.bin into a fresh guest RDRAM, and the RspContext
- *      (ctx_full.bin when present — includes the persistent vector-unit
+ *      (ctx_full.bin when present â€” includes the persistent vector-unit
  *      state the scalar ctx.bin misses; ctx.bin scalar fields otherwise).
  *   2. Runs the recompiled aspMain on that state with the RSP DMA trace
  *      enabled.
  *   3. Writes rdram_replay.bin / dmem_replay.bin / replay_dma.txt next
  *      to the capture, then reports two diffs:
- *        a. DMA-sequence diff vs recomp_dma.txt — first diverging DMA
+ *        a. DMA-sequence diff vs recomp_dma.txt â€” first diverging DMA
  *           (direction/dmem/dram/len) localizes at the op level.
  *        b. RDRAM diff vs rdram_after.bin restricted to the byte ranges
  *           the captured task's WR DMAs covered. The in-game snapshots
@@ -26,11 +26,11 @@
  *           whole-window count is still printed as an FYI.
  *
  * A clean (a)+(b) proves the capture is complete and the task is a pure
- * function of the captured state — making the capture valid input for a
+ * function of the captured state â€” making the capture valid input for a
  * ground-truth RSP (Ares LLE / reference interpreter) diff: the first
  * sample where ground truth disagrees with rdram_replay.bin localizes
  * the recompiled-synthesis defect. A dirty (a)/(b) means the capture is
- * missing state — fix the capture before trusting any downstream diff.
+ * missing state â€” fix the capture before trusting any downstream diff.
  *
  * Exit codes: 0 = clean, 1 = divergence, 2 = usage / IO error.
  */
@@ -47,7 +47,7 @@
 extern RspUcodeFunc aspMain;
 extern uint8_t dmem[];
 
-// Reference RSP interpreter (aspmain_refint.cpp) — the ground-truth
+// Reference RSP interpreter (aspmain_refint.cpp) â€” the ground-truth
 // engine the recompiled run is diffed against.
 extern "C" int psr_aspmain_refint_run(uint8_t* rdram,
                                       const RspContext* seed,
@@ -65,7 +65,7 @@ struct ReplayRspDmaTraceEvent {
     uint32_t byte_count;
     uint32_t nonzero_bytes;
     int32_t first_nonzero;
-    uint8_t first16[16];
+    uint8_t first16[80];
 };
 extern "C" void recomp_rsp_dma_recent_copy(
     ReplayRspDmaTraceEvent* out, uint32_t out_cap,
@@ -73,7 +73,7 @@ extern "C" void recomp_rsp_dma_recent_copy(
 
 namespace {
 
-constexpr size_t kRdramWindow = 0x800000;    // 8 MiB — the captured window
+constexpr size_t kRdramWindow = 0x800000;    // 8 MiB â€” the captured window
 // Guest memory allocation size. Must match recomp::mem_size (1 GiB) so
 // the MEM_* macros' RECOMP_MEM_MASK offset decoding matches the in-game
 // run (e.g. the SP_STATUS mirror write at 0xA4040010 lands at the same
@@ -153,7 +153,7 @@ void replay_pre_task_hook(uint8_t* /*rdram*/, RspContext* ctx,
     }
     // Scalar-only restore (pre-ctx_full captures). The persistent VU
     // state stays default-initialized; a diff mismatch under this path
-    // is inconclusive — recapture with a build that dumps ctx_full.bin.
+    // is inconclusive â€” recapture with a build that dumps ctx_full.bin.
     uint32_t* gpr = &ctx->r1;             // r1..r31 are contiguous
     for (int i = 1; i <= 31; i++) gpr[i - 1] = g_cap.r[i];
     ctx->dma_mem_address = g_cap.dma_mem;
@@ -200,7 +200,7 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
             have_dma ? "parsed" : "ABSENT", cap_dma.size());
 
     // ctx.bin layout (see aspmain_capture_input): r1..r31, dma_mem,
-    // dma_dram, ucode_addr — 34 little-endian words.
+    // dma_dram, ucode_addr â€” 34 little-endian words.
     const uint32_t* w = reinterpret_cast<const uint32_t*>(ctx_bytes.data());
     for (int i = 0; i < 31; i++) g_cap.r[i + 1] = w[i];
     g_cap.dma_mem = w[31];
@@ -224,8 +224,8 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
     RspExitReason exit_reason = aspMain(rdram, ucode_addr);
     fprintf(stderr, "[aspmain_replay] aspMain returned %d (%s)\n",
             (int)exit_reason,
-            exit_reason == RspExitReason::Broke ? "Broke — clean task end"
-                                                : "NOT Broke — abnormal");
+            exit_reason == RspExitReason::Broke ? "Broke â€” clean task end"
+                                                : "NOT Broke â€” abnormal");
 
     write_file(dir + "/rdram_replay.bin", rdram, kRdramWindow);
     write_file(dir + "/dmem_replay.bin", dmem, 0x1000);
@@ -260,7 +260,7 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
 
     int verdict = 0;
 
-    // (a) DMA-sequence diff — op-level localization.
+    // (a) DMA-sequence diff â€” op-level localization.
     //
     // Known in-game-only artifact: aspmain_pre_task preloads the first
     // command chunk with the SAME DMA the ucode's L_1120 pump then
@@ -314,7 +314,7 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
     }
 
     if (!have_after) {
-        fprintf(stderr, "[aspmain_replay] no rdram_after.bin — skipping RDRAM diff\n");
+        fprintf(stderr, "[aspmain_replay] no rdram_after.bin â€” skipping RDRAM diff\n");
         free(rdram);
         return verdict;
     }
@@ -338,7 +338,7 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
         }
     }
 
-    // Whole-window diff — informational ONLY. The in-game snapshots race
+    // Whole-window diff â€” informational ONLY. The in-game snapshots race
     // against other host threads mutating RDRAM, so nonzero counts here
     // do NOT indicate a replay problem by themselves.
     size_t win_diff = 0;
@@ -374,16 +374,16 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
         fprintf(stderr,
                 "[aspmain_replay] no WR DMA ranges to diff (recomp_dma.txt %s); "
                 "whole-window differing bytes: %zu (contaminated by concurrent "
-                "writes — informational only)\n",
+                "writes â€” informational only)\n",
                 have_dma ? "had no WR entries" : "absent", win_diff);
     }
 
-    // ── Ground-truth pass: run the reference interpreter on the SAME
+    // â”€â”€ Ground-truth pass: run the reference interpreter on the SAME
     // capture and diff it against the recompiled replay. This is the
     // decisive comparison: the interpreter decodes the ucode binary
     // independently, so any divergence here is an RSPRecomp emission /
     // DMA-model defect; a full match exonerates the recompiled RSP for
-    // this task. Enabled by default; skip with PSR_ASPMAIN_NOREF=1. ──
+    // this task. Enabled by default; skip with PSR_ASPMAIN_NOREF=1. â”€â”€
     if (!getenv("PSR_ASPMAIN_NOREF")) {
         const char* imem_path = getenv("PSR_ASPMAIN_IMEM");
         std::string imem_fallback;
@@ -419,7 +419,7 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
         int ref_rc = psr_aspmain_refint_run(ref_rdram, &seed, imem_path,
                                             (dir + "/ref_dma.txt").c_str());
         if (ref_rc != 0) {
-            fprintf(stderr, "[aspmain_replay] REF run failed (rc=%d) — no "
+            fprintf(stderr, "[aspmain_replay] REF run failed (rc=%d) â€” no "
                             "ground-truth verdict\n", ref_rc);
             free(ref_rdram);
             free(rdram);
@@ -468,7 +468,7 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
 
         if (dma_ok && wr_diff2 == 0 && dmem_diff == 0) {
             fprintf(stderr,
-                    "[aspmain_replay] GROUND TRUTH MATCH — reference "
+                    "[aspmain_replay] GROUND TRUTH MATCH â€” reference "
                     "interpreter reproduces the recompiled run exactly "
                     "(%zu DMAs, %zu WR bytes, DMEM identical). The "
                     "recompiled RSP is correct for this task.\n",
