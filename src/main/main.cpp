@@ -717,15 +717,33 @@ extern "C" int recomp_audio_bridge_stats(
 }
 
 // Build (or rebuild on rate change) the bridge for the current sample_rate.
+//
+// N64 is a CLOSED-LOOP audio producer: the game sizes every buffer from
+// osAiGetLength feedback, so IT is the rate controller. The DRC's ratio
+// warping fought that loop and lost (measured 2026-07-02: correction pegged
+// at -1.4% = permanent detune, game-held fill ~21 ms, ~5 dry frames/sec in
+// rab_pull = the perpetual crackle). So: no warp (max_correction 0, exact
+// 32000->48000), and the fill equilibrium is set by under-reporting in
+// get_frames_remaining (PSR_AUDIO_LEAD_MS) — the game's own loop then holds
+// the ring deep enough that jittery ~10.7 ms callback pulls never run dry.
+// target_ms only gates priming once the controller is inert; keep it low so
+// audio starts promptly. Env overrides (PSR_AUDIO_MAX_CORR /
+// PSR_AUDIO_TARGET_MS) exist for by-ear A/B against the old behavior.
+static double psr_audio_env_ms(const char* name, double dflt) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return dflt;
+    return std::atof(v);
+}
+
 static void bridge_reinit_locked() {
     if (g_bridge_ready) { rab_free(&g_bridge); g_bridge_ready = 0; }
     rab_config rc; rab_config_defaults(&rc);
     rc.channels       = output_channels;
     rc.source_rate    = (double)sample_rate;
     rc.host_rate      = (double)output_sample_rate;
-    rc.target_ms      = 80.0;       // a touch deeper than NES: N64 chunks are larger
+    rc.target_ms      = psr_audio_env_ms("PSR_AUDIO_TARGET_MS", 24.0);
     rc.ring_ms        = 300.0;
-    rc.max_correction = 0.015;
+    rc.max_correction = psr_audio_env_ms("PSR_AUDIO_MAX_CORR", 0.0);
     g_bridge_ready = (rab_init(&g_bridge, &rc) == 0);
     g_bridge_src   = sample_rate;
 }
@@ -1085,12 +1103,19 @@ static size_t get_frames_remaining() {
     }
     // Bridge path: the game's AI_LEN pacing must read the BRIDGE fill (the real
     // buffer now), not the SDL queue (which the callback keeps near-empty).
+    // The lead we subtract here SETS the steady-state ring depth: the game's
+    // feedback loop drives the REPORTED remaining to its own small target, so
+    // real fill = game target + lead. 1 VI (16.7 ms) of lead left only ~21 ms
+    // of real fill — shallow enough that callback pulls ran the ring dry ~5
+    // frames/sec (the perpetual crackle). Default 50 ms holds the equilibrium
+    // near 60 ms; PSR_AUDIO_LEAD_MS tunes the latency/safety trade by ear.
     if (audio_bridge_enabled() && g_bridge_ready) {
         SDL_LockMutex(g_audio_mtx);
         double fill_ms = rab_fill_ms(&g_bridge);
         SDL_UnlockMutex(g_audio_mtx);
+        static const double lead_ms = psr_audio_env_ms("PSR_AUDIO_LEAD_MS", 50.0);
         double frames = fill_ms * 0.001 * (double)sample_rate;   // source frames buffered
-        double lag    = (double)(sample_rate / 60);              // hold ~1 VI of slack
+        double lag    = lead_ms * 0.001 * (double)sample_rate;
         double rem    = frames > lag ? frames - lag : 0.0;
         return (size_t)rem;
     }

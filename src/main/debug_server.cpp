@@ -339,16 +339,20 @@ extern "C" int recomp_audio_bridge_stats(
     uint64_t* underruns, uint64_t* overflow_drops,
     uint64_t* pushed, uint64_t* pulled);
 // Always-on AI-submission ring (ultramodern/src/audio.cpp) — guest addr +
-// byte count of every audio buffer the game submits for playback.
+// byte count + submitted payload of every audio buffer the game submits.
 struct AiSubmitEventMirror {
     uint64_t seq;
     uint64_t ms;
     uint32_t guest_addr;
     uint32_t byte_count;
+    uint32_t data_len;
+    uint32_t pad_;
+    uint8_t  data[2208];
 };
 extern "C" void ultramodern_ai_submit_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t ultramodern_ai_submit_event_size(void);
+extern "C" int64_t ultramodern_ai_submit_dump(const char* path);
 extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 extern "C" int psr_dump_current_dl(const char* path,
                                    uint32_t* out_addr,
@@ -1554,6 +1558,17 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"records":)" + std::to_string(n)
              + R"(,"record_size":)" + std::to_string(recomp_task_pcm_event_size())
              + "}";
+    }
+    if (cmd == "ai_submit_dump") {
+        // Dump the AI-submission ring (payloads included) as raw
+        // AiSubmitEvent records for the submitted-vs-synthesized diff.
+        std::string p = get_str(line, "path");
+        if (p.empty()) return R"({"ok":false,"error":"missing path"})";
+        int64_t n = ultramodern_ai_submit_dump(p.c_str());
+        if (n < 0) return R"({"ok":false,"error":"open failed"})";
+        return R"({"ok":true,"records":)" + std::to_string(n)
+             + R"(,"record_size":)"
+             + std::to_string(ultramodern_ai_submit_event_size()) + "}";
     }
     if (cmd == "audio_bridge_stats") {
         double fill = 0, corr = 0;
