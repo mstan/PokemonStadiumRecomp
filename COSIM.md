@@ -368,3 +368,14 @@ committed, measured checkpoint.
       framebuffer descriptor pointer (`static D_80068BB0` in `disasm/src/6BC0.c`)
       is `0` in recomp and `0x803DA240` in Ares. CPU GPR/HI/LO differences are
       present in the report but marked non-gating for this run.
+      The coordinator also has `--recomp-warmup-frames` for explicit
+      recomp-side VI checkpoint alignment probes after `cosim_start` and before
+      the comparison loop. This is diagnostic only: it records skipped recomp
+      checkpoints in the report and does not suppress any diff. Current probes
+      show that no single early frame offset aligns all sampled subsystems:
+      `--ares-warmup-frames 55 --recomp-warmup-frames 1` still fails at
+      `D_80068BB0`, while `--ares-warmup-frames 59 --recomp-warmup-frames 5`
+      moves the first gating mismatch to `paddr=0x00068CA8`
+      (`static D_80068CA8` in `disasm/src/stage_loader.c`, stage/display
+      cleanup counter: recomp `3`, Ares `1`). That keeps the next task on
+      checkpoint-phase/HLE timing alignment rather than raw IPL RAM seeding.

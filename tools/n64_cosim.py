@@ -1121,6 +1121,24 @@ def run_oracle(args: argparse.Namespace) -> int:
             print(f"FAIL oracle start; report={report_path}")
             return 1
 
+        report["recomp_warmup_frames"] = args.recomp_warmup_frames
+        report["recomp_warmup"] = []
+        for warmup in range(1, args.recomp_warmup_frames + 1):
+            step = recomp.cmd(
+                {"cmd": "cosim_step", "frames": 1, "timeout_ms": args.step_timeout_ms},
+                timeout_s=(args.step_timeout_ms / 1000.0) + 5.0,
+            )
+            rec = {"frame": warmup, "step": checkpoint_key(step)}
+            report["recomp_warmup"].append(rec)
+            if not step.get("ok"):
+                report["error"] = "recomp warmup failed"
+                report["first_bad_frame"] = warmup
+                report["step_recomp"] = step
+                report["dump_recomp"] = collect_dump(recomp, args.window)
+                write_report(report_path, report)
+                print(f"FAIL oracle recomp warmup frame={warmup}; report={report_path}")
+                return 1
+
         for frame in range(1, args.frames + 1):
             with ThreadPoolExecutor(max_workers=2) as pool:
                 fr = pool.submit(
@@ -1296,6 +1314,7 @@ def main(argv: list[str]) -> int:
     oracle.add_argument("--step-timeout-ms", type=int, default=15000)
     oracle.add_argument("--ares-step-timeout", type=float, default=90.0)
     oracle.add_argument("--ares-warmup-frames", type=int, default=13, help="step Ares this many VI frames before starting recomp")
+    oracle.add_argument("--recomp-warmup-frames", type=int, default=0, help="step recomp this many VI checkpoints after cosim_start before comparisons")
     oracle.add_argument("--startup-timeout", type=float, default=30.0)
     oracle.add_argument("--base-port", type=int, default=4890)
     oracle.add_argument("--exe", default=str(DEFAULT_EXE))
