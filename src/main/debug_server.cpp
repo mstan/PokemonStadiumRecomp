@@ -280,6 +280,22 @@ extern "C" void recomp_coverage_live(
     uint64_t* static_hits, uint64_t* lookup_misses, uint64_t* self_heals,
     uint64_t* self_heal_misses, uint64_t* dispatch_entry_rejects,
     uint64_t* interp_runs, uint64_t* jit_compiles, uint64_t* jit_failures);
+// Interp-fallback ring (librecomp/src/overlays.cpp). One row per unique address
+// the interpreter has carried this session, ranked by hit_count. `reason`:
+// 0=reject 1=device_pin 2=frag_validate 3=floor. Consume-the-ring, no arming.
+struct InterpFallbackRow {
+    uint32_t addr;
+    uint32_t reason;
+    uint32_t chronic;
+    uint32_t _pad;
+    uint64_t first_frame;
+    uint64_t last_frame;
+    uint64_t distinct_frames;
+    uint64_t hit_count;
+};
+extern "C" void recomp_interp_fallbacks_copy(
+    InterpFallbackRow* out, uint32_t cap,
+    uint32_t* out_count, uint64_t* out_total_unique);
 extern "C" uint64_t recomp_bubble_dispatch_count(void);
 extern "C" uint64_t recomp_host_return_break_count(void);
 extern "C" uint32_t recomp_host_return_break_last_target(void);
@@ -560,6 +576,53 @@ static std::string handle_command(const std::string& line) {
         return pkmnstadium::cosim::inject_json(field, value, addr);
     }
 #endif
+    if (cmd == "interp_stats") {
+        // How much interp are we leaning on right now? Consumes the always-on
+        // interp-fallback ring (no arming, no timing). `top` bounds the rows
+        // (default 16). Totals come from the tier counters so they are exact
+        // even when `top` truncates the per-address list.
+        uint32_t top = get_uint(line, "top", 16);
+        if (top > 256) top = 256;
+        uint64_t interp_runs = 0, self_heals = 0, self_heal_misses = 0;
+        uint64_t lookup_misses = 0, rejects = 0, jit_compiles = 0, static_hits = 0;
+        recomp_coverage_live(&static_hits, &lookup_misses, &self_heals,
+                             &self_heal_misses, &rejects, &interp_runs,
+                             &jit_compiles, nullptr);
+        std::vector<InterpFallbackRow> rows(top);
+        uint32_t n = 0;
+        uint64_t total_unique = 0;
+        recomp_interp_fallbacks_copy(top ? rows.data() : nullptr, top,
+                                     &n, &total_unique);
+        static const char* kReason[] = {"reject", "device_pin", "frag_validate", "floor"};
+        std::string out = "{\"ok\":true";
+        {
+            char hdr[512];
+            std::snprintf(hdr, sizeof(hdr),
+                ",\"interp_runs\":%llu,\"unique_addrs\":%llu,\"self_heals\":%llu,"
+                "\"lookup_misses\":%llu,\"dispatch_entry_rejects\":%llu,"
+                "\"jit_compiles\":%llu,\"static_hits\":%llu,\"top\":%u,\"rows\":[",
+                (unsigned long long)interp_runs, (unsigned long long)total_unique,
+                (unsigned long long)self_heals, (unsigned long long)lookup_misses,
+                (unsigned long long)rejects, (unsigned long long)jit_compiles,
+                (unsigned long long)static_hits, n);
+            out += hdr;
+        }
+        for (uint32_t i = 0; i < n; ++i) {
+            const InterpFallbackRow& r = rows[i];
+            const char* rn = (r.reason < 4) ? kReason[r.reason] : "unknown";
+            char row[320];
+            std::snprintf(row, sizeof(row),
+                "%s{\"addr\":\"0x%08X\",\"reason\":\"%s\",\"chronic\":%s,"
+                "\"first_frame\":%llu,\"last_frame\":%llu,\"distinct_frames\":%llu,"
+                "\"hits\":%llu}",
+                i ? "," : "", r.addr, rn, r.chronic ? "true" : "false",
+                (unsigned long long)r.first_frame, (unsigned long long)r.last_frame,
+                (unsigned long long)r.distinct_frames, (unsigned long long)r.hit_count);
+            out += row;
+        }
+        out += "]}";
+        return out;
+    }
     if (cmd == "status") {
         // The librecomp accessor for the external-message requeue
         // counter — declared at file scope below for proper extern "C"
