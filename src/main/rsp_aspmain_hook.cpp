@@ -235,6 +235,22 @@ extern "C" const char* psr_aspmain_capture_dir(void) {
 }
 extern "C" void psr_aspmain_capture_done(void) { g_cap_state = 1; }
 
+// Runtime (re-)arm from the debug server: lets a capture be triggered
+// mid-session (e.g. right before a battle cry — the loudest crackle
+// content) instead of only at launch via PSR_ASPMAIN_CAPTURE, which
+// would one-shot on the first non-silent title-music task. Re-arming
+// after a completed capture is allowed; the next non-silent task
+// overwrites the dump files in `dir`.
+extern "C" int psr_aspmain_capture_arm(const char* dir) {
+    if (!dir || !*dir) return 0;
+    strncpy(g_cap_dir, dir, sizeof(g_cap_dir) - 1);
+    g_cap_dir[sizeof(g_cap_dir) - 1] = '\0';
+    g_cap_state = 0;
+    return 1;
+}
+// -2 unqueried, -1 disabled, 0 armed, 1 done — for debug-server polling.
+extern "C" int psr_aspmain_capture_state(void) { return g_cap_state; }
+
 static void aspmain_capture_input(uint8_t* rdram, ::RspContext* ctx,
                                   uint32_t ucode_addr, uint32_t data_ptr,
                                   uint32_t data_size, uint32_t chunk) {
@@ -260,6 +276,17 @@ static void aspmain_capture_input(uint8_t* rdram, ::RspContext* ctx,
         fwrite(&ucode_addr, sizeof(uint32_t), 1, f);
         fclose(f);
     }
+    // Full RspContext, raw. ctx.bin above only carries the scalar GPRs +
+    // DMA registers; the wrapper's persistent context ALSO holds the
+    // vector unit (`RSP rsp`: v0..v31, accumulator, VCC/VCO/VCE, divide
+    // state) which persists across tasks exactly like on real hardware.
+    // The offline replayer (aspmain_replay.cpp) restores this blob
+    // byte-for-byte so the replayed task starts from EXACTLY the
+    // captured state. Only meaningful to the same (or ABI-identical)
+    // binary — the portable fields stay in ctx.bin/meta.txt.
+    snprintf(path, sizeof(path), "%s/ctx_full.bin", g_cap_dir);
+    if (FILE* f = fopen(path, "wb")) { fwrite(ctx, 1, sizeof(*ctx), f); fclose(f); }
+
     // Human-readable metadata.
     snprintf(path, sizeof(path), "%s/meta.txt", g_cap_dir);
     if (FILE* f = fopen(path, "w")) {

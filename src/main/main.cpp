@@ -146,6 +146,9 @@ static bool task_boot_matches(uint8_t* rdram, const OSTask* task,
 // otherwise psr_aspmain_capture_dir() returns null and this is a cheap passthrough.
 extern "C" const char* psr_aspmain_capture_dir(void);
 extern "C" void psr_aspmain_capture_done(void);
+// Offline replay entry (aspmain_replay.cpp) — dispatched from main() when
+// PSR_ASPMAIN_REPLAY=<capture_dir> is set.
+extern "C" int psr_aspmain_replay_main(const char* dir);
 // Recomp-side RSP DMA trace ring (librecomp). Mirrors the struct in
 // debug_server.cpp / librecomp/src/rsp.cpp. Gated by PSR_RSP_DMA_TRACE=1.
 struct PsrRspDmaTraceEvent {
@@ -1503,6 +1506,15 @@ int main(int argc, char** argv) {
         std::atexit([]() { psr_post_mortem_dump("atexit", nullptr); });
     }
 #endif
+
+    // Offline aspMain replay (audio-crackle differential harness):
+    // PSR_ASPMAIN_REPLAY=<capture_dir> re-runs a captured audio task
+    // through the recompiled aspMain, diffs RDRAM against the captured
+    // in-game result, and exits without booting the game. See
+    // aspmain_replay.cpp for the capture/replay contract.
+    if (const char* replay_dir = std::getenv("PSR_ASPMAIN_REPLAY")) {
+        return psr_aspmain_replay_main(replay_dir);
+    }
 
 #ifdef _WIN32
     // Force WASAPI for stable sample queueing.

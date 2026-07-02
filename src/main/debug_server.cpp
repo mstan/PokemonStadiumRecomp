@@ -307,6 +307,8 @@ extern "C" void recomp_audio_pcm_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_audio_pcm_event_size(void);
 extern "C" size_t recomp_audio_pcm_window(void);
+extern "C" int psr_aspmain_capture_arm(const char* dir);
+extern "C" int psr_aspmain_capture_state(void);
 extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 extern "C" int psr_dump_current_dl(const char* path,
                                    uint32_t* out_addr,
@@ -1469,6 +1471,29 @@ static std::string handle_command(const std::string& line) {
         }
         out += "]}";
         return out;
+    }
+    if (cmd == "aspmain_capture_arm") {
+        // Arm (or re-arm) the one-shot aspMain single-task replay capture
+        // at runtime — same machinery as PSR_ASPMAIN_CAPTURE=<dir>, but
+        // triggerable mid-session so the captured task is the content
+        // under investigation (e.g. a battle cry) rather than whatever
+        // non-silent task fires first after boot. The next aspMain task
+        // that changes >= PSR_ASPMAIN_MIN_DELTA (default 4096) RDRAM
+        // bytes dumps dmem/ctx/rdram-before/rdram-after/recomp_dma to
+        // `dir`. Poll completion via aspmain_capture_status.
+        std::string dir = get_str(line, "dir");
+        if (dir.empty()) {
+            return R"({"ok":false,"error":"missing dir"})";
+        }
+        int armed = psr_aspmain_capture_arm(dir.c_str());
+        return std::string(R"({"ok":)") + (armed ? "true" : "false")
+             + R"(,"state":)" + std::to_string(psr_aspmain_capture_state()) + "}";
+    }
+    if (cmd == "aspmain_capture_status") {
+        // -2 unqueried, -1 disabled, 0 armed (waiting for a non-silent
+        // task), 1 done (dump files written).
+        return R"({"ok":true,"state":)"
+             + std::to_string(psr_aspmain_capture_state()) + "}";
     }
     if (cmd == "audio_pcm_recent") {
         // Returns the last N synthesized-PCM events from the always-on
