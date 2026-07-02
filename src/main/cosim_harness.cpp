@@ -83,6 +83,10 @@ uint64_t modeled_cycle_now() {
     return ultramodern_cosim_get_time_ticks();
 }
 
+uint64_t modeled_cpu_retired_now() {
+    return ultramodern_cosim_get_cpu_retired();
+}
+
 bool is_rdram_vaddr(uint32_t addr) {
     return addr >= 0x80000000u && addr < 0x80800000u;
 }
@@ -223,13 +227,15 @@ std::string json_u32_array(const uint32_t* vals, size_t count) {
 }
 
 std::string checkpoint_json_fields(const recomp::cosim::Checkpoint& cp) {
-    char buf[512];
+    char buf[640];
     std::snprintf(buf, sizeof(buf),
-        "\"cp\":%llu,\"vis\":%llu,\"cycle\":%llu,"
+        "\"cp\":%llu,\"vis\":%llu,\"cycle\":%llu,\"cycle_count\":%llu,\"cpu_retired\":%llu,"
         "\"cpu_int\":%llu,\"cp0\":%llu,\"cp1\":%llu,\"rdram\":%llu,\"chain\":%llu",
         (unsigned long long)cp.cp,
         (unsigned long long)cp.vis,
         (unsigned long long)cp.cycle,
+        (unsigned long long)cp.cycle,
+        (unsigned long long)cp.cpu_retired,
         (unsigned long long)cp.sub.cpu_int,
         (unsigned long long)cp.sub.cp0,
         (unsigned long long)cp.sub.cp1,
@@ -319,6 +325,7 @@ bool snapshot(
 
     const uint64_t raw_vis = total_vis;
     const uint64_t cycle = modeled_cycle_now();
+    const uint64_t cpu_retired = modeled_cpu_retired_now();
     if (raw_vis_capture != nullptr) {
         *raw_vis_capture = raw_vis;
     }
@@ -361,6 +368,7 @@ bool snapshot(
         cp_index,
         vis,
         cycle,
+        cpu_retired,
         sub,
         chain,
     };
@@ -414,6 +422,7 @@ bool commit_captured_checkpoint(
         ++g_cp,
         vis,
         captured.cycle,
+        captured.cpu_retired,
         captured.sub,
         chain,
     };
@@ -754,11 +763,14 @@ std::string sub_json() {
     }
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-        "{\"ok\":true,\"mode\":\"t2_live_nonparked\",\"cp\":%llu,\"vis\":%llu,\"cycle\":%llu,"
+        "{\"ok\":true,\"mode\":\"t2_live_nonparked\",\"cp\":%llu,\"vis\":%llu,"
+        "\"cycle\":%llu,\"cycle_count\":%llu,\"cpu_retired\":%llu,"
         "\"cpu_int\":%llu,\"cp0\":%llu,\"cp1\":%llu,\"rdram\":%llu}",
         (unsigned long long)cp.cp,
         (unsigned long long)cp.vis,
         (unsigned long long)cp.cycle,
+        (unsigned long long)cp.cycle,
+        (unsigned long long)cp.cpu_retired,
         (unsigned long long)cp.sub.cpu_int,
         (unsigned long long)cp.sub.cp0,
         (unsigned long long)cp.sub.cp1,

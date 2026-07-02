@@ -154,7 +154,7 @@ class Instance:
 
 
 def checkpoint_key(row: dict[str, Any]) -> dict[str, Any]:
-    keys = ("cp", "vis", "cycle", "cpu_int", "cp0", "cp1", "rdram", "chain")
+    keys = ("cp", "vis", "cycle", "cycle_count", "cpu_retired", "cpu_int", "cp0", "cp1", "rdram", "chain")
     return {k: row.get(k) for k in keys}
 
 
@@ -262,12 +262,11 @@ def first_rdram_diff(
     }
 
 
-def write_report(path: Path, report: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+def audit_checkpoint_rdram(a: Instance, b: Instance) -> dict[str, Any]:
+    return first_rdram_diff(a, b, normalized=True, checkpoint=True)
 
 
-def run_gate(args: argparse.Namespace) -> int:
+def setup_pair(args: argparse.Namespace, gate_name: str) -> tuple[Instance, Instance, dict[str, Any], Path]:
     exe = host_path(args.exe)
     cwd = host_path(args.cwd)
     if not exe.exists():
@@ -280,33 +279,49 @@ def run_gate(args: argparse.Namespace) -> int:
 
     report: dict[str, Any] = {
         "ok": False,
-        "gate": "gate1_a_vs_a",
+        "gate": gate_name,
         "frames_requested": args.frames,
         "exe": str(exe),
         "cwd": str(cwd),
         "base_port": args.base_port,
         "rows": [],
     }
+    return a, b, report, report_path
+
+
+def start_and_reset_pair(a: Instance, b: Instance, args: argparse.Namespace) -> None:
+    a.start()
+    b.start()
+    a.connect(args.startup_timeout)
+    b.connect(args.startup_timeout)
+
+    for inst in (a, b):
+        pong = inst.cmd("ping")
+        if not pong.get("ok"):
+            raise CosimError(f"{inst.name} ping failed: {pong}")
+        reset = inst.cmd("cosim_reset")
+        if not reset.get("ok"):
+            raise CosimError(f"{inst.name} reset failed: {reset}")
+
+    start_a, start_b = paired_cmd(a, b, "cosim_start")
+    if not start_a.get("ok"):
+        raise CosimError(f"{a.name} start failed: {start_a}")
+    if not start_b.get("ok"):
+        raise CosimError(f"{b.name} start failed: {start_b}")
+
+
+def write_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def run_gate(args: argparse.Namespace) -> int:
+    a, b, report, report_path = setup_pair(args, "gate1_a_vs_a")
+    report["audit_every"] = args.audit_every
+    report["audits"] = []
 
     try:
-        a.start()
-        b.start()
-        a.connect(args.startup_timeout)
-        b.connect(args.startup_timeout)
-
-        for inst in (a, b):
-            pong = inst.cmd("ping")
-            if not pong.get("ok"):
-                raise CosimError(f"{inst.name} ping failed: {pong}")
-            reset = inst.cmd("cosim_reset")
-            if not reset.get("ok"):
-                raise CosimError(f"{inst.name} reset failed: {reset}")
-
-        start_a, start_b = paired_cmd(a, b, "cosim_start")
-        if not start_a.get("ok"):
-            raise CosimError(f"{a.name} start failed: {start_a}")
-        if not start_b.get("ok"):
-            raise CosimError(f"{b.name} start failed: {start_b}")
+        start_and_reset_pair(a, b, args)
 
         for frame in range(1, args.frames + 1):
             payload = {"cmd": "cosim_step", "frames": 1, "timeout_ms": args.step_timeout_ms}
@@ -351,9 +366,26 @@ def run_gate(args: argparse.Namespace) -> int:
                 print(f"FAIL mismatch frame={frame}; report={report_path}")
                 return 1
 
+            if args.audit_every > 0 and frame % args.audit_every == 0:
+                audit = audit_checkpoint_rdram(a, b)
+                audit["frame"] = frame
+                report["audits"].append(audit)
+                if audit.get("different"):
+                    report["error"] = "hash-vs-byte audit mismatch"
+                    report["first_bad_frame"] = frame
+                    report["step_A"] = row_a
+                    report["step_B"] = row_b
+                    report["first_normalized_rdram_diff"] = audit
+                    report["dump_A"] = collect_dump(a, args.window)
+                    report["dump_B"] = collect_dump(b, args.window)
+                    write_report(report_path, report)
+                    print(f"FAIL audit frame={frame}; report={report_path}")
+                    return 1
+
             if args.verbose:
                 print(
                     f"frame={frame} cp={row_a.get('cp')} vis={row_a.get('vis')} "
+                    f"cycle={row_a.get('cycle')} cpu_retired={row_a.get('cpu_retired')} "
                     f"chain={row_a.get('chain')}"
                 )
 
@@ -363,6 +395,126 @@ def run_gate(args: argparse.Namespace) -> int:
         write_report(report_path, report)
         print(f"PASS gate1_a_vs_a frames={args.frames}; report={report_path}")
         return 0
+    finally:
+        a.stop()
+        b.stop()
+
+
+def run_gate3(args: argparse.Namespace) -> int:
+    a, b, report, report_path = setup_pair(args, "gate3_injected_fault")
+    expected_paddr = (args.inject_addr & 0x1FFFFFFF) ^ 3
+    report["inject"] = {
+        "side": "A",
+        "field": "rdram_byte",
+        "addr": args.inject_addr,
+        "expected_paddr": expected_paddr,
+        "value": args.inject_value & 0xFF,
+        "after_frame": args.inject_frame,
+        "expected_first_bad_frame": args.inject_frame + 1,
+        "expected_subsystem": "rdram",
+    }
+
+    try:
+        start_and_reset_pair(a, b, args)
+
+        last_a: dict[str, Any] | None = None
+        last_b: dict[str, Any] | None = None
+        for frame in range(1, args.inject_frame + 1):
+            row_a, row_b = paired_cmd(
+                a,
+                b,
+                {"cmd": "cosim_step", "frames": 1, "timeout_ms": args.step_timeout_ms},
+                timeout_s=(args.step_timeout_ms / 1000.0) + 5.0,
+            )
+            last_a, last_b = row_a, row_b
+            report["rows"].append({"frame": frame, "A": checkpoint_key(row_a), "B": checkpoint_key(row_b)})
+            if not row_a.get("ok") or not row_b.get("ok") or checkpoint_key(row_a) != checkpoint_key(row_b):
+                report["error"] = "pre-injection determinism failed"
+                report["first_bad_frame"] = frame
+                report["step_A"] = row_a
+                report["step_B"] = row_b
+                report["first_rdram_diff"] = first_rdram_diff(a, b)
+                report["dump_A"] = collect_dump(a, args.window)
+                report["dump_B"] = collect_dump(b, args.window)
+                write_report(report_path, report)
+                print(f"FAIL gate3 pre-injection frame={frame}; report={report_path}")
+                return 1
+
+        inj = a.cmd(
+            {
+                "cmd": "cosim_inject",
+                "field": "rdram_byte",
+                "addr": args.inject_addr,
+                "value": args.inject_value & 0xFF,
+            },
+            timeout_s=10.0,
+        )
+        report["inject_result"] = inj
+        if not inj.get("ok"):
+            report["error"] = "inject command failed"
+            report["last_A"] = last_a
+            report["last_B"] = last_b
+            write_report(report_path, report)
+            print(f"FAIL gate3 inject; report={report_path}")
+            return 1
+
+        for frame in range(args.inject_frame + 1, args.inject_frame + args.post_frames + 1):
+            row_a, row_b = paired_cmd(
+                a,
+                b,
+                {"cmd": "cosim_step", "frames": 1, "timeout_ms": args.step_timeout_ms},
+                timeout_s=(args.step_timeout_ms / 1000.0) + 5.0,
+            )
+            rec = {"frame": frame, "A": checkpoint_key(row_a), "B": checkpoint_key(row_b)}
+            report["rows"].append(rec)
+            if not row_a.get("ok") or not row_b.get("ok"):
+                report["error"] = "post-injection step failed"
+                report["first_bad_frame"] = frame
+                report["step_A"] = row_a
+                report["step_B"] = row_b
+                write_report(report_path, report)
+                print(f"FAIL gate3 step frame={frame}; report={report_path}")
+                return 1
+
+            if checkpoint_key(row_a) != checkpoint_key(row_b):
+                subdiff = [
+                    key for key in ("cpu_int", "cp0", "cp1", "rdram")
+                    if row_a.get(key) != row_b.get(key)
+                ]
+                diff = first_rdram_diff(a, b, normalized=True, checkpoint=True)
+                report["ok"] = (
+                    frame == args.inject_frame + 1 and
+                    subdiff == ["rdram"] and
+                    diff.get("different") is True and
+                    diff.get("paddr") == expected_paddr
+                )
+                report["first_bad_frame"] = frame
+                report["subdiff"] = subdiff
+                report["step_A"] = row_a
+                report["step_B"] = row_b
+                report["first_normalized_rdram_diff"] = diff
+                report["dump_A"] = collect_dump(a, args.window)
+                report["dump_B"] = collect_dump(b, args.window)
+                write_report(report_path, report)
+                if report["ok"]:
+                    print(f"PASS gate3_injected_fault frame={frame}; report={report_path}")
+                    return 0
+                print(f"FAIL gate3 wrong mismatch frame={frame}; report={report_path}")
+                return 1
+
+            if args.verbose:
+                print(
+                    f"frame={frame} cp={row_a.get('cp')} vis={row_a.get('vis')} "
+                    f"chain={row_a.get('chain')}"
+                )
+
+        report["error"] = "injected fault was not detected"
+        report["last_A"] = checkpoint_key(row_a)
+        report["last_B"] = checkpoint_key(row_b)
+        report["first_normalized_rdram_diff"] = first_rdram_diff(a, b, normalized=True, checkpoint=True)
+        write_report(report_path, report)
+        print(f"FAIL gate3 blind coordinator; report={report_path}")
+        return 1
     finally:
         a.stop()
         b.stop()
@@ -382,11 +534,30 @@ def main(argv: list[str]) -> int:
     gate.add_argument("--log-dir", default=str(BUILD / "cosim_gate1_logs"))
     gate.add_argument("--report", default=str(BUILD / "cosim_gate1_report.json"))
     gate.add_argument("--window", type=int, default=16)
+    gate.add_argument("--audit-every", type=int, default=0, help="full checkpoint RDRAM byte audit interval; 0 disables")
     gate.add_argument("--verbose", action="store_true")
+
+    gate3 = sub.add_parser("gate3", help="run injected-fault coordinator sanity gate")
+    gate3.add_argument("--frames", type=int, default=6)
+    gate3.add_argument("--inject-frame", type=int, default=3)
+    gate3.add_argument("--post-frames", type=int, default=3)
+    gate3.add_argument("--inject-addr", type=lambda x: int(x, 0), default=0x807FF000)
+    gate3.add_argument("--inject-value", type=lambda x: int(x, 0), default=0x5A)
+    gate3.add_argument("--step-timeout-ms", type=int, default=5000)
+    gate3.add_argument("--startup-timeout", type=float, default=30.0)
+    gate3.add_argument("--base-port", type=int, default=4710)
+    gate3.add_argument("--exe", default=str(DEFAULT_EXE))
+    gate3.add_argument("--cwd", default=str(BUILD))
+    gate3.add_argument("--log-dir", default=str(BUILD / "cosim_gate3_logs"))
+    gate3.add_argument("--report", default=str(BUILD / "cosim_gate3_report.json"))
+    gate3.add_argument("--window", type=int, default=16)
+    gate3.add_argument("--verbose", action="store_true")
 
     args = ap.parse_args(argv)
     if args.cmd == "gate1":
         return run_gate(args)
+    if args.cmd == "gate3":
+        return run_gate3(args)
     raise AssertionError(args.cmd)
 
 

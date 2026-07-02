@@ -186,6 +186,7 @@ add_executable(PokemonStadiumRecomp
 if(N64_COSIM)
     target_sources(PokemonStadiumRecomp PRIVATE src/main/cosim_harness.cpp)
     target_compile_definitions(PokemonStadiumRecomp PRIVATE N64_COSIM=1)
+    target_compile_definitions(RecompiledFuncs PRIVATE N64_COSIM=1)
     if(TARGET librecomp)
         target_compile_definitions(librecomp PUBLIC N64_COSIM=1)
     endif()

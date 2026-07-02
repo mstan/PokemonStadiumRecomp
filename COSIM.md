@@ -302,7 +302,25 @@ committed, measured checkpoint.
       deterministic `osGetTime/osGetCount` read costs, and narrow normalization
       for host-only scheduler pointers plus inactive stack redzone bytes below
       each parked thread's saved SP.
-- [ ] **T5+** (retired-instruction modeled clock, gates 2-3, Ares oracle) -
-      next after Gate 1; see §9. Current modeled clock is sufficient for T4
-      determinism and RCP ordering, but not yet the full retired-instruction
-      counter described in §5.
+- [x] **T5 - modeled-cycle clock slice: PASS.**
+      `N64_COSIM` now reaches `RecompiledFuncs` so the already-generated
+      `TRACE_ENTRY/TRACE_RETURN` calls feed a cosim-only modeled CPU counter
+      without enabling the old diagnostic trace ring. The runtime exposes
+      `cycle_count` as the protocol alias for the chain clock and `cpu_retired`
+      as the current first-cut retired-instruction estimate; loop-backedge hooks
+      also charge CPU cycles for future regenerated code. The existing modeled
+      RCP task latencies remain the event-ordering clock. Throttled cosim build
+      passed after the one-time generated rebuild; 5-frame smoke and 60-frame
+      Gate 1 stayed deterministic, final 60-frame row:
+      `cp=61/vis=60/cycle_count=55922092/cpu_retired=4449368`.
+- [x] **T6 - gates 2-3: PASS.**
+      `tools/n64_cosim.py gate1 --frames 60 --audit-every 10` completed six
+      full 8 MB checkpoint-RDRAM byte audits with no differences. New
+      `gate3` injected `rdram_byte` at `0x807FF000` in side A after frame 3 and
+      detected the first mismatch at frame 4, localized to subsystem `rdram`
+      and expected byte lane `paddr=0x7FFFF3`.
+- [ ] **T7+** (Ares oracle, then divergence knockout) -
+      next after T6; see §9. The Ares submodule is present, but the external
+      Ares prebuild under `ares-bridge/build/ares` is not present yet, so T7
+      starts with the documented `ARES_CORES=n64;gb` prebuild before configuring
+      `WITH_ARES_BRIDGE=ON`.

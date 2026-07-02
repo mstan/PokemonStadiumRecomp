@@ -40,6 +40,11 @@ void pkmnstadium_gbtower_queue_audio(unsigned char *rdram,
  * load on the fast path; yields only when the host monitor has flagged
  * the current game thread as stuck >200ms. */
 void ultramodern_scheduler_tick(void);
+#ifdef N64_COSIM
+void ultramodern_cosim_trace_entry(void);
+void ultramodern_cosim_trace_return(void);
+void ultramodern_cosim_trace_loop(void);
+#endif
 
 #ifdef __cplusplus
 }
@@ -54,7 +59,10 @@ void ultramodern_scheduler_tick(void);
 #define PKMNSTADIUM_TRACE_HOOKS 0
 #endif
 
-#if PKMNSTADIUM_TRACE_HOOKS
+#ifdef N64_COSIM
+#define TRACE_ENTRY()  ultramodern_cosim_trace_entry();
+#define TRACE_RETURN() ultramodern_cosim_trace_return();
+#elif PKMNSTADIUM_TRACE_HOOKS
 #define TRACE_ENTRY()  pkmnstadium_trace_entry_ctx(__func__, ctx);
 #define TRACE_RETURN() pkmnstadium_trace_return_ctx(__func__, ctx);
 #else
@@ -66,6 +74,10 @@ void ultramodern_scheduler_tick(void);
 // preemption checkpoint — NO ring logging (a hot loop would flood the
 // trace ring); just the cheap scheduler tick so tight intra-function
 // spin loops become yield points.
+#ifdef N64_COSIM
+#define TRACE_LOOP()   ultramodern_cosim_trace_loop();
+#else
 #define TRACE_LOOP()   ultramodern_scheduler_tick();
+#endif
 
 #endif
