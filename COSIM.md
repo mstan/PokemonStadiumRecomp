@@ -425,3 +425,13 @@ committed, measured checkpoint.
       checkpoint 6; the strict parked path still observes after graphics
       completion, so the next timing work is a deterministic post-VI checkpoint
       that can preserve pending future RCP events across the frame boundary.
+      Clock-discipline follow-up: host scheduler polling no longer advances the
+      modeled guest-cycle clock while modeled RCP events are pending. That
+      charge made `osGetTime()` depend on host poll cadence rather than guest
+      execution or modeled device deadlines. Throttled build passed, and
+      `gate1 --frames 60 --audit-every 15 --base-port 4660` stayed green with
+      final row `cp=61/vis=60/cycle_count=55815056/cpu_retired=4449368`.
+      A direct post-VI frame-boundary hold prototype was tested and reverted:
+      it failed Gate 1 at frame 5, with side A timing out at `cp=5` while side
+      B reached `cp=6`, so that approach is not currently a deterministic
+      checkpoint surface.
