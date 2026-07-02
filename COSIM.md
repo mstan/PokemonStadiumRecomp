@@ -490,3 +490,8 @@ committed, measured checkpoint.
       offset as the solution; the live T8 target is cross-subsystem ordering
       and modeled event phase, with audio manager state leading/trailing display
       depending on the chosen oracle frame.
+      Delay-sweep guardrail: repeating the same range probe with
+      `PSR_COSIM_RSP_SP_DELAY=0` and with large graphics delays
+      (`PSR_COSIM_GFX_SP_DELAY=1000000`, `PSR_COSIM_GFX_DP_DELAY=2000000`)
+      did not move the split. The next viable fix is the deterministic
+      checkpoint/park epoch itself, not simple SP/DP delay constants.
