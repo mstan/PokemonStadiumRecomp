@@ -318,7 +318,9 @@ struct TaskPcmEventMirror {
     uint32_t len;
     uint32_t exit_reason;
     uint32_t n_dmas;
-    int16_t samples[368];
+    uint32_t n_slices;
+    uint32_t pad_;
+    int16_t samples[1104];
 };
 extern "C" void recomp_task_pcm_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
@@ -1560,7 +1562,7 @@ static std::string handle_command(const std::string& line) {
         for (size_t i = 0; i < got; i++) {
             const auto& e = buf[i];
             uint32_t n_samp = e.len / 2;
-            if (n_samp > 368) n_samp = 368;
+            if (n_samp > 1104) n_samp = 1104;
             int fl = n_samp >= 2 ? e.samples[0] : 0;
             int fr = n_samp >= 2 ? e.samples[1] : 0;
             int ll = n_samp >= 2 ? e.samples[n_samp - 2] : 0;
@@ -1568,11 +1570,12 @@ static std::string handle_command(const std::string& line) {
             char b[320];
             std::snprintf(b, sizeof(b),
                 "%s{\"seq\":%llu,\"ms\":%llu,\"dram\":%u,\"len\":%u,"
-                "\"exit\":%u,\"n_dmas\":%u,"
+                "\"exit\":%u,\"n_dmas\":%u,\"n_slices\":%u,"
                 "\"first_l\":%d,\"first_r\":%d,\"last_l\":%d,\"last_r\":%d}",
                 (i ? "," : ""),
                 (unsigned long long)e.seq, (unsigned long long)e.ms,
-                e.dram, e.len, e.exit_reason, e.n_dmas, fl, fr, ll, lr);
+                e.dram, e.len, e.exit_reason, e.n_dmas, e.n_slices,
+                fl, fr, ll, lr);
             out += b;
         }
         out += "]}";
