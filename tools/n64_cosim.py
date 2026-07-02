@@ -386,7 +386,15 @@ def compare_cpu_int(recomp_regs: dict[str, Any], ares_cpu: dict[str, Any]) -> di
     }
 
 
-def first_recomp_ares_rdram_diff(recomp: Instance, ares: AresInstance) -> dict[str, Any]:
+def first_recomp_ares_rdram_diff(
+    recomp: Instance,
+    ares: AresInstance,
+    start_offset: int = 0,
+    end_offset: int = RDRAM_SIZE,
+) -> dict[str, Any]:
+    if start_offset < 0 or end_offset > RDRAM_SIZE or start_offset >= end_offset:
+        raise CosimError(f"invalid RDRAM search range 0x{start_offset:X}..0x{end_offset:X}")
+
     def recomp_digest(start: int, count: int) -> dict[str, Any]:
         return recomp.cmd(
             {"cmd": "cosim_checkpoint_rdram_digest", "addr": start, "n": count},
@@ -412,14 +420,19 @@ def first_recomp_ares_rdram_diff(recomp: Instance, ares: AresInstance) -> dict[s
         return dr.get("fnv64") == da.get("fnv64")
 
     start = None
-    for off in range(0, RDRAM_SIZE, RDRAM_CHUNK):
-        n = min(RDRAM_CHUNK, RDRAM_SIZE - off)
+    for off in range(start_offset, end_offset, RDRAM_CHUNK):
+        n = min(RDRAM_CHUNK, end_offset - off)
         if not same_range(off, n):
             start = off
             count = n
             break
     if start is None:
-        return {"ok": True, "different": False}
+        return {
+            "ok": True,
+            "different": False,
+            "search_start": start_offset,
+            "search_end": end_offset,
+        }
 
     while count > 1:
         half = count // 2
@@ -447,6 +460,8 @@ def first_recomp_ares_rdram_diff(recomp: Instance, ares: AresInstance) -> dict[s
     return {
         "ok": True,
         "different": True,
+        "search_start": start_offset,
+        "search_end": end_offset,
         "paddr": start,
         "vaddr": 0x80000000 + start,
         "peek_start": peek_start,
@@ -1154,6 +1169,16 @@ def run_oracle(args: argparse.Namespace) -> int:
                 report["step_ares"] = ares_step
                 report["cpu_diff"] = cpu_diff
                 report["rdram_diff"] = rdram_diff
+                if (
+                    args.rdram_followup_start > 0
+                    and rdram_diff.get("different")
+                    and parse_int(rdram_diff.get("paddr", RDRAM_SIZE)) < args.rdram_followup_start
+                ):
+                    report["rdram_diff_after_followup_start"] = first_recomp_ares_rdram_diff(
+                        recomp,
+                        ares,
+                        start_offset=args.rdram_followup_start,
+                    )
                 report["dump_recomp"] = collect_dump(recomp, args.window)
                 report["dump_ares"] = collect_ares_dump(ares)
                 write_report(report_path, report)
@@ -1252,6 +1277,12 @@ def main(argv: list[str]) -> int:
     oracle.add_argument("--report", default=str(BUILD / "cosim_oracle_report.json"))
     oracle.add_argument("--window", type=int, default=16)
     oracle.add_argument("--rdram-every", type=int, default=1, help="compare full RDRAM every N frames; 0 disables")
+    oracle.add_argument(
+        "--rdram-followup-start",
+        type=lambda x: int(x, 0),
+        default=0x100000,
+        help="after an earlier RDRAM mismatch, also report the first mismatch at/after this paddr; 0 disables",
+    )
     oracle.add_argument("--verbose", action="store_true")
 
     args = ap.parse_args(argv)

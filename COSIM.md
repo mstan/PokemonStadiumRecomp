@@ -340,7 +340,10 @@ committed, measured checkpoint.
       recomp checkpoint is `cp=2/vis=1/cycle_count=1025054`, Ares PC is
       `0x80000078`, and the first RDRAM mismatch is `paddr=0x00000001`
       (`recomp` low RDRAM zeros vs Ares IPL-loaded image bytes
-      `00 b0 0b 3c ...`). A direct attempt to seed the 0x100000-byte IPL image
+      `00 b0 0b 3c ...`). The oracle report also does a secondary diagnostic
+      scan after the IPL span without suppressing the primary failure; current
+      follow-up mismatch is `paddr=0x00100000`, again recomp zero vs Ares
+      initialized RAM image data. A direct attempt to seed the 0x100000-byte IPL image
       into live recomp RDRAM was reverted because it corrupted boot-time
       libultra/runtime state and made Gate 1 time out before `cp=1`; this
       mismatch must be handled at the oracle surface or by a faithful runtime
