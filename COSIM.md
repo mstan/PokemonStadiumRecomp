@@ -449,3 +449,9 @@ committed, measured checkpoint.
       recomp `6` vs Ares `11`. There are no pending modeled RCP events at either
       checkpoint, so the live gap is an early audio-task phase/modeling issue,
       not hidden queued work at the checkpoint.
+      Reverted timing prototype: deferring future modeled RCP jumps out of
+      per-thread `osRecvMesg` and advancing the next modeled VI/RCP only from
+      the harness at global quiescence built cleanly but failed Gate 1 at frame
+      2 (`cp=3` on both sides with identical cycle count but divergent RDRAM).
+      That proves the future-event jump cannot simply be moved to the existing
+      polled quiescence path without a stronger deterministic park/epoch model.
