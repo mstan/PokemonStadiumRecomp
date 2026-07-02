@@ -1225,6 +1225,7 @@ def run_oracle(args: argparse.Namespace) -> int:
                 "frame": frame,
                 "recomp": checkpoint_key(recomp_step),
                 "recomp_rcp": recomp.cmd("cosim_rcp", timeout_s=10.0),
+                "recomp_status": recomp.cmd("status", timeout_s=10.0),
                 "ares_step": ares_step,
             }
             report["rows"].append(rec)
@@ -1437,6 +1438,7 @@ def run_oracle_align(args: argparse.Namespace) -> int:
                 "ares_pc": cpu.get("pc"),
                 "cpu_ok": cpu.get("ok"),
                 "recomp_rcp": recomp.cmd("cosim_rcp", timeout_s=10.0),
+                "recomp_status": recomp.cmd("status", timeout_s=10.0),
                 "rdram_diff": summarize_recomp_ares_rdram_diff(diff, include_bytes=args.include_peek_bytes),
             }
             if watch_offsets:

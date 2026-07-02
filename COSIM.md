@@ -435,3 +435,17 @@ committed, measured checkpoint.
       it failed Gate 1 at frame 5, with side A timing out at `cp=5` while side
       B reached `cp=6`, so that approach is not currently a deterministic
       checkpoint surface.
+      Observability follow-up: `cosim_rcp` now breaks modeled SP completion
+      counters down by task type (`gfx/audio/other`), and oracle rows include
+      the regular `status` payload alongside the RCP counters. Throttled build
+      passed and `gate1 --frames 60 --audit-every 15 --base-port 4980` stayed
+      green with the same final row. Re-running the Ares alignment probes keeps
+      the first matched display/stage mismatch at `audFrameCt`, but now shows
+      the runtime-side task phase directly: at `oracle-align --recomp-checkpoint 2`
+      best Ares frame 60 has recomp `sp_task.delivered.audio=1` and
+      `submit_audio=1` while `audFrameCt` is recomp `2` vs Ares `6`; at
+      `--recomp-checkpoint 6` best Ares frame 65 has
+      `sp_task.delivered.audio=5` and `submit_audio=5` while `audFrameCt` is
+      recomp `6` vs Ares `11`. There are no pending modeled RCP events at either
+      checkpoint, so the live gap is an early audio-task phase/modeling issue,
+      not hidden queued work at the checkpoint.

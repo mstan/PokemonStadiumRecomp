@@ -487,7 +487,7 @@ static std::string handle_command(const std::string& line) {
             (s.has_next_due && s.next_due_cycle > s.now_cycle)
                 ? (s.next_due_cycle - s.now_cycle)
                 : 0;
-        char buf[1200];
+        char buf[1600];
         std::snprintf(
             buf,
             sizeof(buf),
@@ -496,7 +496,10 @@ static std::string handle_command(const std::string& line) {
             "\"vi_advancing\":%u,"
             "\"pending\":{\"total\":%llu,\"sp\":%llu,\"dp\":%llu,\"vi\":%llu,\"ai\":%llu},"
             "\"scheduled\":{\"sp\":%llu,\"dp\":%llu,\"vi\":%llu,\"ai\":%llu},"
-            "\"delivered\":{\"sp\":%llu,\"dp\":%llu,\"vi\":%llu,\"ai\":%llu}}",
+            "\"delivered\":{\"sp\":%llu,\"dp\":%llu,\"vi\":%llu,\"ai\":%llu},"
+            "\"sp_task\":{\"pending\":{\"gfx\":%llu,\"audio\":%llu,\"other\":%llu},"
+            "\"scheduled\":{\"gfx\":%llu,\"audio\":%llu,\"other\":%llu},"
+            "\"delivered\":{\"gfx\":%llu,\"audio\":%llu,\"other\":%llu}}}",
             (unsigned long long)s.now_cycle,
             s.has_next_due ? "true" : "false",
             (unsigned long long)s.next_due_cycle,
@@ -515,7 +518,16 @@ static std::string handle_command(const std::string& line) {
             (unsigned long long)s.delivered_sp,
             (unsigned long long)s.delivered_dp,
             (unsigned long long)s.delivered_vi,
-            (unsigned long long)s.delivered_ai);
+            (unsigned long long)s.delivered_ai,
+            (unsigned long long)s.pending_sp_gfx,
+            (unsigned long long)s.pending_sp_audio,
+            (unsigned long long)s.pending_sp_other,
+            (unsigned long long)s.scheduled_sp_gfx,
+            (unsigned long long)s.scheduled_sp_audio,
+            (unsigned long long)s.scheduled_sp_other,
+            (unsigned long long)s.delivered_sp_gfx,
+            (unsigned long long)s.delivered_sp_audio,
+            (unsigned long long)s.delivered_sp_other);
         return buf;
     }
     if (cmd == "cosim_threads") {
