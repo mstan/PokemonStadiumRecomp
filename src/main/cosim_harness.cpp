@@ -512,6 +512,24 @@ bool scheduler_epoch_is_stable(uint64_t epoch) {
     return (epoch & 1u) == 0;
 }
 
+bool checkpoint_quiescent(
+    const ultramodern_cosim_quiescence_state& q,
+    bool require_vi_waiter)
+{
+    if (q.quiescent) {
+        return true;
+    }
+    if (require_vi_waiter) {
+        return false;
+    }
+    return q.vi_queue != 0 &&
+           q.running_head == 0 &&
+           q.known_threads != 0 &&
+           q.runnable_or_unknown == 0 &&
+           q.external_pending == 0 &&
+           q.scheduler_active == 0;
+}
+
 uint32_t request_deterministic_vi(uint32_t count) {
     const uint32_t accepted = ultramodern_cosim_request_vi(count);
     if (accepted != 0) {
@@ -535,8 +553,11 @@ void claim_polled_vi_origin_if_needed() {
     }
 }
 
-bool publish_polled_quiescence_checkpoint(const ultramodern_cosim_quiescence_state& q) {
-    if (!q.quiescent) {
+bool publish_polled_quiescence_checkpoint(
+    const ultramodern_cosim_quiescence_state& q,
+    bool require_vi_waiter = true)
+{
+    if (!checkpoint_quiescent(q, require_vi_waiter)) {
         return false;
     }
     {
@@ -558,7 +579,7 @@ bool publish_polled_quiescence_checkpoint(const ultramodern_cosim_quiescence_sta
         if (ultramodern_cosim_scheduler_epoch() != scheduler_epoch_before) {
             continue;
         }
-        if (!before.quiescent) {
+        if (!checkpoint_quiescent(before, require_vi_waiter)) {
             return false;
         }
         {
@@ -591,7 +612,7 @@ bool publish_polled_quiescence_checkpoint(const ultramodern_cosim_quiescence_sta
         if (ultramodern_cosim_scheduler_epoch() != scheduler_epoch_before) {
             continue;
         }
-        if (!after.quiescent ||
+        if (!checkpoint_quiescent(after, require_vi_waiter) ||
             !same_quiescence_state(before, after) ||
             total_vis != raw_vis) {
             continue;
@@ -953,8 +974,8 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
         if (request_vi) {
             std::unique_lock<std::mutex> lock(g_step_mu);
             if (!g_step_cv.wait_until(lock, deadline, []() {
-                    return !g_parked;
-                })) {
+                return !g_parked;
+            })) {
                 lock.unlock();
                 return timeout_json("release_unpark", start, target);
             }
@@ -982,7 +1003,7 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
             if (total_vis > before_vis) {
                 ultramodern_cosim_quiescence_state q{};
                 ultramodern_cosim_get_quiescence(&q);
-                if (publish_polled_quiescence_checkpoint(q) &&
+                if (publish_polled_quiescence_checkpoint(q, false) &&
                     g_published_cp.load(std::memory_order_acquire) > before) {
                     break;
                 }

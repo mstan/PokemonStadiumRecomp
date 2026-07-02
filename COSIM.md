@@ -409,3 +409,19 @@ committed, measured checkpoint.
       passed, and default-delay Gate 1 stayed green:
       `gate1 --frames 60 --audit-every 15 --base-port 5010` produced
       `cp=61/vis=60/cycle_count=55922092/cpu_retired=4449368`.
+      Follow-up: modeled external waits now choose between the next due VI and
+      the next due SP/DP event, so a blocking `osRecvMesg` path cannot jump
+      past an earlier requested VI deadline. Quiescence now treats only real
+      queued external messages and due modeled events as checkpoint blockers;
+      future modeled events are tracked in `cosim_rcp` but do not by
+      themselves make `external_pending` true. The stable harness poll can also
+      accept a post-VI no-runnable/no-due frame boundary without requiring every
+      blocked thread to already be waiting for the next VI. Throttled build
+      passed, and default Gate 1 stayed green:
+      `gate1 --frames 60 --audit-every 15 --base-port 4540` produced the same
+      final row, `cp=61/vis=60/cycle_count=55922092/cpu_retired=4449368`.
+      Calibration note: sweeping `PSR_COSIM_GFX_DP_DELAY` through large values
+      changes modeled cycle counts but not the watched stage/audio state at
+      checkpoint 6; the strict parked path still observes after graphics
+      completion, so the next timing work is a deterministic post-VI checkpoint
+      that can preserve pending future RCP events across the frame boundary.
