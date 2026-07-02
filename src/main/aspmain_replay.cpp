@@ -47,6 +47,13 @@
 extern RspUcodeFunc aspMain;
 extern uint8_t dmem[];
 
+// Reference RSP interpreter (aspmain_refint.cpp) — the ground-truth
+// engine the recompiled run is diffed against.
+extern "C" int psr_aspmain_refint_run(uint8_t* rdram,
+                                      const RspContext* seed,
+                                      const char* imem_path,
+                                      const char* dma_txt_path);
+
 // Mirror of librecomp's RSP DMA trace event (rsp.cpp / debug_server.cpp /
 // main.cpp all share this shape by convention; there is no exported
 // header for it).
@@ -369,6 +376,133 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
                 "whole-window differing bytes: %zu (contaminated by concurrent "
                 "writes — informational only)\n",
                 have_dma ? "had no WR entries" : "absent", win_diff);
+    }
+
+    // ── Ground-truth pass: run the reference interpreter on the SAME
+    // capture and diff it against the recompiled replay. This is the
+    // decisive comparison: the interpreter decodes the ucode binary
+    // independently, so any divergence here is an RSPRecomp emission /
+    // DMA-model defect; a full match exonerates the recompiled RSP for
+    // this task. Enabled by default; skip with PSR_ASPMAIN_NOREF=1. ──
+    if (!getenv("PSR_ASPMAIN_NOREF")) {
+        const char* imem_path = getenv("PSR_ASPMAIN_IMEM");
+        std::string imem_fallback;
+        if (!imem_path) {
+            FILE* probe = fopen("aspmain_combined.bin", "rb");
+            if (probe) { fclose(probe); imem_fallback = "aspmain_combined.bin"; }
+            else imem_fallback = "../aspmain_combined.bin";
+            imem_path = imem_fallback.c_str();
+        }
+
+        uint8_t* ref_rdram = static_cast<uint8_t*>(calloc(kMemSize, 1));
+        if (!ref_rdram) {
+            fprintf(stderr, "[aspmain_replay] ref RDRAM alloc failed\n");
+            free(rdram);
+            return 2;
+        }
+        memcpy(ref_rdram, rdram_before.data(), kRdramWindow);
+        // Save the recomp replay's post-DMEM, then restore the captured
+        // input DMEM for the reference run (the global array is shared).
+        std::vector<uint8_t> dmem_recomp(dmem, dmem + 0x1000);
+        memcpy(dmem, dmem_bytes.data(), 0x1000);
+
+        RspContext seed{};
+        if (g_cap.valid_full && g_cap.full_bytes.size() == sizeof(RspContext)) {
+            memcpy(&seed, g_cap.full_bytes.data(), sizeof(RspContext));
+        } else {
+            uint32_t* gpr = &seed.r1;
+            for (int i = 1; i <= 31; i++) gpr[i - 1] = g_cap.r[i];
+            seed.dma_mem_address = g_cap.dma_mem;
+            seed.dma_dram_address = g_cap.dma_dram;
+        }
+
+        int ref_rc = psr_aspmain_refint_run(ref_rdram, &seed, imem_path,
+                                            (dir + "/ref_dma.txt").c_str());
+        if (ref_rc != 0) {
+            fprintf(stderr, "[aspmain_replay] REF run failed (rc=%d) — no "
+                            "ground-truth verdict\n", ref_rc);
+            free(ref_rdram);
+            free(rdram);
+            return verdict ? verdict : 2;
+        }
+        write_file(dir + "/rdram_ref.bin", ref_rdram, kRdramWindow);
+        write_file(dir + "/dmem_ref.bin", dmem, 0x1000);
+
+        // (1) DMA sequence: reference vs recompiled replay.
+        std::vector<DmaRec> ref_dma;
+        parse_dma_txt(dir + "/ref_dma.txt", ref_dma);
+        size_t n = ref_dma.size() < rep_dma.size() ? ref_dma.size() : rep_dma.size();
+        size_t dma_bad = (size_t)-1;
+        for (size_t i = 0; i < n; i++) {
+            const DmaRec& a = ref_dma[i];
+            const DmaRec& b = rep_dma[i];
+            if (a.write != b.write || a.dram != b.dram ||
+                a.dmem != b.dmem || a.len != b.len) { dma_bad = i; break; }
+        }
+        bool dma_ok = dma_bad == (size_t)-1 && ref_dma.size() == rep_dma.size();
+
+        // (2) RDRAM over the reference's WR ranges (word-aligned).
+        size_t wr_diff2 = 0, wr_bytes2 = 0, first2 = (size_t)-1;
+        for (const DmaRec& d : ref_dma) {
+            if (!d.write) continue;
+            size_t start = d.dram & ~3u;
+            size_t end = ((size_t)d.dram + d.len + 3) & ~3u;
+            if (end > kRdramWindow) end = kRdramWindow;
+            for (size_t i = start; i < end; i++) {
+                wr_bytes2++;
+                if (rdram[i] != ref_rdram[i]) {
+                    wr_diff2++;
+                    if (first2 == (size_t)-1) first2 = i;
+                }
+            }
+        }
+
+        // (3) Post-run DMEM.
+        size_t dmem_diff = 0, dmem_first = (size_t)-1;
+        for (size_t i = 0; i < 0x1000; i++) {
+            if (dmem[i] != dmem_recomp[i]) {
+                dmem_diff++;
+                if (dmem_first == (size_t)-1) dmem_first = i;
+            }
+        }
+
+        if (dma_ok && wr_diff2 == 0 && dmem_diff == 0) {
+            fprintf(stderr,
+                    "[aspmain_replay] GROUND TRUTH MATCH — reference "
+                    "interpreter reproduces the recompiled run exactly "
+                    "(%zu DMAs, %zu WR bytes, DMEM identical). The "
+                    "recompiled RSP is correct for this task.\n",
+                    ref_dma.size(), wr_bytes2);
+        } else {
+            verdict = 1;
+            fprintf(stderr, "[aspmain_replay] GROUND TRUTH DIVERGENCE:\n");
+            if (!dma_ok) {
+                if (dma_bad != (size_t)-1) {
+                    const DmaRec& a = ref_dma[dma_bad];
+                    const DmaRec& b = rep_dma[dma_bad];
+                    fprintf(stderr,
+                            "  DMA[%zu] ref: %s dram=0x%06X dmem=0x%03X len=0x%X\n"
+                            "  DMA[%zu] rec: %s dram=0x%06X dmem=0x%03X len=0x%X\n",
+                            dma_bad, a.write ? "WR" : "RD", a.dram, a.dmem, a.len,
+                            dma_bad, b.write ? "WR" : "RD", b.dram, b.dmem, b.len);
+                } else {
+                    fprintf(stderr, "  DMA count: ref=%zu rec=%zu\n",
+                            ref_dma.size(), rep_dma.size());
+                }
+            }
+            if (wr_diff2) {
+                fprintf(stderr,
+                        "  WR-range bytes: %zu/%zu differ, first at host "
+                        "0x%zX (be addr 0x%zX)\n",
+                        wr_diff2, wr_bytes2, first2, first2 ^ 3);
+            }
+            if (dmem_diff) {
+                fprintf(stderr,
+                        "  post-DMEM bytes: %zu differ, first at host 0x%zX\n",
+                        dmem_diff, dmem_first);
+            }
+        }
+        free(ref_rdram);
     }
 
     free(rdram);

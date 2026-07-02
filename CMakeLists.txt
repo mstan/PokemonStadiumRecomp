@@ -159,6 +159,7 @@ add_executable(PokemonStadiumRecomp
     src/main/register_overlays.cpp
     src/main/rsp_aspmain_hook.cpp
     src/main/aspmain_replay.cpp
+    src/main/aspmain_refint.cpp
     src/main/transfer_pak.cpp
     src/main/gb_audio.cpp
     src/main/input_bindings.cpp

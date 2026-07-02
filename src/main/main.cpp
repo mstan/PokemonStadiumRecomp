@@ -173,26 +173,32 @@ extern "C" void recomp_rsp_dma_recent_copy(
     uint32_t* out_count, uint64_t* out_write_index);
 
 // ── Always-on per-TASK output-PCM ring ──────────────────────────────
-// The audio pipeline's atomic unit is one aspMain task producing ~184
-// stereo frames via its final WR DMA into one of the game's rotating
-// output buffers; the AI chunks the host sees are 2-3 of those outputs
-// concatenated. Crackle analysis (2026-07-02) showed task outputs are
-// internally smooth but discontinuous ACROSS task boundaries — so the
-// unit of evidence is the task output itself, and every seam matters.
-// This ring records the final WR DMA's samples for EVERY audio task so
-// seams can be measured continuously and queried backward (never
-// arm-then-hope). Requires PSR_RSP_DMA_TRACE=1 (the final-WR location
-// comes from the DMA trace); without it entries simply don't record.
+// One aspMain task synthesizes one ENTIRE AI buffer (552 stereo frames
+// at 32 kHz, or 368 for the short cadence) as three (or two) sequential
+// 0x2E0-byte aSaveBuffer WRs — slice0/1/2 at base/+0x2E0/+0x5C0 of one
+// of three rotating buffers. Submissions are 1:1 with tasks (measured
+// 2026-07-02: 4915 tasks vs 4923 submissions; per-address WR counts
+// match the 2208/1472-byte submission mix). This ring records ALL of a
+// task's output slices, in address (= playback) order, so both interior
+// slice-boundary jumps and true inter-task seams are measurable offline.
+// Requires PSR_RSP_DMA_TRACE=1 (slice locations come from the DMA
+// trace); without it entries simply don't record.
 namespace {
+constexpr uint32_t TASKPCM_SLICE_BYTES = 0x2E0;
+constexpr uint32_t TASKPCM_MAX_SLICES = 3;
+constexpr uint32_t TASKPCM_MAX_SAMPLES =
+    TASKPCM_MAX_SLICES * TASKPCM_SLICE_BYTES / 2;   // 1104
 struct TaskPcmEvent {
     uint64_t seq;        // task counter (this ring's own)
     uint64_t ms;         // wall clock since process start
     uint64_t dma_seq0;   // first DMA-trace seq of this task (adjacency check)
-    uint32_t dram;       // final WR dest (identifies the rotating buffer)
-    uint32_t len;        // bytes (0x2E0 = 184 stereo frames in attract)
+    uint32_t dram;       // lowest slice address (the AI buffer base the task filled)
+    uint32_t len;        // total output bytes across slices
     uint32_t exit_reason;
     uint32_t n_dmas;     // DMAs this task issued (task-shape fingerprint)
-    int16_t samples[368];  // decoded BE->host int16, L/R interleaved
+    uint32_t n_slices;   // 0x2E0-byte output saves seen (2 or 3)
+    uint32_t pad_;
+    int16_t samples[TASKPCM_MAX_SAMPLES];  // BE->host int16, L/R interleaved
 };
 constexpr size_t TASKPCM_RING_CAP = 16384;   // ~90 s of audio at 180 t/s
 TaskPcmEvent g_taskpcm_ring[TASKPCM_RING_CAP];
@@ -212,14 +218,51 @@ int32_t taskpcm_record(uint8_t* rdram, uint64_t dma_idx_before,
     uint32_t got = 0; uint64_t widx = 0;
     recomp_rsp_dma_recent_copy(dbuf.data(), (uint32_t)dbuf.size(), &got, &widx);
     if (got == 0) return -1;
-    const PsrRspDmaTraceEvent* last_wr = nullptr;
+    // Collect this task's output-slice WRs (0x2E0-byte saves), keeping
+    // the LAST write to each distinct address in case a slice is saved
+    // twice, then order them by address (= playback order).
+    const PsrRspDmaTraceEvent* slices[TASKPCM_MAX_SLICES] = {};
+    uint32_t n_slices = 0;
     uint32_t n_dmas = 0;
     for (uint32_t i = 0; i < got; i++) {
-        if (dbuf[i].seq < dma_idx_before) continue;
+        const PsrRspDmaTraceEvent& ev = dbuf[i];
+        if (ev.seq < dma_idx_before) continue;
         n_dmas++;
-        if (dbuf[i].write) last_wr = &dbuf[i];
+        if (!ev.write || ev.byte_count != TASKPCM_SLICE_BYTES) continue;
+        uint32_t addr = ev.dram_addr & 0xFFFFFFu;
+        uint32_t k = 0;
+        for (; k < n_slices; k++) {
+            if ((slices[k]->dram_addr & 0xFFFFFFu) == addr) { slices[k] = &ev; break; }
+        }
+        if (k == n_slices) {
+            if (n_slices < TASKPCM_MAX_SLICES) {
+                slices[n_slices++] = &ev;
+            } else {
+                // More distinct 0x2E0 WRs than expected: keep the newest
+                // set by evicting the lowest-address one (should not
+                // happen for the known task shapes; shows up as a weird
+                // n_slices/dram in analysis if it ever does).
+                uint32_t lowest = 0;
+                for (uint32_t m = 1; m < TASKPCM_MAX_SLICES; m++) {
+                    if ((slices[m]->dram_addr & 0xFFFFFFu) <
+                        (slices[lowest]->dram_addr & 0xFFFFFFu)) lowest = m;
+                }
+                slices[lowest] = &ev;
+            }
+        }
     }
-    if (last_wr == nullptr) return -1;
+    if (n_slices == 0) return -1;
+    // Sort ascending by address.
+    for (uint32_t a = 0; a + 1 < n_slices; a++) {
+        for (uint32_t b = a + 1; b < n_slices; b++) {
+            if ((slices[b]->dram_addr & 0xFFFFFFu) <
+                (slices[a]->dram_addr & 0xFFFFFFu)) {
+                const PsrRspDmaTraceEvent* t = slices[a];
+                slices[a] = slices[b];
+                slices[b] = t;
+            }
+        }
+    }
 
     std::lock_guard<std::mutex> lk(g_taskpcm_mtx);
     const uint64_t s = g_taskpcm_seq.load(std::memory_order_relaxed);
@@ -228,25 +271,42 @@ int32_t taskpcm_record(uint8_t* rdram, uint64_t dma_idx_before,
     e.ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - g_taskpcm_t0).count();
     e.dma_seq0 = dma_idx_before;
-    e.dram = last_wr->dram_addr & 0xFFFFFFu;
-    e.len = last_wr->byte_count;
+    e.dram = slices[0]->dram_addr & 0xFFFFFFu;
+    e.len = n_slices * TASKPCM_SLICE_BYTES;
     e.exit_reason = (uint32_t)exit_reason;
     e.n_dmas = n_dmas;
-    const uint32_t n_samp = std::min<uint32_t>(e.len / 2, 368);
-    for (uint32_t i = 0; i < n_samp; i++) {
-        // rdram is host XOR-3 layout; decode big-endian int16.
-        uint32_t off = e.dram + 2 * i;
-        uint8_t hi = rdram[(off) ^ 3];
-        uint8_t lo = rdram[(off + 1) ^ 3];
-        e.samples[i] = (int16_t)((hi << 8) | lo);
+    e.n_slices = n_slices;
+    e.pad_ = 0;
+    uint32_t n_samp = 0;
+    for (uint32_t k = 0; k < n_slices; k++) {
+        uint32_t base = slices[k]->dram_addr & 0xFFFFFFu;
+        for (uint32_t i = 0; i < TASKPCM_SLICE_BYTES / 2; i++) {
+            // rdram is host XOR-3 layout; decode big-endian int16.
+            uint32_t off = base + 2 * i;
+            uint8_t hi = rdram[(off) ^ 3];
+            uint8_t lo = rdram[(off + 1) ^ 3];
+            e.samples[n_samp++] = (int16_t)((hi << 8) | lo);
+        }
     }
-    for (uint32_t i = n_samp; i < 368; i++) e.samples[i] = 0;
+    for (uint32_t i = n_samp; i < TASKPCM_MAX_SAMPLES; i++) e.samples[i] = 0;
+
+    // Interior jaggedness: max per-channel frame-to-frame delta across
+    // this task's whole output — the crackle signature lives INSIDE
+    // tasks (seam analysis 2026-07-02: inter-task seams are clean).
+    int32_t interior = 0;
+    for (uint32_t i = 2; i < n_samp; i++) {
+        int32_t d = (int32_t)e.samples[i] - (int32_t)e.samples[i - 2];
+        if (d < 0) d = -d;
+        if (d > interior) interior = d;
+    }
 
     // Seam vs the previous task, computed before publishing this entry.
+    // With tasks 1:1 with AI submissions, execution order IS playback
+    // order, so this is the true played boundary.
     int32_t seam = -1;
     if (s > 0 && n_samp >= 4) {
         const TaskPcmEvent& p = g_taskpcm_ring[(s - 1) % TASKPCM_RING_CAP];
-        const uint32_t p_samp = std::min<uint32_t>(p.len / 2, 368);
+        const uint32_t p_samp = std::min<uint32_t>(p.len / 2, TASKPCM_MAX_SAMPLES);
         if (p.exit_reason == (uint32_t)RspExitReason::Broke && p_samp >= 4) {
             int32_t dl = e.samples[0] - p.samples[p_samp - 2];
             int32_t dr = e.samples[1] - p.samples[p_samp - 1];
@@ -256,7 +316,10 @@ int32_t taskpcm_record(uint8_t* rdram, uint64_t dma_idx_before,
         }
     }
     g_taskpcm_seq.store(s + 1, std::memory_order_release);
-    return seam;
+    // The capture trigger fires on the WORSE of boundary seam and
+    // interior jaggedness — the latter is where the audible crackle
+    // actually lives; the former is kept as a cheap regression sentinel.
+    return interior > seam ? interior : seam;
 }
 }  // namespace
 
