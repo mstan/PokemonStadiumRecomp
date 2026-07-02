@@ -31,6 +31,7 @@ ares-emulator/
 
 # N64Recomp engine checkout (cloned by setup.bat/sh, not committed)
 n64recomp/
+n64recomp
 
 # Editor / OS
 .vs/
