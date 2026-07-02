@@ -62,8 +62,17 @@ set CFG_RC=%errorlevel%
 echo configure rc=%CFG_RC%
 if not "%CFG_RC%"=="0" ( echo CONFIGURE FAILED rc=%CFG_RC% & exit /b %CFG_RC% )
 
-echo === BUILD ===
-"%CMAKE%" --build "%PROJ%\build" --target PokemonStadiumRecomp > "%PROJ%\_build_ssanne.log" 2>&1
+:: Throttle the build so it leaves the machine usable: cap the parallel job
+:: count (default 6 of N cores; override with PSR_BUILD_JOBS) AND run at
+:: below-normal priority so foreground apps always win the CPU. A full-parallel,
+:: normal-priority build (-j = cores+2) pins every core and makes the system
+:: unusable. Longer wall-clock here is an intentional trade for responsiveness.
+:: `start "" /belownormal /b /wait` runs cmake (and the clang-cl children it
+:: spawns, which inherit the priority class) in this console with redirected
+:: handles; the empty "" is the required title slot so "%CMAKE%" isn't eaten.
+if not defined PSR_BUILD_JOBS set "PSR_BUILD_JOBS=6"
+echo === BUILD (throttled: -j %PSR_BUILD_JOBS%, below-normal priority) ===
+start "" /belownormal /b /wait "%CMAKE%" --build "%PROJ%\build" --target PokemonStadiumRecomp -- -j %PSR_BUILD_JOBS% > "%PROJ%\_build_ssanne.log" 2>&1
 set BLD_RC=%errorlevel%
 echo build rc=%BLD_RC%
 exit /b %BLD_RC%

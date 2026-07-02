@@ -13,12 +13,17 @@
 # To roll forward to a newer engine commit: bump the sha below.
 # To track the dev tip during active iteration: comment out the sha
 # line and set `branch = dev` instead.
-# ── Rolled to N64Recomp main (tcc overlay backend) ──────────────
-# 0dc2a0a carries the in-process libtcc overlay JIT (replaces sljit)
-#   and the tcc_recompiler.h that N64ModernRuntime main's overlay tier
-#   requires. Canonical engine; GB Tower R/B/Y user-verified on this pin.
-sha = 0dc2a0a8d7f00d8471ef54897fdd31cc4ced07cd
+# ── Rolled to N64Recomp main tip (audio-crackle work base) ──────
+# 2b949c5 = current engine main: the re-authored history line
+#   (de6f18b docs / 790dded license) plus additive ares-oracle cosim
+#   hooks. Ancestor 0dc2a0a (previous pin, tcc overlay backend) is
+#   contained. Base for the work/audio-crackle RSPRecomp investigation;
+#   engine-side audio fixes land on work/audio-crackle off this tip.
+sha = 2b949c5c3f1c41dd76023e7626a6302a4a262a8a
 # --- previous pin ---
+# 0dc2a0a "tcc overlay backend" — carries the in-process libtcc overlay
+#   JIT (replaces sljit) and the tcc_recompiler.h that N64ModernRuntime
+#   main's overlay tier requires. GB Tower R/B/Y user-verified on this pin.
 # 9483814 "Dispatch-entry reject: default arm signals unhandled, not prologue
 #   fall-through" — current N64Recomp main; the GB-mode dispatch-entry interp
 #   self-heal. This `work/github-issues` worktree builds against the engine
