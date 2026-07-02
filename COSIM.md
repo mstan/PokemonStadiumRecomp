@@ -477,3 +477,16 @@ committed, measured checkpoint.
       still fails on RDRAM at `paddr=0x00077C97` / `vaddr=0x80077C97`; CPU
       report-mode evidence for that row is `gpr=27`, `cp0=4`, `fpr=0`, plus
       Status.FR (`recomp=0`, `Ares=1`).
+      Split-phase proof: `oracle-align` now accepts repeated
+      `--range name:start:end` probes, so one sweep can score display/stage and
+      audio regions independently. For recomp checkpoint 2,
+      `oracle-align --ares-start 52 --ares-end 60 --range
+      display:0x68BB0:0x68D00 --range audio:0x77C90:0x77DC0 --base-port
+      55130` shows audio globals match at Ares frame 56 (`D_80077C94=1`,
+      `audFrameCt=2`) while display/stage globals still differ
+      (`D_80068BB0=0`, `D_80068CA8=0` in Ares). At Ares frame 60 the display
+      range matches (`D_80068BB0=0x803DA240`, `D_80068CA8=1`) while audio has
+      already advanced to `audFrameCt=6`. This rules out a single fixed VI
+      offset as the solution; the live T8 target is cross-subsystem ordering
+      and modeled event phase, with audio manager state leading/trailing display
+      depending on the chosen oracle frame.

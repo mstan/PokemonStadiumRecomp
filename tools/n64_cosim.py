@@ -642,6 +642,18 @@ def rdram_offset(value: Any) -> int:
     raise CosimError(f"address is outside RDRAM: 0x{raw:X}")
 
 
+def parse_rdram_range(value: str) -> tuple[str, int, int]:
+    parts = value.split(":")
+    if len(parts) != 3 or not parts[0]:
+        raise CosimError(f"range must be name:start:end, got {value!r}")
+    name = parts[0]
+    start = rdram_offset(parts[1])
+    end = rdram_offset(parts[2])
+    if end <= start:
+        raise CosimError(f"range {name!r} end must be after start")
+    return name, start, end
+
+
 def summarize_recomp_ares_rdram_diff(diff: dict[str, Any], *, include_bytes: bool = False) -> dict[str, Any]:
     keys = (
         "ok",
@@ -1562,6 +1574,7 @@ def run_oracle_align(args: argparse.Namespace) -> int:
         raise CosimError("invalid Ares frame sweep range")
 
     watch_offsets = [rdram_offset(v) for v in args.watch]
+    named_ranges = [parse_rdram_range(v) for v in args.ranges]
     recomp = Instance("recomp_align", exe, cwd, args.base_port, log_dir)
     ares = AresInstance("ares_align", ares_exe, rom, ares_cwd, args.base_port + 1, log_dir)
     report: dict[str, Any] = {
@@ -1578,6 +1591,10 @@ def run_oracle_align(args: argparse.Namespace) -> int:
         "rdram_search_start": args.rdram_search_start,
         "rdram_search_end": args.rdram_search_end,
         "watch": [{"paddr": off, "vaddr": 0x80000000 + off} for off in watch_offsets],
+        "ranges": [
+            {"name": name, "start": start, "end": end}
+            for name, start, end in named_ranges
+        ],
         "rows": [],
     }
 
@@ -1667,6 +1684,22 @@ def run_oracle_align(args: argparse.Namespace) -> int:
                         include_bytes=True,
                     )
                     for off in watch_offsets
+                ]
+            if named_ranges:
+                row["range_diffs"] = [
+                    {
+                        "name": name,
+                        **summarize_recomp_ares_rdram_diff(
+                            first_recomp_ares_rdram_diff(
+                                recomp,
+                                ares,
+                                start_offset=start,
+                                end_offset=end,
+                            ),
+                            include_bytes=args.include_peek_bytes,
+                        ),
+                    }
+                    for name, start, end in named_ranges
                 ]
             report["rows"].append(row)
 
@@ -1851,6 +1884,13 @@ def main(argv: list[str]) -> int:
         action="append",
         default=[],
         help="RDRAM paddr or KSEG0/KSEG1 vaddr to record at every compared Ares frame",
+    )
+    align.add_argument(
+        "--range",
+        dest="ranges",
+        action="append",
+        default=[],
+        help="named RDRAM range to diff at every row: name:start:end",
     )
     align.add_argument("--watch-len", type=int, default=4)
     align.add_argument("--include-peek-bytes", action="store_true")
