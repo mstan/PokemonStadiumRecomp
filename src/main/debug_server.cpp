@@ -45,6 +45,7 @@
 #include "librecomp/ultra_trace.hpp"
 #include "librecomp/rsp.hpp"
 #include "librecomp/gbcart.hpp"
+#include "ultramodern/ultramodern.hpp"
 #include "ares_bridge.h"
 #include "ares_worker.h"
 
@@ -478,6 +479,44 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "cosim_quiescence") {
         return pkmnstadium::cosim::quiescence_json();
+    }
+    if (cmd == "cosim_rcp") {
+        ultramodern_cosim_rcp_event_stats s{};
+        ultramodern_cosim_get_rcp_event_stats(&s);
+        const uint64_t next_due_delta =
+            (s.has_next_due && s.next_due_cycle > s.now_cycle)
+                ? (s.next_due_cycle - s.now_cycle)
+                : 0;
+        char buf[1200];
+        std::snprintf(
+            buf,
+            sizeof(buf),
+            "{\"ok\":true,\"now_cycle\":%llu,\"has_next_due\":%s,"
+            "\"next_due_cycle\":%llu,\"next_due_delta\":%llu,\"next_seq\":%llu,"
+            "\"vi_advancing\":%u,"
+            "\"pending\":{\"total\":%llu,\"sp\":%llu,\"dp\":%llu,\"vi\":%llu,\"ai\":%llu},"
+            "\"scheduled\":{\"sp\":%llu,\"dp\":%llu,\"vi\":%llu,\"ai\":%llu},"
+            "\"delivered\":{\"sp\":%llu,\"dp\":%llu,\"vi\":%llu,\"ai\":%llu}}",
+            (unsigned long long)s.now_cycle,
+            s.has_next_due ? "true" : "false",
+            (unsigned long long)s.next_due_cycle,
+            (unsigned long long)next_due_delta,
+            (unsigned long long)s.next_seq,
+            (unsigned)s.vi_advancing,
+            (unsigned long long)s.pending_total,
+            (unsigned long long)s.pending_sp,
+            (unsigned long long)s.pending_dp,
+            (unsigned long long)s.pending_vi,
+            (unsigned long long)s.pending_ai,
+            (unsigned long long)s.scheduled_sp,
+            (unsigned long long)s.scheduled_dp,
+            (unsigned long long)s.scheduled_vi,
+            (unsigned long long)s.scheduled_ai,
+            (unsigned long long)s.delivered_sp,
+            (unsigned long long)s.delivered_dp,
+            (unsigned long long)s.delivered_vi,
+            (unsigned long long)s.delivered_ai);
+        return buf;
     }
     if (cmd == "cosim_threads") {
         return pkmnstadium::cosim::threads_json();

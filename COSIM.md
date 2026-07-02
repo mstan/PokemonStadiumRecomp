@@ -391,3 +391,10 @@ committed, measured checkpoint.
       recomp `6` vs Ares `11`. This confirms the next divergence is an
       event/timing alignment issue surfaced through game-visible audio-manager
       state, not a coordinator blind spot.
+      Runtime follow-up: `cosim_rcp` now exposes the modeled RCP event queue
+      counters (`scheduled`, `delivered`, `pending`, `next_due_*`,
+      `now_cycle`) for SP/DP/VI/AI. Coordinator dumps and oracle rows include
+      that payload. Smoke:
+      `oracle-align --recomp-checkpoint 2 --ares-start 60 --ares-end 60`
+      passed and reported `now_cycle=1572532`, `scheduled={sp:2,dp:1,vi:2,ai:0}`,
+      `delivered={sp:2,dp:1,vi:2,ai:0}`, `pending.total=0`.
