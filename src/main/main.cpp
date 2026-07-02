@@ -1778,6 +1778,21 @@ int main(int argc, char** argv) {
     game.on_init_callback = [](uint8_t* rdram, recomp_context* ctx) {
 #ifdef N64_COSIM
         psr_cosim_register_context(rdram, ctx);
+        auto rom = recomp::get_rom();
+        constexpr size_t kCosimBootRomOffset = 0x1000;
+        constexpr size_t kCosimBootImageSize = 0x100000;
+        if (rdram != nullptr && rom.size() >= kCosimBootRomOffset + kCosimBootImageSize) {
+            for (size_t i = 0; i < kCosimBootImageSize; i++) {
+                rdram[(static_cast<uint32_t>(i) ^ 3u)] = rom[kCosimBootRomOffset + i];
+            }
+            std::fprintf(stderr,
+                "[PSR] cosim: seeded 0x%zX-byte IPL boot image into RDRAM\n",
+                kCosimBootImageSize);
+        } else {
+            std::fprintf(stderr,
+                "[PSR] cosim: skipped IPL boot-image seed (rom_size=0x%zX)\n",
+                rom.size());
+        }
 #endif
         // gExpansionRAMStart at kseg0 0x80068B90 -> physical 0x00068B90.
         // Write u32 = 1 with XOR-3 byte order to match recompiled MEM_W.
