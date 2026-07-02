@@ -473,6 +473,76 @@ def first_recomp_ares_rdram_diff(
     }
 
 
+def rdram_offset(value: Any) -> int:
+    raw = parse_int(value)
+    if 0 <= raw < RDRAM_SIZE:
+        return raw
+    if 0x80000000 <= raw < 0x80000000 + RDRAM_SIZE:
+        return raw - 0x80000000
+    if 0xA0000000 <= raw < 0xA0000000 + RDRAM_SIZE:
+        return raw - 0xA0000000
+    raise CosimError(f"address is outside RDRAM: 0x{raw:X}")
+
+
+def summarize_recomp_ares_rdram_diff(diff: dict[str, Any], *, include_bytes: bool = False) -> dict[str, Any]:
+    keys = (
+        "ok",
+        "different",
+        "search_start",
+        "search_end",
+        "paddr",
+        "vaddr",
+        "peek_start",
+        "peek_vaddr",
+        "peek_n",
+        "n",
+        "order",
+    )
+    out = {k: diff[k] for k in keys if k in diff}
+    if include_bytes:
+        recomp_peek = diff.get("recomp")
+        ares_peek = diff.get("ares")
+        if isinstance(recomp_peek, dict) and "hex" in recomp_peek:
+            out["recomp_hex"] = recomp_peek.get("hex")
+        if isinstance(ares_peek, dict) and "bytes" in ares_peek:
+            out["ares_hex"] = ares_peek.get("bytes")
+    return out
+
+
+def peek_recomp_ares_rdram(
+    recomp: Instance,
+    ares: AresInstance,
+    paddr: int,
+    count: int,
+) -> dict[str, Any]:
+    if paddr < 0 or count < 1 or paddr + count > RDRAM_SIZE:
+        raise CosimError(f"invalid RDRAM peek 0x{paddr:X}/0x{count:X}")
+    pr = recomp.cmd(
+        {"cmd": "cosim_checkpoint_rdram_peek", "addr": paddr, "n": count},
+        timeout_s=10.0,
+    )
+    pa = ares.cmd(
+        {
+            "cmd": "read_memory",
+            "addr": 0x80000000 + paddr,
+            "len": count,
+            "order": "recomp",
+        },
+        timeout_s=20.0,
+    )
+    recomp_hex = pr.get("hex") if isinstance(pr, dict) else None
+    ares_hex = pa.get("bytes") if isinstance(pa, dict) else None
+    return {
+        "ok": bool(pr.get("ok") and pa.get("ok")),
+        "different": recomp_hex != ares_hex,
+        "paddr": paddr,
+        "vaddr": 0x80000000 + paddr,
+        "n": count,
+        "recomp": pr,
+        "ares": pa,
+    }
+
+
 def compare_ares_cpu(a_cpu: dict[str, Any], b_cpu: dict[str, Any]) -> dict[str, Any]:
     if not a_cpu.get("ok"):
         return {"ok": False, "error": f"Ares A cpu failed: {a_cpu}"}
@@ -1250,6 +1320,178 @@ def run_oracle(args: argparse.Namespace) -> int:
         ares.stop()
 
 
+def run_oracle_align(args: argparse.Namespace) -> int:
+    exe = host_path(args.exe)
+    cwd = host_path(args.cwd)
+    ares_exe = host_path(args.ares_exe)
+    rom = host_path(args.rom)
+    ares_cwd = host_path(args.ares_cwd)
+    log_dir = host_path(args.log_dir)
+    report_path = host_path(args.report)
+    if not exe.exists():
+        raise CosimError(f"missing recomp exe: {exe}")
+    if not ares_exe.exists():
+        raise CosimError(f"missing Ares oracle server: {ares_exe}")
+    if not rom.exists():
+        raise CosimError(f"missing ROM: {rom}")
+    if args.recomp_checkpoint < 1:
+        raise CosimError("--recomp-checkpoint must be >= 1")
+    if args.ares_start < 0 or args.ares_end < args.ares_start:
+        raise CosimError("invalid Ares frame sweep range")
+
+    watch_offsets = [rdram_offset(v) for v in args.watch]
+    recomp = Instance("recomp_align", exe, cwd, args.base_port, log_dir)
+    ares = AresInstance("ares_align", ares_exe, rom, ares_cwd, args.base_port + 1, log_dir)
+    report: dict[str, Any] = {
+        "ok": False,
+        "gate": "oracle_alignment_probe",
+        "exe": str(exe),
+        "cwd": str(cwd),
+        "ares_exe": str(ares_exe),
+        "rom": str(rom),
+        "base_port": args.base_port,
+        "recomp_checkpoint_requested": args.recomp_checkpoint,
+        "ares_start": args.ares_start,
+        "ares_end": args.ares_end,
+        "rdram_search_start": args.rdram_search_start,
+        "rdram_search_end": args.rdram_search_end,
+        "watch": [{"paddr": off, "vaddr": 0x80000000 + off} for off in watch_offsets],
+        "rows": [],
+    }
+
+    try:
+        recomp.start()
+        ares.start()
+        recomp.connect(args.startup_timeout)
+        ares.connect(args.startup_timeout)
+
+        recomp_ping = recomp.cmd("ping")
+        ares_ping = ares.cmd("ping")
+        ares_status = ares.cmd("status")
+        report["recomp_ping"] = recomp_ping
+        report["ares_ping"] = ares_ping
+        report["ares_status"] = ares_status
+        if not recomp_ping.get("ok") or not ares_ping.get("ok") or not ares_status.get("is_real"):
+            report["error"] = "init ping/status failed"
+            write_report(report_path, report)
+            print(f"FAIL oracle-align init; report={report_path}")
+            return 1
+
+        report["recomp_reset"] = recomp.cmd("cosim_reset")
+        report["ares_reset"] = ares.cmd("reset", timeout_s=30.0)
+        if not report["recomp_reset"].get("ok") or not report["ares_reset"].get("ok"):
+            report["error"] = "reset failed"
+            write_report(report_path, report)
+            print(f"FAIL oracle-align reset; report={report_path}")
+            return 1
+
+        start = recomp.cmd("cosim_start")
+        report["recomp_start"] = start
+        if not start.get("ok"):
+            report["error"] = "recomp cosim_start failed"
+            write_report(report_path, report)
+            print(f"FAIL oracle-align start; report={report_path}")
+            return 1
+
+        report["recomp_steps"] = []
+        recomp_step: dict[str, Any] = {}
+        for step_index in range(1, args.recomp_checkpoint + 1):
+            recomp_step = recomp.cmd(
+                {"cmd": "cosim_step", "frames": 1, "timeout_ms": args.step_timeout_ms},
+                timeout_s=(args.step_timeout_ms / 1000.0) + 5.0,
+            )
+            report["recomp_steps"].append({"step": step_index, "checkpoint": checkpoint_key(recomp_step)})
+            if not recomp_step.get("ok"):
+                report["error"] = "recomp checkpoint step failed"
+                report["first_bad_recomp_step"] = step_index
+                report["step_recomp"] = recomp_step
+                report["dump_recomp"] = collect_dump(recomp, args.window)
+                write_report(report_path, report)
+                print(f"FAIL oracle-align recomp step={step_index}; report={report_path}")
+                return 1
+        report["recomp_checkpoint"] = checkpoint_key(recomp_step)
+
+        for warmup in range(1, args.ares_start + 1):
+            step = ares.cmd({"cmd": "step_frame", "n": 1}, timeout_s=args.ares_step_timeout)
+            if not step.get("ok"):
+                report["error"] = "Ares warmup failed"
+                report["first_bad_ares_frame"] = warmup
+                report["step_ares"] = step
+                write_report(report_path, report)
+                print(f"FAIL oracle-align Ares warmup frame={warmup}; report={report_path}")
+                return 1
+
+        best_row: dict[str, Any] | None = None
+        for ares_frame in range(args.ares_start, args.ares_end + 1):
+            cpu = ares.cmd({"cmd": "read_cpu_state"}, timeout_s=10.0)
+            diff = first_recomp_ares_rdram_diff(
+                recomp,
+                ares,
+                start_offset=args.rdram_search_start,
+                end_offset=args.rdram_search_end,
+            )
+            row: dict[str, Any] = {
+                "ares_frame": ares_frame,
+                "ares_pc": cpu.get("pc"),
+                "cpu_ok": cpu.get("ok"),
+                "rdram_diff": summarize_recomp_ares_rdram_diff(diff, include_bytes=args.include_peek_bytes),
+            }
+            if watch_offsets:
+                row["watch"] = [
+                    summarize_recomp_ares_rdram_diff(
+                        peek_recomp_ares_rdram(recomp, ares, off, args.watch_len),
+                        include_bytes=True,
+                    )
+                    for off in watch_offsets
+                ]
+            report["rows"].append(row)
+
+            if best_row is None:
+                best_row = row
+            elif not row["rdram_diff"].get("different"):
+                best_row = row
+            elif best_row["rdram_diff"].get("different") and row["rdram_diff"].get("paddr", -1) > best_row["rdram_diff"].get("paddr", -1):
+                best_row = row
+
+            if args.verbose:
+                paddr = row["rdram_diff"].get("paddr")
+                first = "none" if not row["rdram_diff"].get("different") else f"0x{paddr:06X}"
+                print(f"ares_frame={ares_frame} pc={cpu.get('pc')} first_rdram_diff={first}")
+
+            if ares_frame != args.ares_end:
+                step = ares.cmd({"cmd": "step_frame", "n": 1}, timeout_s=args.ares_step_timeout)
+                if not step.get("ok"):
+                    report["error"] = "Ares step failed"
+                    report["first_bad_ares_frame"] = ares_frame + 1
+                    report["step_ares"] = step
+                    write_report(report_path, report)
+                    print(f"FAIL oracle-align Ares step frame={ares_frame + 1}; report={report_path}")
+                    return 1
+
+        report["ok"] = True
+        report["best_by_first_mismatch"] = best_row
+        write_report(report_path, report)
+        if best_row:
+            diff = best_row["rdram_diff"]
+            if diff.get("different"):
+                print(
+                    f"PASS oracle-align recomp_checkpoint={args.recomp_checkpoint} "
+                    f"best_ares_frame={best_row.get('ares_frame')} first_rdram_diff=0x{diff.get('paddr', 0):06X}; "
+                    f"report={report_path}"
+                )
+            else:
+                print(
+                    f"PASS oracle-align recomp_checkpoint={args.recomp_checkpoint} "
+                    f"best_ares_frame={best_row.get('ares_frame')} first_rdram_diff=none; report={report_path}"
+                )
+        else:
+            print(f"PASS oracle-align no rows; report={report_path}")
+        return 0
+    finally:
+        recomp.stop()
+        ares.stop()
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="N64 differential co-sim coordinator")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1352,6 +1594,44 @@ def main(argv: list[str]) -> int:
     )
     oracle.add_argument("--verbose", action="store_true")
 
+    align = sub.add_parser("oracle-align", help="sweep Ares VI frames against one recomp checkpoint")
+    align.add_argument("--recomp-checkpoint", type=int, default=1, help="recomp VI checkpoints to step after cosim_start before holding state")
+    align.add_argument("--ares-start", type=int, default=50, help="first completed Ares VI frame to compare")
+    align.add_argument("--ares-end", type=int, default=70, help="last completed Ares VI frame to compare")
+    align.add_argument("--step-timeout-ms", type=int, default=15000)
+    align.add_argument("--ares-step-timeout", type=float, default=90.0)
+    align.add_argument("--startup-timeout", type=float, default=30.0)
+    align.add_argument("--base-port", type=int, default=4910)
+    align.add_argument("--exe", default=str(DEFAULT_EXE))
+    align.add_argument("--cwd", default=str(BUILD))
+    align.add_argument("--ares-exe", default=str(DEFAULT_ARES_EXE))
+    align.add_argument("--ares-cwd", default=str(DEFAULT_ARES_EXE.parent))
+    align.add_argument("--rom", default=str(DEFAULT_ROM))
+    align.add_argument("--log-dir", default=str(BUILD / "cosim_oracle_align_logs"))
+    align.add_argument("--report", default=str(BUILD / "cosim_oracle_align_report.json"))
+    align.add_argument("--window", type=int, default=16)
+    align.add_argument(
+        "--rdram-search-start",
+        type=lambda x: int(x, 0),
+        default=0x400,
+        help="first RDRAM paddr included in the probe diff",
+    )
+    align.add_argument(
+        "--rdram-search-end",
+        type=lambda x: int(x, 0),
+        default=RDRAM_SIZE,
+        help="exclusive RDRAM paddr end for the probe diff",
+    )
+    align.add_argument(
+        "--watch",
+        action="append",
+        default=[],
+        help="RDRAM paddr or KSEG0/KSEG1 vaddr to record at every compared Ares frame",
+    )
+    align.add_argument("--watch-len", type=int, default=4)
+    align.add_argument("--include-peek-bytes", action="store_true")
+    align.add_argument("--verbose", action="store_true")
+
     args = ap.parse_args(argv)
     if args.cmd == "gate1":
         return run_gate(args)
@@ -1363,6 +1643,8 @@ def main(argv: list[str]) -> int:
         return run_ares_gate(args)
     if args.cmd == "oracle":
         return run_oracle(args)
+    if args.cmd == "oracle-align":
+        return run_oracle_align(args)
     raise AssertionError(args.cmd)
 
 

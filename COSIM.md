@@ -379,3 +379,15 @@ committed, measured checkpoint.
       (`static D_80068CA8` in `disasm/src/stage_loader.c`, stage/display
       cleanup counter: recomp `3`, Ares `1`). That keeps the next task on
       checkpoint-phase/HLE timing alignment rather than raw IPL RAM seeding.
+      New `oracle-align` automates this sweep: it holds one recomp VI
+      checkpoint fixed, walks a range of Ares completed-VI frames, reports the
+      first RDRAM mismatch per row, and can watch specific RDRAM globals.
+      Verified probes:
+      `oracle-align --recomp-checkpoint 2 --ares-start 58 --ares-end 61`
+      finds best Ares frame 60, where `D_80068BB0` and `D_80068CA8` match but
+      `audFrameCt` (`0x80077DB0`) is recomp `2` vs Ares `6`.
+      `oracle-align --recomp-checkpoint 6 --ares-start 58 --ares-end 65`
+      finds best Ares frame 65, where display/stage match but `audFrameCt` is
+      recomp `6` vs Ares `11`. This confirms the next divergence is an
+      event/timing alignment issue surfaced through game-visible audio-manager
+      state, not a coordinator blind spot.
