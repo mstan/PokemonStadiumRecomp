@@ -357,3 +357,14 @@ committed, measured checkpoint.
       `paddr=0x00077C97` (single-byte `01` vs `00` inside an otherwise matching
       pointer table), while the primary IPL low-RDRAM mismatch at `0x00000001`
       remains.
+      Coordinator follow-up: `oracle` now has explicit RDRAM search bounds and
+      CPU gating controls. `--rdram-search-start 0x400` keeps the raw IPL/HLE
+      boot aperture out of the gating RDRAM diff while still reporting it as an
+      ignored-prefix mismatch; `--cpu-compare report` records the Ares CPU state
+      and recomp context mismatch without gating while the CPU context currency
+      issue is unresolved. With `--ares-warmup-frames 59 --rdram-search-start
+      0x400 --cpu-compare report --rdram-followup-start 0`, frame 1 now fails
+      only on RDRAM at `paddr=0x00068BB0` / `vaddr=0x80068BB0`: the current
+      framebuffer descriptor pointer (`static D_80068BB0` in `disasm/src/6BC0.c`)
+      is `0` in recomp and `0x803DA240` in Ares. CPU GPR/HI/LO differences are
+      present in the report but marked non-gating for this run.

@@ -1058,11 +1058,18 @@ def run_oracle(args: argparse.Namespace) -> int:
         "base_port": args.base_port,
         "coverage": {
             "axis": "per-VI-frame modeled cycle checkpoints",
-            "compared": ["cpu_gpr_hi_lo", "rdram_8mb_recomp_byte_order"],
+            "compared": ["rdram_8mb_recomp_byte_order"],
+            "cpu_compare": args.cpu_compare,
+            "rdram_search_start": args.rdram_search_start,
+            "rdram_search_end": args.rdram_search_end,
             "pending": ["cp0", "cp1/fpr", "pc/recomp_context_surface"],
         },
         "rows": [],
     }
+    if args.cpu_compare == "fail":
+        report["coverage"]["compared"].append("cpu_gpr_hi_lo")
+    elif args.cpu_compare == "report":
+        report["coverage"]["reported_not_gating"] = ["cpu_gpr_hi_lo"]
 
     try:
         recomp.start()
@@ -1142,21 +1149,44 @@ def run_oracle(args: argparse.Namespace) -> int:
                 print(f"FAIL oracle step frame={frame}; report={report_path}")
                 return 1
 
-            recomp_regs = recomp.cmd("cosim_regs", timeout_s=10.0)
-            ares_cpu = ares.cmd({"cmd": "read_cpu_state"}, timeout_s=10.0)
-            cpu_diff = compare_cpu_int(recomp_regs, ares_cpu)
+            if args.cpu_compare == "off":
+                cpu_diff = {"ok": True, "different": False, "skipped": True}
+            else:
+                recomp_regs = recomp.cmd("cosim_regs", timeout_s=10.0)
+                ares_cpu = ares.cmd({"cmd": "read_cpu_state"}, timeout_s=10.0)
+                cpu_diff = compare_cpu_int(recomp_regs, ares_cpu)
             rec["cpu_diff"] = cpu_diff
 
             rdram_diff = {"ok": True, "different": False, "skipped": True}
             if args.rdram_every > 0 and frame % args.rdram_every == 0:
-                rdram_diff = first_recomp_ares_rdram_diff(recomp, ares)
+                if args.rdram_search_start > 0:
+                    prefix_diff = first_recomp_ares_rdram_diff(
+                        recomp,
+                        ares,
+                        start_offset=0,
+                        end_offset=args.rdram_search_start,
+                    )
+                    if prefix_diff.get("different"):
+                        rec["rdram_ignored_prefix_diff"] = {
+                            k: v for k, v in prefix_diff.items()
+                            if k not in ("recomp", "ares")
+                        }
+                        report.setdefault("rdram_ignored_prefix_diff", prefix_diff)
+                rdram_diff = first_recomp_ares_rdram_diff(
+                    recomp,
+                    ares,
+                    start_offset=args.rdram_search_start,
+                    end_offset=args.rdram_search_end,
+                )
             rec["rdram_diff"] = {
                 k: v for k, v in rdram_diff.items()
                 if k not in ("recomp", "ares")
             }
 
             subdiff = []
-            if not cpu_diff.get("ok") or cpu_diff.get("different"):
+            if args.cpu_compare == "fail" and (
+                not cpu_diff.get("ok") or cpu_diff.get("different")
+            ):
                 subdiff.append("cpu_int")
             if rdram_diff.get("different"):
                 subdiff.append("rdram")
@@ -1278,10 +1308,28 @@ def main(argv: list[str]) -> int:
     oracle.add_argument("--window", type=int, default=16)
     oracle.add_argument("--rdram-every", type=int, default=1, help="compare full RDRAM every N frames; 0 disables")
     oracle.add_argument(
+        "--rdram-search-start",
+        type=lambda x: int(x, 0),
+        default=0,
+        help="first RDRAM paddr included in the gating diff; use 0x400 to skip the raw IPL/HLE boot aperture",
+    )
+    oracle.add_argument(
+        "--rdram-search-end",
+        type=lambda x: int(x, 0),
+        default=RDRAM_SIZE,
+        help="exclusive RDRAM paddr end for the gating diff",
+    )
+    oracle.add_argument(
         "--rdram-followup-start",
         type=lambda x: int(x, 0),
         default=0x100000,
         help="after an earlier RDRAM mismatch, also report the first mismatch at/after this paddr; 0 disables",
+    )
+    oracle.add_argument(
+        "--cpu-compare",
+        choices=("fail", "report", "off"),
+        default="fail",
+        help="whether CPU GPR/HI/LO differences gate the oracle; report keeps them in the report while RDRAM alignment is refined",
     )
     oracle.add_argument("--verbose", action="store_true")
 
