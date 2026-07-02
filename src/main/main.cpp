@@ -103,6 +103,7 @@ extern "C" const char* psr_app_file_c(const char* name, char* out, unsigned long
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 #ifdef N64_COSIM
 extern "C" void psr_cosim_register_context(uint8_t* rdram, recomp_context* ctx);
+extern "C" void psr_cosim_wait_for_start();
 #endif
 
 namespace pokestadium { void register_overlays(); }
@@ -2020,7 +2021,18 @@ int main(int argc, char** argv) {
     const bool autoboot = std::getenv("PSR_AUTOBOOT") != nullptr;
     std::thread([game_id = game.game_id, autoboot]() {
         if (autoboot) {
+#ifdef N64_COSIM
+            const bool cosim_wait_start = std::getenv("PSR_COSIM_WAIT_START") != nullptr;
+            if (cosim_wait_start) {
+                std::fprintf(stderr, "[PSR] PSR_COSIM_WAIT_START=1 -> waiting for cosim_start\n");
+                std::fflush(stderr);
+                psr_cosim_wait_for_start();
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+#else
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#endif
             std::fprintf(stderr, "[PSR] PSR_AUTOBOOT=1 -> skipping launcher\n");
         } else {
             while (!pkmnstadium::ui_seam::play_requested()) {

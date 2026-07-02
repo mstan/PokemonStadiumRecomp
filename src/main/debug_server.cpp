@@ -247,6 +247,7 @@ static SOCKET             s_listen_sock = INVALID_SOCKET;
 #ifdef N64_COSIM
 } // namespace dbg
 namespace cosim {
+std::string start_json();
 std::string chain_json();
 std::string sub_json();
 std::string regs_json();
@@ -256,6 +257,10 @@ std::string window_json(uint64_t count);
 std::string reset_json();
 std::string quiescence_json();
 std::string threads_json();
+std::string normalized_rdram_peek_json(uint32_t addr, uint64_t count);
+std::string normalized_rdram_digest_json(uint32_t addr, uint64_t count);
+std::string checkpoint_rdram_peek_json(uint32_t addr, uint64_t count);
+std::string checkpoint_rdram_digest_json(uint32_t addr, uint64_t count);
 std::string inject_json(const std::string& field, uint64_t value, uint32_t addr);
 } // namespace cosim
 namespace dbg {
@@ -443,6 +448,9 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"pong":true})";
     }
 #ifdef N64_COSIM
+    if (cmd == "cosim_start") {
+        return pkmnstadium::cosim::start_json();
+    }
     if (cmd == "cosim_chain") {
         return pkmnstadium::cosim::chain_json();
     }
@@ -473,6 +481,26 @@ static std::string handle_command(const std::string& line) {
     }
     if (cmd == "cosim_threads") {
         return pkmnstadium::cosim::threads_json();
+    }
+    if (cmd == "cosim_rdram_peek") {
+        uint32_t addr = get_uint(line, "addr", 0);
+        uint64_t n = get_uint64(line, "n", 4);
+        return pkmnstadium::cosim::normalized_rdram_peek_json(addr, n);
+    }
+    if (cmd == "cosim_rdram_digest") {
+        uint32_t addr = get_uint(line, "addr", 0);
+        uint64_t n = get_uint64(line, "n", 4);
+        return pkmnstadium::cosim::normalized_rdram_digest_json(addr, n);
+    }
+    if (cmd == "cosim_checkpoint_rdram_peek") {
+        uint32_t addr = get_uint(line, "addr", 0);
+        uint64_t n = get_uint64(line, "n", 4);
+        return pkmnstadium::cosim::checkpoint_rdram_peek_json(addr, n);
+    }
+    if (cmd == "cosim_checkpoint_rdram_digest") {
+        uint32_t addr = get_uint(line, "addr", 0);
+        uint64_t n = get_uint64(line, "n", 4);
+        return pkmnstadium::cosim::checkpoint_rdram_digest_json(addr, n);
     }
     if (cmd == "cosim_inject") {
         std::string field = get_str(line, "field");

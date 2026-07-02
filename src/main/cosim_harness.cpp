@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -45,24 +46,41 @@ struct SchedThreadState {
     uint64_t count;
 };
 
+struct ThreadContextMap {
+    uint32_t thread;
+    recomp_context* ctx;
+};
+
 std::atomic<recomp_context*> g_active_ctx{nullptr};
 std::mutex g_mu;
 std::mutex g_step_mu;
 std::condition_variable g_step_cv;
 std::vector<recomp_context*> g_contexts;
+std::vector<ThreadContextMap> g_thread_contexts;
 std::vector<recomp::cosim::Checkpoint> g_window;
+std::vector<ultramodern_cosim_quiescence_state> g_window_quiescence;
+std::vector<uint32_t> g_window_context_threads;
+std::vector<uint8_t> g_last_checkpoint_rdram;
 uint64_t g_cp = 0;
 uint64_t g_chain = 0;
 uint64_t g_stride = 1;
+bool g_vi_origin_claimed = false;
+bool g_vis_base_set = false;
+uint64_t g_vis_base = 0;
+bool g_last_raw_vis_set = false;
+uint64_t g_last_raw_vis = 0;
 std::atomic<uint64_t> g_published_cp{0};
 ultramodern_cosim_quiescence_state g_last_quiescence{};
 bool g_parked = false;
 bool g_parked_by_callback = false;
 uint64_t g_parked_cp = 0;
 uint64_t g_release_count = 0;
+std::mutex g_start_mu;
+std::condition_variable g_start_cv;
+bool g_start_requested = false;
 
 uint64_t modeled_cycle_now() {
-    return 0; // Reserved for T5 modeled guest-cycle clock.
+    return ultramodern_cosim_get_time_ticks();
 }
 
 bool is_rdram_vaddr(uint32_t addr) {
@@ -111,6 +129,79 @@ void remember_context(recomp_context* ctx) {
     }
 }
 
+void remember_thread_context(uint32_t thread, recomp_context* ctx) {
+    if (!is_rdram_vaddr(thread) || ctx == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_mu);
+    for (ThreadContextMap& entry : g_thread_contexts) {
+        if (entry.thread == thread) {
+            entry.ctx = ctx;
+            return;
+        }
+    }
+    if (g_thread_contexts.size() < kMaxContexts) {
+        g_thread_contexts.push_back(ThreadContextMap{ thread, ctx });
+    }
+}
+
+recomp_context* context_for_thread_locked(uint32_t thread) {
+    for (const ThreadContextMap& entry : g_thread_contexts) {
+        if (entry.thread == thread) {
+            return entry.ctx;
+        }
+    }
+    return nullptr;
+}
+
+recomp_context* select_snapshot_context(uint8_t* rdram, recomp_context* fallback, uint32_t& selected_thread) {
+    selected_thread = 0;
+    if (rdram == nullptr) {
+        return fallback;
+    }
+
+    SchedThreadState states[kMaxSchedThreads]{};
+    size_t n = 0;
+    ultramodern_sched_thread_states_copy(states, kMaxSchedThreads, &n);
+
+    std::lock_guard<std::mutex> lock(g_mu);
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t thread = states[i].thread;
+        if (!states[i].valid || !is_rdram_vaddr(thread)) {
+            continue;
+        }
+        OSThread* live = live_thread_ptr(rdram, thread);
+        if (live == nullptr || live->context == nullptr) {
+            continue;
+        }
+        if (live->state == OSThreadState::RUNNING && live->priority <= 0) {
+            if (recomp_context* ctx = context_for_thread_locked(thread)) {
+                selected_thread = thread;
+                return ctx;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t thread = states[i].thread;
+        if (!states[i].valid || !is_rdram_vaddr(thread)) {
+            continue;
+        }
+        OSThread* live = live_thread_ptr(rdram, thread);
+        if (live == nullptr || live->context == nullptr) {
+            continue;
+        }
+        if (live->state == OSThreadState::RUNNING) {
+            if (recomp_context* ctx = context_for_thread_locked(thread)) {
+                selected_thread = thread;
+                return ctx;
+            }
+        }
+    }
+
+    return fallback;
+}
+
 std::string json_u64_array(const uint64_t* vals, size_t count) {
     std::string out = "[";
     for (size_t i = 0; i < count; i++) {
@@ -131,12 +222,11 @@ std::string json_u32_array(const uint32_t* vals, size_t count) {
     return out;
 }
 
-std::string checkpoint_json(const recomp::cosim::Checkpoint& cp, bool prefix_comma) {
+std::string checkpoint_json_fields(const recomp::cosim::Checkpoint& cp) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-        "%s{\"cp\":%llu,\"vis\":%llu,\"cycle\":%llu,"
-        "\"cpu_int\":%llu,\"cp0\":%llu,\"cp1\":%llu,\"rdram\":%llu,\"chain\":%llu}",
-        prefix_comma ? "," : "",
+        "\"cp\":%llu,\"vis\":%llu,\"cycle\":%llu,"
+        "\"cpu_int\":%llu,\"cp0\":%llu,\"cp1\":%llu,\"rdram\":%llu,\"chain\":%llu",
         (unsigned long long)cp.cp,
         (unsigned long long)cp.vis,
         (unsigned long long)cp.cycle,
@@ -148,7 +238,74 @@ std::string checkpoint_json(const recomp::cosim::Checkpoint& cp, bool prefix_com
     return std::string(buf);
 }
 
-bool snapshot(recomp::cosim::Checkpoint& out, bool advance_chain, std::string& error) {
+std::string checkpoint_json(const recomp::cosim::Checkpoint& cp, bool prefix_comma) {
+    return std::string(prefix_comma ? ",{" : "{") + checkpoint_json_fields(cp) + "}";
+}
+
+bool normalize_host_only_rdram(
+    const uint8_t* rdram,
+    std::vector<uint8_t>& out,
+    std::string& error)
+{
+    const size_t runtime_size = ultramodern_sched_thread_state_size();
+    if (runtime_size != sizeof(SchedThreadState)) {
+        error = "scheduler thread state size mismatch";
+        return false;
+    }
+
+    out.assign(rdram, rdram + kRdramSize);
+
+    SchedThreadState states[kMaxSchedThreads]{};
+    size_t n = 0;
+    ultramodern_sched_thread_states_copy(states, kMaxSchedThreads, &n);
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t thread = states[i].thread;
+        if (!states[i].valid || !is_rdram_vaddr(thread)) {
+            continue;
+        }
+        const uint32_t paddr = thread & 0x007FFFFFu;
+        constexpr size_t kContextOff = offsetof(OSThread, context);
+        if (paddr + kContextOff + sizeof(UltraThreadContext*) > out.size()) {
+            continue;
+        }
+        std::memset(out.data() + paddr + kContextOff, 0, sizeof(UltraThreadContext*));
+
+        recomp_context* ctx = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            ctx = context_for_thread_locked(thread);
+        }
+        if (ctx == nullptr) {
+            continue;
+        }
+        const uint32_t sp = static_cast<uint32_t>(ctx->r29);
+        if (!is_rdram_vaddr(sp)) {
+            continue;
+        }
+
+        // Bytes below the saved stack pointer are outside the live MIPS frame.
+        // HLE/libultra handoff paths can leave host-order residue there without
+        // changing guest-visible state at the checkpoint.
+        constexpr uint32_t kDeadStackRedzone = 64;
+        const uint32_t sp_paddr = sp & 0x007FFFFFu;
+        const uint32_t start = sp_paddr > kDeadStackRedzone
+            ? sp_paddr - kDeadStackRedzone
+            : 0;
+        if (start < sp_paddr && sp_paddr <= out.size()) {
+            std::memset(out.data() + start, 0, sp_paddr - start);
+        }
+    }
+    return true;
+}
+
+bool snapshot(
+    recomp::cosim::Checkpoint& out,
+    bool advance_chain,
+    std::string& error,
+    std::vector<uint8_t>* normalized_capture = nullptr,
+    uint32_t* selected_thread_capture = nullptr,
+    uint64_t* raw_vis_capture = nullptr)
+{
     uint8_t* rdram = recomp_runtime_get_rdram();
     recomp_context* ctx = g_active_ctx.load(std::memory_order_acquire);
     if (rdram == nullptr) {
@@ -160,17 +317,44 @@ bool snapshot(recomp::cosim::Checkpoint& out, bool advance_chain, std::string& e
         return false;
     }
 
-    const uint64_t vis = total_vis;
+    const uint64_t raw_vis = total_vis;
     const uint64_t cycle = modeled_cycle_now();
-    const recomp::cosim::SubHashes sub = recomp::cosim::hash_state(ctx, rdram, kRdramSize);
+    if (raw_vis_capture != nullptr) {
+        *raw_vis_capture = raw_vis;
+    }
+    std::vector<uint8_t> normalized_rdram;
+    if (!normalize_host_only_rdram(rdram, normalized_rdram, error)) {
+        return false;
+    }
+    uint32_t selected_thread = 0;
+    ctx = select_snapshot_context(rdram, ctx, selected_thread);
+    if (selected_thread_capture != nullptr) {
+        *selected_thread_capture = selected_thread;
+    }
+    if (normalized_capture != nullptr) {
+        *normalized_capture = normalized_rdram;
+    }
+    const recomp::cosim::SubHashes sub =
+        recomp::cosim::hash_state(ctx, normalized_rdram.data(), kRdramSize);
 
     std::lock_guard<std::mutex> lock(g_mu);
+    if (advance_chain && g_last_raw_vis_set && raw_vis <= g_last_raw_vis) {
+        error = "not a new VI boundary";
+        return false;
+    }
+    if (advance_chain && !g_vis_base_set) {
+        g_vis_base = raw_vis;
+        g_vis_base_set = true;
+    }
+    const uint64_t vis = g_vis_base_set ? raw_vis - g_vis_base : raw_vis;
     uint64_t cp_index = g_cp;
     uint64_t chain = g_chain;
     if (advance_chain) {
         chain = recomp::cosim::chain_advance(g_chain, sub, vis, cycle);
         cp_index = ++g_cp;
         g_chain = chain;
+        g_last_raw_vis = raw_vis;
+        g_last_raw_vis_set = true;
     }
 
     out = recomp::cosim::Checkpoint{
@@ -184,20 +368,83 @@ bool snapshot(recomp::cosim::Checkpoint& out, bool advance_chain, std::string& e
     if (advance_chain) {
         if (g_window.size() == kWindowCap) {
             g_window.erase(g_window.begin());
+            if (!g_window_quiescence.empty()) {
+                g_window_quiescence.erase(g_window_quiescence.begin());
+            }
+            if (!g_window_context_threads.empty()) {
+                g_window_context_threads.erase(g_window_context_threads.begin());
+            }
         }
         g_window.push_back(out);
+        g_window_quiescence.push_back(g_last_quiescence);
+        g_window_context_threads.push_back(selected_thread);
+        g_last_checkpoint_rdram = normalized_rdram;
         g_published_cp.store(out.cp, std::memory_order_release);
     }
     return true;
 }
 
+bool commit_captured_checkpoint(
+    const recomp::cosim::Checkpoint& captured,
+    uint64_t raw_vis,
+    const std::vector<uint8_t>& normalized_rdram,
+    uint32_t selected_thread,
+    recomp::cosim::Checkpoint& out,
+    std::string& error)
+{
+    if (normalized_rdram.size() != kRdramSize) {
+        error = "captured RDRAM size mismatch";
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (g_last_raw_vis_set && raw_vis <= g_last_raw_vis) {
+        error = "not a new VI boundary";
+        return false;
+    }
+    if (!g_vis_base_set) {
+        g_vis_base = raw_vis;
+        g_vis_base_set = true;
+    }
+    const uint64_t vis = raw_vis - g_vis_base;
+    const uint64_t chain =
+        recomp::cosim::chain_advance(g_chain, captured.sub, vis, captured.cycle);
+
+    out = recomp::cosim::Checkpoint{
+        ++g_cp,
+        vis,
+        captured.cycle,
+        captured.sub,
+        chain,
+    };
+    g_chain = chain;
+    g_last_raw_vis = raw_vis;
+    g_last_raw_vis_set = true;
+
+    if (g_window.size() == kWindowCap) {
+        g_window.erase(g_window.begin());
+        if (!g_window_quiescence.empty()) {
+            g_window_quiescence.erase(g_window_quiescence.begin());
+        }
+        if (!g_window_context_threads.empty()) {
+            g_window_context_threads.erase(g_window_context_threads.begin());
+        }
+    }
+    g_window.push_back(out);
+    g_window_quiescence.push_back(g_last_quiescence);
+    g_window_context_threads.push_back(selected_thread);
+    g_last_checkpoint_rdram = normalized_rdram;
+    g_published_cp.store(out.cp, std::memory_order_release);
+    return true;
+}
+
 std::string quiescence_json_fields(const ultramodern_cosim_quiescence_state& q) {
-    char buf[320];
+    char buf[360];
     std::snprintf(buf, sizeof(buf),
         "\"vi_queue\":%u,\"running_head\":%u,\"known_threads\":%u,"
         "\"blocked_on_vi\":%u,\"blocked_on_other\":%u,"
         "\"idle_running\":%u,\"runnable_or_unknown\":%u,"
-        "\"external_pending\":%u,\"quiescent\":%s",
+        "\"external_pending\":%u,\"scheduler_active\":%u,\"quiescent\":%s",
         q.vi_queue,
         q.running_head,
         q.known_threads,
@@ -206,6 +453,7 @@ std::string quiescence_json_fields(const ultramodern_cosim_quiescence_state& q) 
         q.idle_running,
         q.runnable_or_unknown,
         q.external_pending,
+        q.scheduler_active,
         q.quiescent ? "true" : "false");
     return std::string(buf);
 }
@@ -235,6 +483,49 @@ bool latest_checkpoint(recomp::cosim::Checkpoint& out) {
     return true;
 }
 
+bool same_quiescence_state(
+    const ultramodern_cosim_quiescence_state& a,
+    const ultramodern_cosim_quiescence_state& b)
+{
+    return a.vi_queue == b.vi_queue &&
+           a.running_head == b.running_head &&
+           a.known_threads == b.known_threads &&
+           a.blocked_on_vi == b.blocked_on_vi &&
+           a.blocked_on_other == b.blocked_on_other &&
+           a.idle_running == b.idle_running &&
+           a.runnable_or_unknown == b.runnable_or_unknown &&
+           a.external_pending == b.external_pending &&
+           a.scheduler_active == b.scheduler_active &&
+           a.quiescent == b.quiescent;
+}
+
+bool scheduler_epoch_is_stable(uint64_t epoch) {
+    return (epoch & 1u) == 0;
+}
+
+uint32_t request_deterministic_vi(uint32_t count) {
+    const uint32_t accepted = ultramodern_cosim_request_vi(count);
+    if (accepted != 0) {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_vi_origin_claimed = true;
+    }
+    return accepted;
+}
+
+void claim_polled_vi_origin_if_needed() {
+    bool should_rebase = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        if (!g_vi_origin_claimed) {
+            g_vi_origin_claimed = true;
+            should_rebase = true;
+        }
+    }
+    if (should_rebase) {
+        ultramodern_cosim_reset_vi_counter();
+    }
+}
+
 bool publish_polled_quiescence_checkpoint(const ultramodern_cosim_quiescence_state& q) {
     if (!q.quiescent) {
         return false;
@@ -245,27 +536,85 @@ bool publish_polled_quiescence_checkpoint(const ultramodern_cosim_quiescence_sta
             return true;
         }
     }
-    {
-        std::lock_guard<std::mutex> lock(g_mu);
-        g_last_quiescence = q;
-    }
 
-    recomp::cosim::Checkpoint cp{};
-    std::string error;
-    if (!snapshot(cp, true, error)) {
-        return false;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(g_step_mu);
-        if (!g_parked) {
-            g_parked = true;
-            g_parked_by_callback = false;
-            g_parked_cp = cp.cp;
+    constexpr uint32_t kStableAttempts = 8;
+    for (uint32_t attempt = 0; attempt < kStableAttempts; attempt++) {
+        const uint64_t scheduler_epoch_before = ultramodern_cosim_scheduler_epoch();
+        if (!scheduler_epoch_is_stable(scheduler_epoch_before)) {
+            continue;
         }
+
+        ultramodern_cosim_quiescence_state before{};
+        ultramodern_cosim_get_quiescence(&before);
+        if (ultramodern_cosim_scheduler_epoch() != scheduler_epoch_before) {
+            continue;
+        }
+        if (!before.quiescent) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            g_last_quiescence = before;
+        }
+
+        claim_polled_vi_origin_if_needed();
+
+        recomp::cosim::Checkpoint captured{};
+        std::vector<uint8_t> captured_rdram;
+        uint32_t selected_thread = 0;
+        uint64_t raw_vis = 0;
+        std::string error;
+        if (!snapshot(
+                captured,
+                false,
+                error,
+                &captured_rdram,
+                &selected_thread,
+                &raw_vis)) {
+            return false;
+        }
+        if (ultramodern_cosim_scheduler_epoch() != scheduler_epoch_before) {
+            continue;
+        }
+
+        ultramodern_cosim_quiescence_state after{};
+        ultramodern_cosim_get_quiescence(&after);
+        if (ultramodern_cosim_scheduler_epoch() != scheduler_epoch_before) {
+            continue;
+        }
+        if (!after.quiescent ||
+            !same_quiescence_state(before, after) ||
+            total_vis != raw_vis) {
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            g_last_quiescence = after;
+        }
+
+        recomp::cosim::Checkpoint cp{};
+        if (!commit_captured_checkpoint(
+                captured,
+                raw_vis,
+                captured_rdram,
+                selected_thread,
+                cp,
+                error)) {
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_step_mu);
+            if (!g_parked) {
+                g_parked = true;
+                g_parked_by_callback = false;
+                g_parked_cp = cp.cp;
+            }
+        }
+        g_step_cv.notify_all();
+        return true;
     }
-    g_step_cv.notify_all();
-    return true;
+    return false;
 }
 
 bool parse_gpr_field(const std::string& field, int& idx) {
@@ -308,7 +657,12 @@ extern "C" void psr_cosim_set_active_context(unsigned char* rdram, void* ctx) {
         recomp_runtime_set_rdram(rdram);
     }
     if (ctx != nullptr) {
-        g_active_ctx.store(static_cast<recomp_context*>(ctx), std::memory_order_release);
+        recomp_context* recomp_ctx = static_cast<recomp_context*>(ctx);
+        g_active_ctx.store(recomp_ctx, std::memory_order_release);
+        remember_context(recomp_ctx);
+        if (ultramodern::is_game_thread()) {
+            remember_thread_context(static_cast<uint32_t>(ultramodern::this_thread()), recomp_ctx);
+        }
     }
 }
 
@@ -322,6 +676,13 @@ extern "C" int psr_cosim_on_quiescent_vi(
     if (state != nullptr) {
         std::lock_guard<std::mutex> lock(g_mu);
         g_last_quiescence = *state;
+        g_vi_origin_claimed = true;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_step_mu);
+        if (g_parked) {
+            return 0;
+        }
     }
 
     recomp::cosim::Checkpoint cp{};
@@ -346,7 +707,23 @@ extern "C" int psr_cosim_on_quiescent_vi(
     return 0;
 }
 
+extern "C" void psr_cosim_wait_for_start() {
+    std::unique_lock<std::mutex> lock(g_start_mu);
+    g_start_cv.wait(lock, []() {
+        return g_start_requested;
+    });
+}
+
 namespace pkmnstadium::cosim {
+
+std::string start_json() {
+    {
+        std::lock_guard<std::mutex> lock(g_start_mu);
+        g_start_requested = true;
+    }
+    g_start_cv.notify_all();
+    return R"({"ok":true,"started":true})";
+}
 
 std::string chain_json() {
     recomp::cosim::Checkpoint cp{};
@@ -511,7 +888,6 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
             break;
         }
 
-        ultramodern_cosim_request_vi(1);
         const auto slice_deadline = std::min(
             deadline,
             Clock::now() + std::chrono::milliseconds(16));
@@ -553,6 +929,7 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
             }
             if (g_parked_by_callback) {
                 g_release_count++;
+                request_vi = true;
                 g_step_cv.notify_all();
             } else {
                 g_parked = false;
@@ -562,7 +939,17 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
         }
 
         if (request_vi) {
-            ultramodern_cosim_request_vi(1);
+            std::unique_lock<std::mutex> lock(g_step_mu);
+            if (!g_step_cv.wait_until(lock, deadline, []() {
+                    return !g_parked;
+                })) {
+                lock.unlock();
+                return timeout_json("release_unpark", start, target);
+            }
+        }
+
+        if (request_vi) {
+            request_deterministic_vi(1);
         }
 
         while (g_published_cp.load(std::memory_order_acquire) <= before) {
@@ -610,19 +997,42 @@ std::string window_json(uint64_t count) {
     out += std::to_string(count);
     out += R"(,"rows":[)";
     for (size_t i = 0; i < static_cast<size_t>(count); i++) {
-        out += checkpoint_json(g_window[start + i], i != 0);
+        if (i != 0) out += ",";
+        out += "{";
+        out += checkpoint_json_fields(g_window[start + i]);
+        if (start + i < g_window_quiescence.size()) {
+            out += R"(,"quiescence":{)";
+            out += quiescence_json_fields(g_window_quiescence[start + i]);
+            out += "}";
+        }
+        if (start + i < g_window_context_threads.size()) {
+            out += R"(,"ctx_thread":)";
+            out += std::to_string(g_window_context_threads[start + i]);
+        }
+        out += "}";
     }
     out += "]}";
     return out;
 }
 
 std::string reset_json() {
+    ultramodern_cosim_reset_vi_counter();
+    ultramodern_cosim_reset_time();
+    ultramodern_cosim_reset_rcp_events();
     {
         std::lock_guard<std::mutex> lock(g_mu);
         g_cp = 0;
         g_chain = 0;
         g_window.clear();
+        g_window_quiescence.clear();
+        g_window_context_threads.clear();
+        g_last_checkpoint_rdram.clear();
         g_last_quiescence = {};
+        g_vi_origin_claimed = false;
+        g_vis_base_set = false;
+        g_vis_base = 0;
+        g_last_raw_vis_set = false;
+        g_last_raw_vis = 0;
         g_published_cp.store(0, std::memory_order_release);
     }
     {
@@ -708,6 +1118,11 @@ std::string threads_json() {
                 ? live_queue
                 : s.last_mq;
         const char* wait_event = queue_event_name(wait_queue, event_queues);
+        recomp_context* thread_ctx = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            thread_ctx = context_for_thread_locked(s.thread);
+        }
 
         if (i) {
             out += ",";
@@ -741,11 +1156,225 @@ std::string threads_json() {
         out += std::to_string(s.last_ms);
         out += R"(,"count":)";
         out += std::to_string(s.count);
+        if (thread_ctx != nullptr) {
+            out += R"(,"ctx":true,"sp":)";
+            out += std::to_string(thread_ctx->r29);
+            out += R"(,"ra":)";
+            out += std::to_string(thread_ctx->r31);
+            out += R"(,"v0":)";
+            out += std::to_string(thread_ctx->r2);
+            out += R"(,"v1":)";
+            out += std::to_string(thread_ctx->r3);
+        } else {
+            out += R"(,"ctx":false)";
+        }
         out += "}";
     }
 
     out += "]}";
     return out;
+}
+
+std::string normalized_rdram_peek_json(uint32_t addr, uint64_t count) {
+    if (count < 1) {
+        count = 1;
+    }
+    if (count > 256) {
+        count = 256;
+    }
+    const uint32_t paddr = addr_to_paddr(addr);
+    if (paddr + count > kRdramSize) {
+        return R"({"ok":false,"error":"oob"})";
+    }
+
+    uint8_t* rdram = recomp_runtime_get_rdram();
+    if (rdram == nullptr) {
+        return R"({"ok":false,"error":"rdram not captured yet"})";
+    }
+
+    std::vector<uint8_t> normalized;
+    std::string error;
+    if (!normalize_host_only_rdram(rdram, normalized, error)) {
+        return std::string(R"({"ok":false,"error":")") + error + R"("})";
+    }
+
+    std::string hex;
+    hex.reserve(static_cast<size_t>(count) * 2);
+    char tmp[4];
+    for (uint64_t i = 0; i < count; i++) {
+        std::snprintf(tmp, sizeof(tmp), "%02x", normalized[paddr + static_cast<uint32_t>(i)]);
+        hex += tmp;
+    }
+    return R"({"ok":true,"addr":)" + std::to_string(addr) +
+           R"(,"paddr":)" + std::to_string(paddr) +
+           R"(,"n":)" + std::to_string(count) +
+           R"(,"hex":")" + hex + R"("})";
+}
+
+std::string normalized_rdram_digest_json(uint32_t addr, uint64_t count) {
+    if (count < 1) {
+        count = 1;
+    }
+    if (count > 0x40000) {
+        count = 0x40000;
+    }
+    const uint32_t paddr = addr_to_paddr(addr);
+    if (paddr + count > kRdramSize) {
+        return R"({"ok":false,"error":"oob"})";
+    }
+
+    uint8_t* rdram = recomp_runtime_get_rdram();
+    if (rdram == nullptr) {
+        return R"({"ok":false,"error":"rdram not captured yet"})";
+    }
+
+    std::vector<uint8_t> normalized;
+    std::string error;
+    if (!normalize_host_only_rdram(rdram, normalized, error)) {
+        return std::string(R"({"ok":false,"error":")") + error + R"("})";
+    }
+
+    bool seen[256] = {};
+    uint32_t unique = 0;
+    uint32_t nonzero = 0;
+    int first_nonzero = -1;
+    int last_nonzero = -1;
+    uint64_t fnv = 1469598103934665603ull;
+
+    std::string first_hex;
+    first_hex.reserve(128);
+    char tmp[4];
+    for (uint64_t i = 0; i < count; i++) {
+        const uint8_t b = normalized[paddr + static_cast<uint32_t>(i)];
+        if (i < 64) {
+            std::snprintf(tmp, sizeof(tmp), "%02x", b);
+            first_hex += tmp;
+        }
+        if (!seen[b]) {
+            seen[b] = true;
+            unique++;
+        }
+        if (b != 0) {
+            nonzero++;
+            if (first_nonzero < 0) {
+                first_nonzero = static_cast<int>(i);
+            }
+            last_nonzero = static_cast<int>(i);
+        }
+        fnv ^= b;
+        fnv *= 1099511628211ull;
+    }
+
+    char hash_buf[32];
+    std::snprintf(hash_buf, sizeof(hash_buf), "%016llx", (unsigned long long)fnv);
+    return R"({"ok":true,"addr":)" + std::to_string(addr) +
+           R"(,"paddr":)" + std::to_string(paddr) +
+           R"(,"n":)" + std::to_string(count) +
+           R"(,"nonzero_bytes":)" + std::to_string(nonzero) +
+           R"(,"unique_bytes":)" + std::to_string(unique) +
+           R"(,"first_nonzero":)" + std::to_string(first_nonzero) +
+           R"(,"last_nonzero":)" + std::to_string(last_nonzero) +
+           R"(,"fnv64":")" + hash_buf +
+           R"(","first64":")" + first_hex + R"("})";
+}
+
+std::string checkpoint_rdram_peek_json(uint32_t addr, uint64_t count) {
+    if (count < 1) {
+        count = 1;
+    }
+    if (count > 256) {
+        count = 256;
+    }
+    const uint32_t paddr = addr_to_paddr(addr);
+    if (paddr + count > kRdramSize) {
+        return R"({"ok":false,"error":"oob"})";
+    }
+
+    std::vector<uint8_t> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        snapshot = g_last_checkpoint_rdram;
+    }
+    if (snapshot.size() != kRdramSize) {
+        return R"({"ok":false,"error":"checkpoint RDRAM not captured yet"})";
+    }
+
+    std::string hex;
+    hex.reserve(static_cast<size_t>(count) * 2);
+    char tmp[4];
+    for (uint64_t i = 0; i < count; i++) {
+        std::snprintf(tmp, sizeof(tmp), "%02x", snapshot[paddr + static_cast<uint32_t>(i)]);
+        hex += tmp;
+    }
+    return R"({"ok":true,"addr":)" + std::to_string(addr) +
+           R"(,"paddr":)" + std::to_string(paddr) +
+           R"(,"n":)" + std::to_string(count) +
+           R"(,"hex":")" + hex + R"("})";
+}
+
+std::string checkpoint_rdram_digest_json(uint32_t addr, uint64_t count) {
+    if (count < 1) {
+        count = 1;
+    }
+    if (count > 0x40000) {
+        count = 0x40000;
+    }
+    const uint32_t paddr = addr_to_paddr(addr);
+    if (paddr + count > kRdramSize) {
+        return R"({"ok":false,"error":"oob"})";
+    }
+
+    std::vector<uint8_t> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        snapshot = g_last_checkpoint_rdram;
+    }
+    if (snapshot.size() != kRdramSize) {
+        return R"({"ok":false,"error":"checkpoint RDRAM not captured yet"})";
+    }
+
+    bool seen[256] = {};
+    uint32_t unique = 0;
+    uint32_t nonzero = 0;
+    int first_nonzero = -1;
+    int last_nonzero = -1;
+    uint64_t fnv = 1469598103934665603ull;
+
+    std::string first_hex;
+    first_hex.reserve(128);
+    char tmp[4];
+    for (uint64_t i = 0; i < count; i++) {
+        const uint8_t b = snapshot[paddr + static_cast<uint32_t>(i)];
+        if (i < 64) {
+            std::snprintf(tmp, sizeof(tmp), "%02x", b);
+            first_hex += tmp;
+        }
+        if (!seen[b]) {
+            seen[b] = true;
+            unique++;
+        }
+        if (b != 0) {
+            nonzero++;
+            if (first_nonzero < 0) {
+                first_nonzero = static_cast<int>(i);
+            }
+            last_nonzero = static_cast<int>(i);
+        }
+        fnv ^= b;
+        fnv *= 1099511628211ull;
+    }
+
+    char hash_buf[32];
+    std::snprintf(hash_buf, sizeof(hash_buf), "%016llx", (unsigned long long)fnv);
+    return R"({"ok":true,"addr":)" + std::to_string(addr) +
+           R"(,"paddr":)" + std::to_string(paddr) +
+           R"(,"n":)" + std::to_string(count) +
+           R"(,"nonzero_bytes":)" + std::to_string(nonzero) +
+           R"(,"unique_bytes":)" + std::to_string(unique) +
+           R"(,"first_nonzero":)" + std::to_string(first_nonzero) +
+           R"(,"last_nonzero":)" + std::to_string(last_nonzero) +
+           R"(,"fnv64":")" + hash_buf +
+           R"(","first64":")" + first_hex + R"("})";
 }
 
 std::string inject_json(const std::string& field, uint64_t value, uint32_t addr) {

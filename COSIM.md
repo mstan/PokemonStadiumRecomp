@@ -292,5 +292,17 @@ committed, measured checkpoint.
       Throttled cosim build passes; protocol-only autoboot smoke shows two
       successful parked steps (`cp=2/vis=1`, then `cp=3/vis=2`) and
       `cosim_window` retains the checkpoint chain.
-- [ ] **T4+** (Gate 1 determinism, modeled clock, gates 2–3, Ares oracle) —
-      next after T3b parks reliably; see §9.
+- [x] **T4 - Gate 1 A-vs-A determinism: PASS (60 VI, repeated).**
+      `tools/n64_cosim.py gate1 --frames 60` passes twice on fresh paired
+      launches with identical checkpoint chains through `cp=61/vis=60`.
+      Determinism fixes landed in the cosim path: coordinated `cosim_start`,
+      pre-game deterministic-VI gating, two-phase stable poll checkpoints,
+      scheduler mutation/handoff epochs in quiescence, modeled RCP event queue
+      ordering, synchronous cosim gfx submission before modeled DP completion,
+      deterministic `osGetTime/osGetCount` read costs, and narrow normalization
+      for host-only scheduler pointers plus inactive stack redzone bytes below
+      each parked thread's saved SP.
+- [ ] **T5+** (retired-instruction modeled clock, gates 2-3, Ares oracle) -
+      next after Gate 1; see §9. Current modeled clock is sufficient for T4
+      determinism and RCP ordering, but not yet the full retired-instruction
+      counter described in §5.
