@@ -261,6 +261,10 @@ committed, measured checkpoint.
       N64_COSIM=ON) succeeds with 0 errors; boots + renders the 3D attract demo.
       Fixed `build_cosim.bat` exit-code detection (the start/cmd wrapper reports
       a bogus code on success; it now reads success from the ninja log).
+      2026-07-02: helper also pins clang-cl exception mode (`/EHsc`) and
+      `CMAKE_AR=llvm-lib.exe`, and freshens stale CMake compiler metadata when
+      a previous configure captured devkitPro `ar.exe`; no-op helper rerun
+      returns `build OK`.
 - [x] **T1 — state hash module: DONE + PROVEN.** `cosim_state.{hpp,cpp}` in
       N64ModernRuntime/librecomp, wired into `librecomp/CMakeLists.txt`, compiles
       in the real target; standalone self-test (`-DCOSIM_STATE_SELFTEST`) 12/12.
@@ -320,7 +324,22 @@ committed, measured checkpoint.
       detected the first mismatch at frame 4, localized to subsystem `rdram`
       and expected byte lane `paddr=0x7FFFF3`.
 - [ ] **T7+** (Ares oracle, then divergence knockout) -
-      next after T6; see §9. The Ares submodule is present, but the external
-      Ares prebuild under `ares-bridge/build/ares` is not present yet, so T7
-      starts with the documented `ARES_CORES=n64;gb` prebuild before configuring
-      `WITH_ARES_BRIDGE=ON`.
+      IN PROGRESS. Ares v147 (`f533120df`) is built externally and the
+      standalone `ares_oracle_server.exe` reports `ares-bridge: real`. Server
+      commands now expose `read_cpu_state`, `read_hi_lo`, and bounded RDRAM
+      digest/peek reads in recomp host byte order. `tools/n64_cosim.py
+      ares-smoke --frames 2` passes (`pc=0xa40011f8`, then `0xa400136c`).
+      Current post-revert gates: `gate1 --frames 60 --audit-every 15` passes
+      through `cp=61/vis=60`, and `gate3` catches the injected RDRAM fault at
+      frame 6.
+
+      First live `oracle --frames 1` result: expected FAIL, not blind-pass.
+      With 13 Ares warmup frames, frame 1 reports `subdiff=cpu_int,rdram`;
+      recomp checkpoint is `cp=2/vis=1/cycle_count=1025054`, Ares PC is
+      `0x80000078`, and the first RDRAM mismatch is `paddr=0x00000001`
+      (`recomp` low RDRAM zeros vs Ares IPL-loaded image bytes
+      `00 b0 0b 3c ...`). A direct attempt to seed the 0x100000-byte IPL image
+      into live recomp RDRAM was reverted because it corrupted boot-time
+      libultra/runtime state and made Gate 1 time out before `cp=1`; this
+      mismatch must be handled at the oracle surface or by a faithful runtime
+      model, not by mutating live RDRAM after HLE boot state exists.

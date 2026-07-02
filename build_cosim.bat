@@ -38,7 +38,10 @@ if not exist "%VSINSTALL%\VC\Tools\Llvm\x64\bin\clang-cl.exe" (
 )
 
 echo === CONFIGURE (N64_COSIM=ON) ===
-"%CMAKE%" -S "%PROJ%" -B "%PROJ%\build" -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=Release -DPSR_NO_CONSOLE=ON -DWITH_ARES_BRIDGE=OFF -DWITH_DEV_DIVERGENCE=OFF -DN64_COSIM=ON > "%PROJ%\_cfg_cosim.log" 2>&1
+set "CMAKE_FRESH="
+findstr /S /M /C:"devkitPro/msys2/usr/bin/ar.exe" "%PROJ%\build\CMakeFiles\CMakeC*Compiler.cmake" "%PROJ%\build\CMakeFiles\*\CMakeC*Compiler.cmake" >nul 2>&1
+if not errorlevel 1 set "CMAKE_FRESH=--fresh"
+"%CMAKE%" %CMAKE_FRESH% -S "%PROJ%" -B "%PROJ%\build" -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_AR="%VSINSTALL%\VC\Tools\Llvm\x64\bin\llvm-lib.exe" -DCMAKE_BUILD_TYPE=Release -DPSR_NO_CONSOLE=ON -DWITH_ARES_BRIDGE=OFF -DWITH_DEV_DIVERGENCE=OFF -DN64_COSIM=ON > "%PROJ%\_cfg_cosim.log" 2>&1
 set CFG_RC=%errorlevel%
 echo configure rc=%CFG_RC%
 if not "%CFG_RC%"=="0" ( echo CONFIGURE FAILED rc=%CFG_RC% & exit /b %CFG_RC% )
