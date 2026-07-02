@@ -495,3 +495,70 @@ committed, measured checkpoint.
       (`PSR_COSIM_GFX_SP_DELAY=1000000`, `PSR_COSIM_GFX_DP_DELAY=2000000`)
       did not move the split. The next viable fix is the deterministic
       checkpoint/park epoch itself, not simple SP/DP delay constants.
+- [x] **Interp-fallback telemetry (value-proposition accounting): DONE
+      2026-07-02 (Claude).** This is a static recompiler, so every interpreter
+      carry is a value-prop failure worth counting. `note_interp_fallback()` in
+      `librecomp/src/overlays.cpp` routes the four genuine interp sites
+      (reject / device_pin / frag_validate / floor — the interior-return
+      self-heal re-dispatches to NATIVE and is excluded), deduped by address so
+      a hot loop can't spam. Two signals: FIRST-TOUCH (new gap) and CHRONIC
+      (re-seen `>= N64_INTERP_CHRONIC_FRAMES=30` VI frames later — deterministic
+      VI-frame axis via `total_vis`, not wall clock). Sinks: always-on JSONL
+      (`build/coverage/interp_fallbacks.jsonl`) + a live ring; stderr echo is
+      developer-only (silent under `NDEBUG`; `PSR_INTERP_LOUD=1/0` overrides).
+      The pre-existing `get_function` lookup-miss stderr is gated the same way
+      (file log stays always-on). New debug-server command `interp_stats`
+      (`top=N`, all builds) is the consume-the-ring query: exact tier totals +
+      top-N interpreted addresses. Pure host-side; **Gate 1 stays byte-identical**
+      (45-frame A-vs-A PASS after the change), because tier decisions are
+      excluded from the state hash. Landed N64MR `41d0f90`, PSR (this commit).
+      VALIDATED: builds green; live `interp_stats` returns exact totals.
+      NOT YET POSITIVELY DEMONSTRATED: the capture path firing on a real
+      fallback — attract + full menu drive show **0 interp / 0 misses vs 443,101
+      static hits** (PSR's reachable paths are fully recompiled, the nominal
+      success state). To exercise capture: GB Tower (historically the
+      interp-heavy path) or a standalone `note_interp_fallback` self-test.
+
+---
+
+## 11. STOPPING POINT — RESUME HERE (2026-07-02)
+
+The co-sim is paused at a clean break to pivot to the PMS-USA **audio crackle**
+(see `AUDIO_CRACKLE.md`). Everything below is committed; trees are clean.
+
+**Heads / commits at pause:**
+- PSR `cosim/tier0` — pushed to `mstan`.
+- N64ModernRuntime `cosim/tier0` @ `41d0f90` — pushed to `origin`.
+- N64Recomp `de6f18b`, rt64 `b58c2f7` (unchanged on main; junctions per §1).
+
+**What works (validated live on 2026-07-02, not just logs):**
+- Gate 1 (A-vs-A determinism) — PASS, byte-identical through 60 VI frames incl.
+  4× full 8 MB RDRAM audits. `cycle_count=55815056`, `cpu_retired=4449368`.
+- Gate 3 (injected-fault detection) — PASS, caught a 1-byte RDRAM poke at the
+  exact frame, localized to subsystem + byte lane.
+- Ares oracle bridge is real (`ares-bridge: real`); `ares-smoke` + `ares-gate`
+  (Ares-vs-Ares) pass.
+- Interp telemetry live (`interp_stats`).
+
+**THE frontier — resume here (this is the real T8 blocker):**
+The live recomp-vs-Ares `oracle` diff correctly FAILS (not blind — Gate 3
+proves sensitivity). First divergence is **cross-subsystem event-phase / timing
+alignment**: audio-manager state (`audFrameCt` @ `0x80077DB0`) leads/trails
+display/stage state (`D_80068BB0`, `D_80068CA8`) depending on the chosen Ares
+VI frame; **no single fixed VI offset aligns all subsystems**. Dead ends already
+tried and reverted (do not repeat): IPL-RAM seeding, SP/DP delay-constant
+sweeps, post-VI frame-boundary hold. **Next fix = a deterministic checkpoint /
+park-epoch model driven by the modeled clock** (§0, §5), so the recomp's
+per-subsystem state is currency-aligned to a single guest-time boundary before
+the Ares compare. Then re-enable `--cpu-compare` gating (currently report-only:
+`Status.FR` recomp=0 vs Ares=1, `cp0_random` normalized out — both logged
+pending, not hidden).
+
+**Also owed (small):**
+- Positively demonstrate the interp-capture path (GB Tower or self-test).
+- Optional: rank `interp_fallbacks.jsonl` into a shard worklist (the bridge to
+  auto-tcc-sharding "make a shard next time").
+
+**How to run (throttled; real cmd.exe):**
+`& "$env:SystemRoot\System32\cmd.exe" /c "…\build_cosim.bat"` then
+`python tools/n64_cosim.py gate1|gate3|ares-gate|oracle|oracle-align …`.
