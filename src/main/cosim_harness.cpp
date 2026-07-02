@@ -833,6 +833,8 @@ std::string regs_json() {
     out += std::to_string(ctx->status_reg);
     out += R"(,"mips3_float_mode":)";
     out += std::to_string(ctx->mips3_float_mode);
+    out += R"(,"cop1_cs":)";
+    out += std::to_string(get_cop1_cs());
     out += R"(,"gpr":)";
     out += json_u64_array(gpr, 32);
     out += R"(,"cp0":)";

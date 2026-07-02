@@ -105,6 +105,37 @@ class DebugClient:
             self.file = None
 
 
+def stop_process(proc: subprocess.Popen[bytes], timeout_s: float = 3.0) -> None:
+    try:
+        proc.terminate()
+    except (OSError, ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=timeout_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        proc.kill()
+    except (OSError, ProcessLookupError, PermissionError):
+        try:
+            subprocess.run(
+                ["cmd.exe", "/c", "taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        proc.wait(timeout=timeout_s)
+    except (OSError, subprocess.TimeoutExpired, PermissionError):
+        pass
+
+
 class Instance:
     def __init__(self, name: str, exe: Path, cwd: Path, port: int, log_dir: Path) -> None:
         self.name = name
@@ -150,12 +181,7 @@ class Instance:
     def stop(self) -> None:
         self.client.close()
         if self.proc is not None:
-            try:
-                self.proc.terminate()
-                self.proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=3)
+            stop_process(self.proc)
             self.proc = None
         for f in (self.stdout_file, self.stderr_file):
             if f is not None:
@@ -202,12 +228,7 @@ class AresInstance:
     def stop(self) -> None:
         self.client.close()
         if self.proc is not None:
-            try:
-                self.proc.terminate()
-                self.proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=3)
+            stop_process(self.proc)
             self.proc = None
         for f in (self.stdout_file, self.stderr_file):
             if f is not None:
@@ -338,51 +359,187 @@ def parse_int(value: Any) -> int:
     raise CosimError(f"cannot parse integer value {value!r}")
 
 
+MAX_CPU_MISMATCHES = 16
+CP0_COARSE_IGNORE_REGS = {1}  # Random is not stable at coarse VI readback.
+
+
+def hex_value(value: int, bits: int) -> str:
+    width = max(1, bits // 4)
+    mask = (1 << bits) - 1
+    return f"0x{value & mask:0{width}x}"
+
+
+def compare_scalar(
+    name: str,
+    left: Any,
+    right: Any,
+    *,
+    left_name: str,
+    right_name: str,
+    bits: int,
+) -> dict[str, Any] | None:
+    lv = parse_int(left)
+    rv = parse_int(right)
+    if (lv & ((1 << bits) - 1)) == (rv & ((1 << bits) - 1)):
+        return None
+    return {
+        "reg": name,
+        left_name: hex_value(lv, bits),
+        right_name: hex_value(rv, bits),
+    }
+
+
+def compare_register_list(
+    left_regs: Any,
+    right_regs: Any,
+    *,
+    left_name: str,
+    right_name: str,
+    bits: int,
+    value_names: tuple[str, str],
+    ignore_regs: set[int] | None = None,
+    limit: int = MAX_CPU_MISMATCHES,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], int]:
+    if not isinstance(left_regs, list) or len(left_regs) != 32:
+        return {"ok": False, "error": f"{left_name} register payload missing/invalid"}, [], 0
+    if not isinstance(right_regs, list) or len(right_regs) != 32:
+        return {"ok": False, "error": f"{right_name} register payload missing/invalid"}, [], 0
+
+    mismatches: list[dict[str, Any]] = []
+    total = 0
+    mask = (1 << bits) - 1
+    ignored = ignore_regs or set()
+    for i in range(32):
+        if i in ignored:
+            continue
+        lv = parse_int(left_regs[i]) & mask
+        rv = parse_int(right_regs[i]) & mask
+        if lv == rv:
+            continue
+        total += 1
+        if len(mismatches) < limit:
+            mismatches.append(
+                {
+                    "reg": i,
+                    value_names[0]: hex_value(lv, bits),
+                    value_names[1]: hex_value(rv, bits),
+                }
+            )
+    return None, mismatches, total
+
+
+def synth_recomp_cp0(recomp_regs: dict[str, Any]) -> list[int] | None:
+    cp0 = recomp_regs.get("cp0")
+    if not isinstance(cp0, list) or len(cp0) != 32:
+        return None
+    out = [parse_int(v) & 0xFFFFFFFF for v in cp0]
+    if "status_reg" in recomp_regs:
+        out[12] = parse_int(recomp_regs["status_reg"]) & 0xFFFFFFFF
+    return out
+
+
 def compare_cpu_int(recomp_regs: dict[str, Any], ares_cpu: dict[str, Any]) -> dict[str, Any]:
     if not recomp_regs.get("ok"):
         return {"ok": False, "error": f"recomp regs failed: {recomp_regs}"}
     if not ares_cpu.get("ok"):
         return {"ok": False, "error": f"ares cpu failed: {ares_cpu}"}
 
-    recomp_gpr = recomp_regs.get("gpr")
-    ares_gpr = ares_cpu.get("gpr")
-    if not isinstance(recomp_gpr, list) or len(recomp_gpr) != 32:
-        return {"ok": False, "error": "recomp gpr payload missing/invalid"}
-    if not isinstance(ares_gpr, list) or len(ares_gpr) != 32:
-        return {"ok": False, "error": "ares gpr payload missing/invalid"}
+    err, gpr_mismatches, gpr_total = compare_register_list(
+        recomp_regs.get("gpr"),
+        ares_cpu.get("gpr"),
+        left_name="recomp gpr",
+        right_name="ares gpr",
+        bits=64,
+        value_names=("recomp", "ares"),
+    )
+    if err:
+        return err
 
-    gpr_mismatches: list[dict[str, Any]] = []
-    for i in range(32):
-        rv = parse_int(recomp_gpr[i]) & 0xFFFFFFFFFFFFFFFF
-        av = parse_int(ares_gpr[i]) & 0xFFFFFFFFFFFFFFFF
-        if rv != av:
-            gpr_mismatches.append(
+    hi_lo_mismatches = []
+    for reg in ("hi", "lo"):
+        mismatch = compare_scalar(
+            reg,
+            recomp_regs.get(reg, 0),
+            ares_cpu.get(reg, 0),
+            left_name="recomp",
+            right_name="ares",
+            bits=64,
+        )
+        if mismatch:
+            hi_lo_mismatches.append(mismatch)
+
+    recomp_cp0 = synth_recomp_cp0(recomp_regs)
+    err, cp0_mismatches, cp0_total = compare_register_list(
+        recomp_cp0,
+        ares_cpu.get("cp0"),
+        left_name="recomp cp0",
+        right_name="ares cp0",
+        bits=32,
+        value_names=("recomp", "ares"),
+        ignore_regs=CP0_COARSE_IGNORE_REGS,
+    )
+    if err:
+        return err
+
+    err, fpr_mismatches, fpr_total = compare_register_list(
+        recomp_regs.get("fpr"),
+        ares_cpu.get("fpr"),
+        left_name="recomp fpr",
+        right_name="ares fpr",
+        bits=64,
+        value_names=("recomp", "ares"),
+    )
+    if err:
+        return err
+
+    fpu_control_mismatches: list[dict[str, Any]] = []
+    if "mips3_float_mode" in recomp_regs and isinstance(ares_cpu.get("cp0"), list):
+        status = parse_int(ares_cpu["cp0"][12]) & 0xFFFFFFFF
+        recomp_fr = parse_int(recomp_regs.get("mips3_float_mode", 0)) & 1
+        ares_fr = (status >> 26) & 1
+        if recomp_fr != ares_fr:
+            fpu_control_mismatches.append(
+                {"reg": "status.fr", "recomp": str(recomp_fr), "ares": str(ares_fr)}
+            )
+    if "cop1_cs" in recomp_regs and "fcsr" in ares_cpu:
+        recomp_round = parse_int(recomp_regs["cop1_cs"]) & 0x3
+        ares_round = parse_int(ares_cpu["fcsr"]) & 0x3
+        if recomp_round != ares_round:
+            fpu_control_mismatches.append(
                 {
-                    "reg": i,
-                    "recomp": f"0x{rv:016x}",
-                    "ares": f"0x{av:016x}",
+                    "reg": "fcsr.round",
+                    "recomp": hex_value(recomp_round, 2),
+                    "ares": hex_value(ares_round, 2),
+                    "ares_fcsr": hex_value(parse_int(ares_cpu["fcsr"]), 32),
                 }
             )
 
-    hi_recomp = parse_int(recomp_regs.get("hi", 0)) & 0xFFFFFFFFFFFFFFFF
-    lo_recomp = parse_int(recomp_regs.get("lo", 0)) & 0xFFFFFFFFFFFFFFFF
-    hi_ares = parse_int(ares_cpu.get("hi", 0)) & 0xFFFFFFFFFFFFFFFF
-    lo_ares = parse_int(ares_cpu.get("lo", 0)) & 0xFFFFFFFFFFFFFFFF
-    hi_lo_mismatches = []
-    if hi_recomp != hi_ares:
-        hi_lo_mismatches.append(
-            {"reg": "hi", "recomp": f"0x{hi_recomp:016x}", "ares": f"0x{hi_ares:016x}"}
-        )
-    if lo_recomp != lo_ares:
-        hi_lo_mismatches.append(
-            {"reg": "lo", "recomp": f"0x{lo_recomp:016x}", "ares": f"0x{lo_ares:016x}"}
-        )
+    subdiff = []
+    if gpr_mismatches or hi_lo_mismatches:
+        subdiff.append("cpu_int")
+    if cp0_mismatches:
+        subdiff.append("cp0")
+    if fpr_mismatches or fpu_control_mismatches:
+        subdiff.append("cp1")
 
     return {
         "ok": True,
-        "different": bool(gpr_mismatches or hi_lo_mismatches),
+        "different": bool(subdiff),
+        "subdiff": subdiff,
         "gpr_mismatches": gpr_mismatches,
+        "gpr_mismatch_count": gpr_total,
         "hi_lo_mismatches": hi_lo_mismatches,
+        "cp0_mismatches": cp0_mismatches,
+        "cp0_mismatch_count": cp0_total,
+        "cp0_ignored_regs": sorted(CP0_COARSE_IGNORE_REGS),
+        "fpr_mismatches": fpr_mismatches,
+        "fpr_mismatch_count": fpr_total,
+        "fpu_control_mismatches": fpu_control_mismatches,
+        "ares_fcr0": ares_cpu.get("fcr0"),
+        "ares_fcsr": ares_cpu.get("fcsr"),
+        "recomp_cop1_cs": recomp_regs.get("cop1_cs"),
+        "recomp_status_reg": recomp_regs.get("status_reg"),
+        "recomp_mips3_float_mode": recomp_regs.get("mips3_float_mode"),
         "ares_pc": ares_cpu.get("pc"),
     }
 
@@ -551,33 +708,84 @@ def compare_ares_cpu(a_cpu: dict[str, Any], b_cpu: dict[str, Any]) -> dict[str, 
         return {"ok": False, "error": f"Ares B cpu failed: {b_cpu}"}
 
     scalar_mismatches: list[dict[str, Any]] = []
-    for reg in ("pc", "hi", "lo"):
-        av = parse_int(a_cpu.get(reg, 0))
-        bv = parse_int(b_cpu.get(reg, 0))
-        if av != bv:
-            scalar_mismatches.append(
-                {"reg": reg, "A": f"0x{av:016x}", "B": f"0x{bv:016x}"}
-            )
+    for reg, bits in (("pc", 32), ("hi", 64), ("lo", 64)):
+        mismatch = compare_scalar(
+            reg,
+            a_cpu.get(reg, 0),
+            b_cpu.get(reg, 0),
+            left_name="A",
+            right_name="B",
+            bits=bits,
+        )
+        if mismatch:
+            scalar_mismatches.append(mismatch)
 
-    a_gpr = a_cpu.get("gpr")
-    b_gpr = b_cpu.get("gpr")
-    if not isinstance(a_gpr, list) or len(a_gpr) != 32:
-        return {"ok": False, "error": "Ares A gpr payload missing/invalid"}
-    if not isinstance(b_gpr, list) or len(b_gpr) != 32:
-        return {"ok": False, "error": "Ares B gpr payload missing/invalid"}
+    fpu_control_mismatches: list[dict[str, Any]] = []
+    for reg in ("fcr0", "fcsr"):
+        mismatch = compare_scalar(
+            reg,
+            a_cpu.get(reg, 0),
+            b_cpu.get(reg, 0),
+            left_name="A",
+            right_name="B",
+            bits=32,
+        )
+        if mismatch:
+            fpu_control_mismatches.append(mismatch)
 
-    gpr_mismatches: list[dict[str, Any]] = []
-    for i in range(32):
-        av = parse_int(a_gpr[i]) & 0xFFFFFFFFFFFFFFFF
-        bv = parse_int(b_gpr[i]) & 0xFFFFFFFFFFFFFFFF
-        if av != bv:
-            gpr_mismatches.append({"reg": i, "A": f"0x{av:016x}", "B": f"0x{bv:016x}"})
+    err, gpr_mismatches, gpr_total = compare_register_list(
+        a_cpu.get("gpr"),
+        b_cpu.get("gpr"),
+        left_name="Ares A gpr",
+        right_name="Ares B gpr",
+        bits=64,
+        value_names=("A", "B"),
+    )
+    if err:
+        return err
+    err, cp0_mismatches, cp0_total = compare_register_list(
+        a_cpu.get("cp0"),
+        b_cpu.get("cp0"),
+        left_name="Ares A cp0",
+        right_name="Ares B cp0",
+        bits=64,
+        value_names=("A", "B"),
+        ignore_regs=CP0_COARSE_IGNORE_REGS,
+    )
+    if err:
+        return err
+    err, fpr_mismatches, fpr_total = compare_register_list(
+        a_cpu.get("fpr"),
+        b_cpu.get("fpr"),
+        left_name="Ares A fpr",
+        right_name="Ares B fpr",
+        bits=64,
+        value_names=("A", "B"),
+    )
+    if err:
+        return err
+
+    subdiff = []
+    if scalar_mismatches or gpr_mismatches:
+        subdiff.append("cpu_int")
+    if cp0_mismatches:
+        subdiff.append("cp0")
+    if fpr_mismatches or fpu_control_mismatches:
+        subdiff.append("cp1")
 
     return {
         "ok": True,
-        "different": bool(scalar_mismatches or gpr_mismatches),
+        "different": bool(subdiff),
+        "subdiff": subdiff,
         "scalar_mismatches": scalar_mismatches,
         "gpr_mismatches": gpr_mismatches,
+        "gpr_mismatch_count": gpr_total,
+        "cp0_mismatches": cp0_mismatches,
+        "cp0_mismatch_count": cp0_total,
+        "cp0_ignored_regs": sorted(CP0_COARSE_IGNORE_REGS),
+        "fpr_mismatches": fpr_mismatches,
+        "fpr_mismatch_count": fpr_total,
+        "fpu_control_mismatches": fpu_control_mismatches,
         "pc": a_cpu.get("pc"),
     }
 
@@ -1012,7 +1220,8 @@ def run_ares_gate(args: argparse.Namespace) -> int:
         "rdram_every": args.rdram_every,
         "coverage": {
             "axis": "Ares step_frame VI frames",
-            "compared": ["pc_hi_lo_gpr", "rdram_8mb_recomp_byte_order"],
+            "compared": ["pc_hi_lo_gpr_cp0_stable_fpr_fcr", "rdram_8mb_recomp_byte_order"],
+            "normalized_out": ["cp0_random"],
         },
         "rows": [],
     }
@@ -1070,7 +1279,11 @@ def run_ares_gate(args: argparse.Namespace) -> int:
             if not step_a.get("ok") or not step_b.get("ok"):
                 subdiff.append("step")
             if not cpu_diff.get("ok") or cpu_diff.get("different"):
-                subdiff.append("cpu")
+                cpu_subdiff = cpu_diff.get("subdiff")
+                if isinstance(cpu_subdiff, list) and cpu_subdiff:
+                    subdiff.extend(cpu_subdiff)
+                else:
+                    subdiff.append("cpu")
             if rdram_diff.get("different"):
                 subdiff.append("rdram")
             if subdiff:
@@ -1133,14 +1346,16 @@ def run_oracle(args: argparse.Namespace) -> int:
             "cpu_compare": args.cpu_compare,
             "rdram_search_start": args.rdram_search_start,
             "rdram_search_end": args.rdram_search_end,
-            "pending": ["cp0", "cp1/fpr", "pc/recomp_context_surface"],
+            "pending": ["pc/recomp_context_surface", "cp0_random", "full_fcsr_recomp_surface"],
         },
         "rows": [],
     }
     if args.cpu_compare == "fail":
-        report["coverage"]["compared"].append("cpu_gpr_hi_lo")
+        report["coverage"]["compared"].append("cpu_gpr_hi_lo_cp0_stable_fpr_status_fr_cop1_rounding")
     elif args.cpu_compare == "report":
-        report["coverage"]["reported_not_gating"] = ["cpu_gpr_hi_lo"]
+        report["coverage"]["reported_not_gating"] = ["cpu_gpr_hi_lo_cp0_stable_fpr_status_fr_cop1_rounding"]
+    if args.cpu_compare != "off":
+        report["coverage"]["normalized_out"] = ["cp0_random"]
 
     try:
         recomp.start()
@@ -1278,7 +1493,11 @@ def run_oracle(args: argparse.Namespace) -> int:
             if args.cpu_compare == "fail" and (
                 not cpu_diff.get("ok") or cpu_diff.get("different")
             ):
-                subdiff.append("cpu_int")
+                cpu_subdiff = cpu_diff.get("subdiff")
+                if isinstance(cpu_subdiff, list) and cpu_subdiff:
+                    subdiff.extend(cpu_subdiff)
+                else:
+                    subdiff.append("cpu")
             if rdram_diff.get("different"):
                 subdiff.append("rdram")
 

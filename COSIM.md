@@ -326,8 +326,9 @@ committed, measured checkpoint.
 - [ ] **T7+** (Ares oracle, then divergence knockout) -
       IN PROGRESS. Ares v147 (`f533120df`) is built externally and the
       standalone `ares_oracle_server.exe` reports `ares-bridge: real`. Server
-      commands now expose `read_cpu_state`, `read_hi_lo`, and bounded RDRAM
-      digest/peek reads in recomp host byte order. `tools/n64_cosim.py
+      commands now expose `read_cpu_state`, `read_hi_lo`, CP0/FPR/FPU-control
+      reads, and bounded RDRAM digest/peek reads in recomp host byte order.
+      `tools/n64_cosim.py
       ares-smoke --frames 2` passes (`pc=0xa40011f8`, then `0xa400136c`);
       `ares-gate --frames 20 --rdram-every 1` passes with full 8 MB
       Ares-vs-Ares RDRAM digest comparison every frame.
@@ -455,3 +456,24 @@ committed, measured checkpoint.
       2 (`cp=3` on both sides with identical cycle count but divergent RDRAM).
       That proves the future-event jump cannot simply be moved to the existing
       polled quiescence path without a stronger deterministic park/epoch model.
+      2026-07-02 CPU-state surface follow-up: Ares bridge/server now expose
+      `read_cp0`, `read_fpr`, `read_fpu_control`, and `read_cpu_state` includes
+      `cp0[32]`, `fpr[32]`, `fcr0`, and `fcsr`. Recomp `cosim_regs` now also
+      reports `cop1_cs`, so the coordinator can report GPR/HI/LO, stable CP0,
+      FPR lanes, Status.FR, and COP1 rounding differences. CP0 Random is
+      normalized out at coarse VI checkpoints because Ares-vs-Ares diverged on
+      that volatile register while PC/HI/LO/GPR/FPR/RDRAM matched; this remains
+      pending as `cp0_random`, not silently hidden. Validation: Python syntax
+      check passed; Ares oracle server rebuilt with MSBuild; throttled PSR
+      cosim build passed; `ares-smoke --frames 2 --port 55041` passed;
+      `ares-gate --frames 5 --rdram-every 5 --base-port 55054` passed;
+      `gate1 --frames 60 --audit-every 15 --base-port 55070` passed with final
+      row `cp=61/vis=60/cycle_count=55815056/cpu_retired=4449368`; `gate3
+      --base-port 55080` passed, catching the injected fault at frame 4.
+      Focused `oracle --frames 1 --rdram-every 0 --cpu-compare report
+      --base-port 55060` passed and recorded CPU subdiffs
+      `cpu_int/cp0/cp1` without gating. Full one-frame oracle diff with
+      `--rdram-search-start 0x400 --cpu-compare report --base-port 55100`
+      still fails on RDRAM at `paddr=0x00077C97` / `vaddr=0x80077C97`; CPU
+      report-mode evidence for that row is `gpr=27`, `cp0=4`, `fpr=0`, plus
+      Status.FR (`recomp=0`, `Ares=1`).
