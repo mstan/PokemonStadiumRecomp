@@ -972,6 +972,13 @@ std::string step_json(uint64_t frames, uint64_t timeout_ms) {
                 }
             }
 
+            ultramodern_cosim_quiescence_state idle_q{};
+            ultramodern_cosim_get_quiescence(&idle_q);
+            if (idle_q.quiescent &&
+                ultramodern_cosim_advance_due_vi(recomp_runtime_get_rdram(), 1) != 0) {
+                continue;
+            }
+
             if (total_vis > before_vis) {
                 ultramodern_cosim_quiescence_state q{};
                 ultramodern_cosim_get_quiescence(&q);

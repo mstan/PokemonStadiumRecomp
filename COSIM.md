@@ -398,3 +398,14 @@ committed, measured checkpoint.
       `oracle-align --recomp-checkpoint 2 --ares-start 60 --ares-end 60`
       passed and reported `now_cycle=1572532`, `scheduled={sp:2,dp:1,vi:2,ai:0}`,
       `delivered={sp:2,dp:1,vi:2,ai:0}`, `pending.total=0`.
+      Modeled-clock follow-up: co-sim VI delivery is now due on the modeled
+      guest clock instead of being consumed directly by the host VI thread.
+      `ultramodern_cosim_advance_due_vi()` advances only when the modeled clock
+      reaches the next 60 Hz VI deadline, or when the scheduler/harness is
+      quiescent and explicitly permits a modeled time jump to that deadline.
+      Default RCP task delays remain unchanged, but SP/DP/RSP delays can now be
+      overridden with `PSR_COSIM_GFX_SP_DELAY`, `PSR_COSIM_GFX_DP_DELAY`, and
+      `PSR_COSIM_RSP_SP_DELAY` for Ares calibration sweeps. Throttled build
+      passed, and default-delay Gate 1 stayed green:
+      `gate1 --frames 60 --audit-every 15 --base-port 5010` produced
+      `cp=61/vis=60/cycle_count=55922092/cpu_retired=4449368`.
