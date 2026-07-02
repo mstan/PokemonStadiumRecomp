@@ -458,6 +458,105 @@ def first_recomp_ares_rdram_diff(recomp: Instance, ares: AresInstance) -> dict[s
     }
 
 
+def compare_ares_cpu(a_cpu: dict[str, Any], b_cpu: dict[str, Any]) -> dict[str, Any]:
+    if not a_cpu.get("ok"):
+        return {"ok": False, "error": f"Ares A cpu failed: {a_cpu}"}
+    if not b_cpu.get("ok"):
+        return {"ok": False, "error": f"Ares B cpu failed: {b_cpu}"}
+
+    scalar_mismatches: list[dict[str, Any]] = []
+    for reg in ("pc", "hi", "lo"):
+        av = parse_int(a_cpu.get(reg, 0))
+        bv = parse_int(b_cpu.get(reg, 0))
+        if av != bv:
+            scalar_mismatches.append(
+                {"reg": reg, "A": f"0x{av:016x}", "B": f"0x{bv:016x}"}
+            )
+
+    a_gpr = a_cpu.get("gpr")
+    b_gpr = b_cpu.get("gpr")
+    if not isinstance(a_gpr, list) or len(a_gpr) != 32:
+        return {"ok": False, "error": "Ares A gpr payload missing/invalid"}
+    if not isinstance(b_gpr, list) or len(b_gpr) != 32:
+        return {"ok": False, "error": "Ares B gpr payload missing/invalid"}
+
+    gpr_mismatches: list[dict[str, Any]] = []
+    for i in range(32):
+        av = parse_int(a_gpr[i]) & 0xFFFFFFFFFFFFFFFF
+        bv = parse_int(b_gpr[i]) & 0xFFFFFFFFFFFFFFFF
+        if av != bv:
+            gpr_mismatches.append({"reg": i, "A": f"0x{av:016x}", "B": f"0x{bv:016x}"})
+
+    return {
+        "ok": True,
+        "different": bool(scalar_mismatches or gpr_mismatches),
+        "scalar_mismatches": scalar_mismatches,
+        "gpr_mismatches": gpr_mismatches,
+        "pc": a_cpu.get("pc"),
+    }
+
+
+def first_ares_ares_rdram_diff(a: AresInstance, b: AresInstance) -> dict[str, Any]:
+    def digest(inst: AresInstance, start: int, count: int) -> dict[str, Any]:
+        return inst.cmd(
+            {
+                "cmd": "read_memory_digest",
+                "addr": 0x80000000 + start,
+                "len": count,
+                "order": "recomp",
+            },
+            timeout_s=60.0,
+        )
+
+    def same_range(start: int, count: int) -> bool:
+        da = digest(a, start, count)
+        db = digest(b, start, count)
+        if not da.get("ok") or not db.get("ok"):
+            raise CosimError(f"Ares RDRAM digest failed at 0x{start:X}/0x{count:X}: {da} {db}")
+        return da.get("fnv64") == db.get("fnv64")
+
+    start = None
+    for off in range(0, RDRAM_SIZE, RDRAM_CHUNK):
+        n = min(RDRAM_CHUNK, RDRAM_SIZE - off)
+        if not same_range(off, n):
+            start = off
+            count = n
+            break
+    if start is None:
+        return {"ok": True, "different": False}
+
+    while count > 1:
+        half = count // 2
+        if not same_range(start, half):
+            count = half
+        else:
+            start += half
+            count -= half
+
+    peek_start = max(0, start - 16)
+    peek_n = min(64, RDRAM_SIZE - peek_start)
+    pa = a.cmd(
+        {"cmd": "read_memory", "addr": 0x80000000 + peek_start, "len": peek_n, "order": "recomp"},
+        timeout_s=20.0,
+    )
+    pb = b.cmd(
+        {"cmd": "read_memory", "addr": 0x80000000 + peek_start, "len": peek_n, "order": "recomp"},
+        timeout_s=20.0,
+    )
+    return {
+        "ok": True,
+        "different": True,
+        "paddr": start,
+        "vaddr": 0x80000000 + start,
+        "peek_start": peek_start,
+        "peek_vaddr": 0x80000000 + peek_start,
+        "peek_n": peek_n,
+        "order": "recomp",
+        "A": pa,
+        "B": pb,
+    }
+
+
 def setup_pair(args: argparse.Namespace, gate_name: str) -> tuple[Instance, Instance, dict[str, Any], Path]:
     exe = host_path(args.exe)
     cwd = host_path(args.cwd)
@@ -804,6 +903,118 @@ def run_ares_smoke(args: argparse.Namespace) -> int:
         ares.stop()
 
 
+def run_ares_gate(args: argparse.Namespace) -> int:
+    ares_exe = host_path(args.ares_exe)
+    rom = host_path(args.rom)
+    ares_cwd = host_path(args.ares_cwd)
+    log_dir = host_path(args.log_dir)
+    report_path = host_path(args.report)
+    if not ares_exe.exists():
+        raise CosimError(f"missing Ares oracle server: {ares_exe}")
+    if not rom.exists():
+        raise CosimError(f"missing ROM: {rom}")
+
+    a = AresInstance("aresA", ares_exe, rom, ares_cwd, args.base_port, log_dir)
+    b = AresInstance("aresB", ares_exe, rom, ares_cwd, args.base_port + 1, log_dir)
+    report: dict[str, Any] = {
+        "ok": False,
+        "gate": "ares_vs_ares",
+        "ares_exe": str(ares_exe),
+        "rom": str(rom),
+        "base_port": args.base_port,
+        "frames_requested": args.frames,
+        "rdram_every": args.rdram_every,
+        "coverage": {
+            "axis": "Ares step_frame VI frames",
+            "compared": ["pc_hi_lo_gpr", "rdram_8mb_recomp_byte_order"],
+        },
+        "rows": [],
+    }
+
+    try:
+        a.start()
+        b.start()
+        a.connect(args.startup_timeout)
+        b.connect(args.startup_timeout)
+
+        init: dict[str, Any] = {}
+        for inst in (a, b):
+            ping = inst.cmd("ping")
+            status = inst.cmd("status")
+            reset = inst.cmd("reset", timeout_s=30.0)
+            init[inst.name] = {"ping": ping, "status": status, "reset": reset}
+            if not ping.get("ok") or not status.get("ok") or not status.get("is_real"):
+                report["error"] = f"{inst.name} did not report a real oracle"
+                report["init"] = init
+                write_report(report_path, report)
+                print(f"FAIL ares_vs_ares init; report={report_path}")
+                return 1
+            if not reset.get("ok"):
+                report["error"] = f"{inst.name} reset failed"
+                report["init"] = init
+                write_report(report_path, report)
+                print(f"FAIL ares_vs_ares reset; report={report_path}")
+                return 1
+        report["init"] = init
+
+        for frame in range(1, args.frames + 1):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fa = pool.submit(a.cmd, {"cmd": "step_frame", "n": 1}, args.step_timeout)
+                fb = pool.submit(b.cmd, {"cmd": "step_frame", "n": 1}, args.step_timeout)
+                step_a = fa.result()
+                step_b = fb.result()
+
+            cpu_a = a.cmd({"cmd": "read_cpu_state"}, timeout_s=10.0)
+            cpu_b = b.cmd({"cmd": "read_cpu_state"}, timeout_s=10.0)
+            cpu_diff = compare_ares_cpu(cpu_a, cpu_b)
+            rdram_diff = {"ok": True, "different": False, "skipped": True}
+            if args.rdram_every > 0 and frame % args.rdram_every == 0:
+                rdram_diff = first_ares_ares_rdram_diff(a, b)
+
+            rec: dict[str, Any] = {
+                "frame": frame,
+                "A_step": step_a,
+                "B_step": step_b,
+                "cpu_diff": cpu_diff,
+                "rdram_diff": {k: v for k, v in rdram_diff.items() if k not in ("A", "B")},
+            }
+            report["rows"].append(rec)
+
+            subdiff = []
+            if not step_a.get("ok") or not step_b.get("ok"):
+                subdiff.append("step")
+            if not cpu_diff.get("ok") or cpu_diff.get("different"):
+                subdiff.append("cpu")
+            if rdram_diff.get("different"):
+                subdiff.append("rdram")
+            if subdiff:
+                report["error"] = "Ares determinism mismatch"
+                report["first_bad_frame"] = frame
+                report["subdiff"] = subdiff
+                report["cpu_A"] = cpu_a
+                report["cpu_B"] = cpu_b
+                report["rdram_diff"] = rdram_diff
+                write_report(report_path, report)
+                print(f"FAIL ares_vs_ares frame={frame} subdiff={','.join(subdiff)}; report={report_path}")
+                return 1
+
+            if args.verbose:
+                print(
+                    f"frame={frame} pc={cpu_diff.get('pc')} "
+                    f"traceA={step_a.get('trace_count')} traceB={step_b.get('trace_count')}"
+                )
+
+        report["ok"] = True
+        report["frames_completed"] = args.frames
+        report["final"] = report["rows"][-1] if report["rows"] else None
+        write_report(report_path, report)
+        print(f"PASS ares_vs_ares frames={args.frames}; report={report_path}")
+        return 0
+    finally:
+        a.stop()
+        b.stop()
+
+
 def run_oracle(args: argparse.Namespace) -> int:
     exe = host_path(args.exe)
     cwd = host_path(args.cwd)
@@ -1012,6 +1223,19 @@ def main(argv: list[str]) -> int:
     ares_smoke.add_argument("--report", default=str(BUILD / "cosim_ares_smoke_report.json"))
     ares_smoke.add_argument("--verbose", action="store_true")
 
+    ares_gate = sub.add_parser("ares-gate", help="run Ares-vs-Ares oracle determinism gate")
+    ares_gate.add_argument("--frames", type=int, default=20)
+    ares_gate.add_argument("--base-port", type=int, default=4874)
+    ares_gate.add_argument("--startup-timeout", type=float, default=30.0)
+    ares_gate.add_argument("--step-timeout", type=float, default=90.0)
+    ares_gate.add_argument("--rdram-every", type=int, default=1, help="compare full RDRAM every N frames; 0 disables")
+    ares_gate.add_argument("--ares-exe", default=str(DEFAULT_ARES_EXE))
+    ares_gate.add_argument("--ares-cwd", default=str(DEFAULT_ARES_EXE.parent))
+    ares_gate.add_argument("--rom", default=str(DEFAULT_ROM))
+    ares_gate.add_argument("--log-dir", default=str(BUILD / "cosim_ares_gate_logs"))
+    ares_gate.add_argument("--report", default=str(BUILD / "cosim_ares_gate_report.json"))
+    ares_gate.add_argument("--verbose", action="store_true")
+
     oracle = sub.add_parser("oracle", help="run recomp-vs-Ares per-VI checkpoint diff")
     oracle.add_argument("--frames", type=int, default=60)
     oracle.add_argument("--step-timeout-ms", type=int, default=15000)
@@ -1037,6 +1261,8 @@ def main(argv: list[str]) -> int:
         return run_gate3(args)
     if args.cmd == "ares-smoke":
         return run_ares_smoke(args)
+    if args.cmd == "ares-gate":
+        return run_ares_gate(args)
     if args.cmd == "oracle":
         return run_oracle(args)
     raise AssertionError(args.cmd)

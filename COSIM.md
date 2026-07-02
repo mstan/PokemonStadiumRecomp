@@ -328,7 +328,9 @@ committed, measured checkpoint.
       standalone `ares_oracle_server.exe` reports `ares-bridge: real`. Server
       commands now expose `read_cpu_state`, `read_hi_lo`, and bounded RDRAM
       digest/peek reads in recomp host byte order. `tools/n64_cosim.py
-      ares-smoke --frames 2` passes (`pc=0xa40011f8`, then `0xa400136c`).
+      ares-smoke --frames 2` passes (`pc=0xa40011f8`, then `0xa400136c`);
+      `ares-gate --frames 20 --rdram-every 1` passes with full 8 MB
+      Ares-vs-Ares RDRAM digest comparison every frame.
       Current post-revert gates: `gate1 --frames 60 --audit-every 15` passes
       through `cp=61/vis=60`, and `gate3` catches the injected RDRAM fault at
       frame 6.
