@@ -79,10 +79,67 @@ static void aspmain_capture_input(uint8_t* rdram, ::RspContext* ctx,
                                   uint32_t ucode_addr, uint32_t data_ptr,
                                   uint32_t data_size, uint32_t chunk);
 
+// ── Spike-triggered capture slots ───────────────────────────────────
+// PSR_ASPMAIN_SPIKE_DIR=<dir> keeps every task's post-seed DMEM +
+// RspContext in RAM; when the wrapper detects a seam discontinuity
+// right after a task completes, psr_aspmain_spike_write_inputs() dumps
+// the slot as a replay-grade capture of the exact defective task.
+namespace {
+    char     g_spike_dir[512] = {0};
+    int      g_spike_enabled  = -1;   // -1 unqueried, 0 off, 1 on
+    bool     g_spike_slot_valid = false;
+    uint8_t  g_spike_dmem[0x1000];
+    ::RspContext g_spike_ctx;
+    uint32_t g_spike_ucode_addr = 0, g_spike_data_ptr = 0;
+    uint32_t g_spike_data_size = 0, g_spike_chunk = 0;
+}
+extern "C" const char* psr_aspmain_spike_dir(void) {
+    if (g_spike_enabled == -1) {
+        const char* e = getenv("PSR_ASPMAIN_SPIKE_DIR");
+        if (e && *e) {
+            strncpy(g_spike_dir, e, sizeof(g_spike_dir) - 1);
+            g_spike_enabled = 1;
+        } else {
+            g_spike_enabled = 0;
+        }
+    }
+    return (g_spike_enabled == 1) ? g_spike_dir : nullptr;
+}
+// Dump the current task's input slot (same file contract as the armed
+// capture, so PSR_ASPMAIN_REPLAY consumes it unchanged). Returns 0 if
+// the slot is stale (task bypassed the seeding path).
+extern "C" int psr_aspmain_spike_write_inputs(const char* dir) {
+    if (!g_spike_slot_valid) return 0;
+    char path[640];
+    snprintf(path, sizeof(path), "%s/dmem.bin", dir);
+    if (FILE* f = fopen(path, "wb")) { fwrite(g_spike_dmem, 1, 0x1000, f); fclose(f); }
+    snprintf(path, sizeof(path), "%s/ctx.bin", dir);
+    if (FILE* f = fopen(path, "wb")) {
+        fwrite(&g_spike_ctx.r1, sizeof(uint32_t), 31, f);
+        fwrite(&g_spike_ctx.dma_mem_address, sizeof(uint32_t), 1, f);
+        fwrite(&g_spike_ctx.dma_dram_address, sizeof(uint32_t), 1, f);
+        fwrite(&g_spike_ucode_addr, sizeof(uint32_t), 1, f);
+        fclose(f);
+    }
+    snprintf(path, sizeof(path), "%s/ctx_full.bin", dir);
+    if (FILE* f = fopen(path, "wb")) { fwrite(&g_spike_ctx, 1, sizeof(g_spike_ctx), f); fclose(f); }
+    snprintf(path, sizeof(path), "%s/meta.txt", dir);
+    if (FILE* f = fopen(path, "w")) {
+        fprintf(f, "ucode_addr=0x%08X\ndata_ptr=0x%08X\ndata_size=0x%X\nchunk=0x%X\n"
+                   "trigger=seam_spike\n",
+                g_spike_ucode_addr, g_spike_data_ptr, g_spike_data_size, g_spike_chunk);
+        fclose(f);
+    }
+    return 1;
+}
+
 void aspmain_pre_task(uint8_t* rdram,
                       ::RspContext* ctx,
                       const char* ucode_name,
                       uint32_t ucode_addr) {
+    // A task that bypasses the seeding path below (empty task early-out)
+    // must not leave a stale spike-capture slot attributed to it.
+    g_spike_slot_valid = false;
     // Read OSTask back from DMEM[0xFC0] where the runtime stored
     // it. We could pass a separate OSTask* but reading from DMEM
     // matches what real rspboot does: the task struct lives there
@@ -192,6 +249,18 @@ void aspmain_pre_task(uint8_t* rdram,
 
     // Single-task replay capture (Milestone 1): dump this task's input state.
     aspmain_capture_input(rdram, ctx, ucode_addr, data_ptr, data_size, chunk);
+
+    // Spike-capture slot: keep this task's post-seed inputs in RAM so the
+    // wrapper can dump them if THIS task turns out to end in a bad seam.
+    if (psr_aspmain_spike_dir() != nullptr) {
+        memcpy(g_spike_dmem, dmem, 0x1000);
+        memcpy(&g_spike_ctx, ctx, sizeof(g_spike_ctx));
+        g_spike_ucode_addr = ucode_addr;
+        g_spike_data_ptr = data_ptr;
+        g_spike_data_size = data_size;
+        g_spike_chunk = chunk;
+        g_spike_slot_valid = true;
+    }
 
     // Per-task tracing is opt-in via PSR_ASPMAIN_DEBUG; without it
     // this fires every audio frame and floods stderr.

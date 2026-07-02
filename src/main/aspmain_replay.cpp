@@ -254,6 +254,22 @@ extern "C" int psr_aspmain_replay_main(const char* dir_c) {
     int verdict = 0;
 
     // (a) DMA-sequence diff — op-level localization.
+    //
+    // Known in-game-only artifact: aspmain_pre_task preloads the first
+    // command chunk with the SAME DMA the ucode's L_1120 pump then
+    // redundantly repeats (see the r28 seeding rationale in
+    // rsp_aspmain_hook.cpp). The replay restores DMEM directly instead
+    // of re-running the hook, so the in-game trace carries one extra
+    // duplicate entry at the front. Drop it before comparing.
+    if (cap_dma.size() >= 2 &&
+        cap_dma[0].write == cap_dma[1].write &&
+        cap_dma[0].dram == cap_dma[1].dram &&
+        cap_dma[0].dmem == cap_dma[1].dmem &&
+        cap_dma[0].len == cap_dma[1].len) {
+        fprintf(stderr, "[aspmain_replay] dropping in-game hook-preload "
+                        "duplicate DMA[0] before sequence compare\n");
+        cap_dma.erase(cap_dma.begin());
+    }
     if (have_dma) {
         size_t n = cap_dma.size() < rep_dma.size() ? cap_dma.size() : rep_dma.size();
         size_t first_bad = (size_t)-1;

@@ -309,6 +309,32 @@ extern "C" size_t recomp_audio_pcm_event_size(void);
 extern "C" size_t recomp_audio_pcm_window(void);
 extern "C" int psr_aspmain_capture_arm(const char* dir);
 extern "C" int psr_aspmain_capture_state(void);
+// Always-on per-task output-PCM ring (main.cpp) — the seam-analysis ring.
+struct TaskPcmEventMirror {
+    uint64_t seq;
+    uint64_t ms;
+    uint64_t dma_seq0;
+    uint32_t dram;
+    uint32_t len;
+    uint32_t exit_reason;
+    uint32_t n_dmas;
+    int16_t samples[368];
+};
+extern "C" void recomp_task_pcm_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t recomp_task_pcm_event_size(void);
+extern "C" int64_t recomp_task_pcm_dump(const char* path);
+// Always-on AI-submission ring (ultramodern/src/audio.cpp) — guest addr +
+// byte count of every audio buffer the game submits for playback.
+struct AiSubmitEventMirror {
+    uint64_t seq;
+    uint64_t ms;
+    uint32_t guest_addr;
+    uint32_t byte_count;
+};
+extern "C" void ultramodern_ai_submit_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
+extern "C" size_t ultramodern_ai_submit_event_size(void);
 extern "C" void psr_post_mortem_dump(const char* reason, void* fault_info);
 extern "C" int psr_dump_current_dl(const char* path,
                                    uint32_t* out_addr,
@@ -1467,6 +1493,86 @@ static std::string handle_command(const std::string& line) {
                 (unsigned long long)e.seq, (unsigned long long)e.ms,
                 e.sample_count, e.sample_rate, e.queued_us, e.skip_factor,
                 e.bytes_queued, e.decimated);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "ai_submit_recent") {
+        // The playback stream: guest address + size of every submitted
+        // audio buffer, in submission (= playback) order. Joining these
+        // addresses against task_pcm entries' dram attributes played PCM
+        // to the exact task outputs that composed it.
+        if (ultramodern_ai_submit_event_size() != sizeof(AiSubmitEventMirror)) {
+            return R"({"ok":false,"error":"ai submit event size mismatch"})";
+        }
+        int n = get_int(line, "n", 256);
+        if (n < 1) n = 1;
+        if (n > 16384) n = 16384;
+        std::vector<AiSubmitEventMirror> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        ultramodern_ai_submit_recent_copy(buf.data(), buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            char b[160];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"addr\":%u,\"bytes\":%u}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                e.guest_addr, e.byte_count);
+            out += b;
+        }
+        out += "]}";
+        return out;
+    }
+    if (cmd == "task_pcm_dump") {
+        // Dump the whole always-on per-task output-PCM ring to a file as
+        // raw TaskPcmEvent records (oldest -> newest) for offline seam
+        // analysis. Requires the session to run with PSR_RSP_DMA_TRACE=1
+        // (the ring locates each task's final WR via the DMA trace).
+        std::string p = get_str(line, "path");
+        if (p.empty()) return R"({"ok":false,"error":"missing path"})";
+        int64_t n = recomp_task_pcm_dump(p.c_str());
+        if (n < 0) return R"({"ok":false,"error":"open failed"})";
+        return R"({"ok":true,"records":)" + std::to_string(n)
+             + R"(,"record_size":)" + std::to_string(recomp_task_pcm_event_size())
+             + "}";
+    }
+    if (cmd == "task_pcm_recent") {
+        // Light stats over the last N task outputs: seam-relevant fields
+        // only (first/last frame per channel); full samples come from
+        // task_pcm_dump.
+        if (recomp_task_pcm_event_size() != sizeof(TaskPcmEventMirror)) {
+            return R"({"ok":false,"error":"task pcm event size mismatch"})";
+        }
+        int n = get_int(line, "n", 64);
+        if (n < 1) n = 1;
+        if (n > 2048) n = 2048;
+        std::vector<TaskPcmEventMirror> buf(n);
+        size_t got = 0;
+        uint64_t widx = 0;
+        recomp_task_pcm_recent_copy(buf.data(), buf.size(), &got, &widx);
+        std::string out = R"({"ok":true,"write_idx":)" + std::to_string(widx)
+                        + R"(,"events":[)";
+        for (size_t i = 0; i < got; i++) {
+            const auto& e = buf[i];
+            uint32_t n_samp = e.len / 2;
+            if (n_samp > 368) n_samp = 368;
+            int fl = n_samp >= 2 ? e.samples[0] : 0;
+            int fr = n_samp >= 2 ? e.samples[1] : 0;
+            int ll = n_samp >= 2 ? e.samples[n_samp - 2] : 0;
+            int lr = n_samp >= 2 ? e.samples[n_samp - 1] : 0;
+            char b[320];
+            std::snprintf(b, sizeof(b),
+                "%s{\"seq\":%llu,\"ms\":%llu,\"dram\":%u,\"len\":%u,"
+                "\"exit\":%u,\"n_dmas\":%u,"
+                "\"first_l\":%d,\"first_r\":%d,\"last_l\":%d,\"last_r\":%d}",
+                (i ? "," : ""),
+                (unsigned long long)e.seq, (unsigned long long)e.ms,
+                e.dram, e.len, e.exit_reason, e.n_dmas, fl, fr, ll, lr);
             out += b;
         }
         out += "]}";

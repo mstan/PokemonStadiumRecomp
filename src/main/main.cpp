@@ -19,8 +19,11 @@
  * surfaces missing functionality.
  */
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
@@ -146,6 +149,10 @@ static bool task_boot_matches(uint8_t* rdram, const OSTask* task,
 // otherwise psr_aspmain_capture_dir() returns null and this is a cheap passthrough.
 extern "C" const char* psr_aspmain_capture_dir(void);
 extern "C" void psr_aspmain_capture_done(void);
+// Spike-triggered capture (rsp_aspmain_hook.cpp): per-task input slot,
+// dumped when a task begins with a seam discontinuity.
+extern "C" const char* psr_aspmain_spike_dir(void);
+extern "C" int psr_aspmain_spike_write_inputs(const char* dir);
 // Offline replay entry (aspmain_replay.cpp) — dispatched from main() when
 // PSR_ASPMAIN_REPLAY=<capture_dir> is set.
 extern "C" int psr_aspmain_replay_main(const char* dir);
@@ -164,18 +171,216 @@ struct PsrRspDmaTraceEvent {
 extern "C" void recomp_rsp_dma_recent_copy(
     PsrRspDmaTraceEvent* out, uint32_t out_cap,
     uint32_t* out_count, uint64_t* out_write_index);
+
+// ── Always-on per-TASK output-PCM ring ──────────────────────────────
+// The audio pipeline's atomic unit is one aspMain task producing ~184
+// stereo frames via its final WR DMA into one of the game's rotating
+// output buffers; the AI chunks the host sees are 2-3 of those outputs
+// concatenated. Crackle analysis (2026-07-02) showed task outputs are
+// internally smooth but discontinuous ACROSS task boundaries — so the
+// unit of evidence is the task output itself, and every seam matters.
+// This ring records the final WR DMA's samples for EVERY audio task so
+// seams can be measured continuously and queried backward (never
+// arm-then-hope). Requires PSR_RSP_DMA_TRACE=1 (the final-WR location
+// comes from the DMA trace); without it entries simply don't record.
+namespace {
+struct TaskPcmEvent {
+    uint64_t seq;        // task counter (this ring's own)
+    uint64_t ms;         // wall clock since process start
+    uint64_t dma_seq0;   // first DMA-trace seq of this task (adjacency check)
+    uint32_t dram;       // final WR dest (identifies the rotating buffer)
+    uint32_t len;        // bytes (0x2E0 = 184 stereo frames in attract)
+    uint32_t exit_reason;
+    uint32_t n_dmas;     // DMAs this task issued (task-shape fingerprint)
+    int16_t samples[368];  // decoded BE->host int16, L/R interleaved
+};
+constexpr size_t TASKPCM_RING_CAP = 16384;   // ~90 s of audio at 180 t/s
+TaskPcmEvent g_taskpcm_ring[TASKPCM_RING_CAP];
+std::atomic<uint64_t> g_taskpcm_seq{0};
+std::mutex g_taskpcm_mtx;
+std::chrono::steady_clock::time_point g_taskpcm_t0 = std::chrono::steady_clock::now();
+
+// Returns the seam metric vs the previous recorded task (max over L/R of
+// |this task's first sample - previous task's last sample|), or -1 when
+// no valid previous task exists / tracing is off. The seam is THE crackle
+// signature: task outputs are internally smooth but occasionally
+// discontinuous across task boundaries.
+int32_t taskpcm_record(uint8_t* rdram, uint64_t dma_idx_before,
+                       RspExitReason exit_reason) {
+    // Pull this task's DMA slice; bail quietly when tracing is off.
+    static std::vector<PsrRspDmaTraceEvent> dbuf(4096);
+    uint32_t got = 0; uint64_t widx = 0;
+    recomp_rsp_dma_recent_copy(dbuf.data(), (uint32_t)dbuf.size(), &got, &widx);
+    if (got == 0) return -1;
+    const PsrRspDmaTraceEvent* last_wr = nullptr;
+    uint32_t n_dmas = 0;
+    for (uint32_t i = 0; i < got; i++) {
+        if (dbuf[i].seq < dma_idx_before) continue;
+        n_dmas++;
+        if (dbuf[i].write) last_wr = &dbuf[i];
+    }
+    if (last_wr == nullptr) return -1;
+
+    std::lock_guard<std::mutex> lk(g_taskpcm_mtx);
+    const uint64_t s = g_taskpcm_seq.load(std::memory_order_relaxed);
+    TaskPcmEvent& e = g_taskpcm_ring[s % TASKPCM_RING_CAP];
+    e.seq = s;
+    e.ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - g_taskpcm_t0).count();
+    e.dma_seq0 = dma_idx_before;
+    e.dram = last_wr->dram_addr & 0xFFFFFFu;
+    e.len = last_wr->byte_count;
+    e.exit_reason = (uint32_t)exit_reason;
+    e.n_dmas = n_dmas;
+    const uint32_t n_samp = std::min<uint32_t>(e.len / 2, 368);
+    for (uint32_t i = 0; i < n_samp; i++) {
+        // rdram is host XOR-3 layout; decode big-endian int16.
+        uint32_t off = e.dram + 2 * i;
+        uint8_t hi = rdram[(off) ^ 3];
+        uint8_t lo = rdram[(off + 1) ^ 3];
+        e.samples[i] = (int16_t)((hi << 8) | lo);
+    }
+    for (uint32_t i = n_samp; i < 368; i++) e.samples[i] = 0;
+
+    // Seam vs the previous task, computed before publishing this entry.
+    int32_t seam = -1;
+    if (s > 0 && n_samp >= 4) {
+        const TaskPcmEvent& p = g_taskpcm_ring[(s - 1) % TASKPCM_RING_CAP];
+        const uint32_t p_samp = std::min<uint32_t>(p.len / 2, 368);
+        if (p.exit_reason == (uint32_t)RspExitReason::Broke && p_samp >= 4) {
+            int32_t dl = e.samples[0] - p.samples[p_samp - 2];
+            int32_t dr = e.samples[1] - p.samples[p_samp - 1];
+            if (dl < 0) dl = -dl;
+            if (dr < 0) dr = -dr;
+            seam = dl > dr ? dl : dr;
+        }
+    }
+    g_taskpcm_seq.store(s + 1, std::memory_order_release);
+    return seam;
+}
+}  // namespace
+
+extern "C" void recomp_task_pcm_recent_copy(
+    void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out)
+{
+    std::lock_guard<std::mutex> lk(g_taskpcm_mtx);
+    const uint64_t s = g_taskpcm_seq.load(std::memory_order_relaxed);
+    if (next_seq_out) *next_seq_out = s;
+    if (cap == 0 || out_void == nullptr) { if (n_written) *n_written = 0; return; }
+    const size_t available = (s < TASKPCM_RING_CAP) ? size_t(s) : TASKPCM_RING_CAP;
+    const size_t want = (cap < available) ? cap : available;
+    TaskPcmEvent* out = static_cast<TaskPcmEvent*>(out_void);
+    const size_t start = (s - want) % TASKPCM_RING_CAP;
+    for (size_t i = 0; i < want; i++)
+        out[i] = g_taskpcm_ring[(start + i) % TASKPCM_RING_CAP];
+    if (n_written) *n_written = want;
+}
+
+extern "C" size_t recomp_task_pcm_event_size(void) {
+    return sizeof(TaskPcmEvent);
+}
+
+// Dump the whole ring (oldest -> newest) as raw TaskPcmEvent records for
+// offline seam analysis. Returns records written, or -1 on IO error.
+extern "C" int64_t recomp_task_pcm_dump(const char* path) {
+    std::lock_guard<std::mutex> lk(g_taskpcm_mtx);
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    const uint64_t s = g_taskpcm_seq.load(std::memory_order_relaxed);
+    const size_t available = (s < TASKPCM_RING_CAP) ? size_t(s) : TASKPCM_RING_CAP;
+    const size_t start = (s - available) % TASKPCM_RING_CAP;
+    int64_t written = 0;
+    for (size_t i = 0; i < available; i++) {
+        const TaskPcmEvent& e = g_taskpcm_ring[(start + i) % TASKPCM_RING_CAP];
+        if (fwrite(&e, sizeof(e), 1, f) == 1) written++;
+    }
+    fclose(f);
+    return written;
+}
+
 static RspExitReason aspMain_capture(uint8_t* rdram, uint32_t ucode_addr) {
     const char* dir = psr_aspmain_capture_dir();
+    const char* spike_base = psr_aspmain_spike_dir();
     static uint8_t* before = nullptr;   // 8 MiB snapshot of RDRAM pre-task
-    if (dir && !before) before = (uint8_t*)malloc(0x800000u);
-    if (dir && before) memcpy(before, rdram, 0x800000u);
+    if ((dir || spike_base) && !before) before = (uint8_t*)malloc(0x800000u);
+    if ((dir || spike_base) && before) memcpy(before, rdram, 0x800000u);
 
     // Snapshot the DMA-trace write index BEFORE the task so we can isolate
     // exactly this task's DMAs (the ring accumulates across all audio frames).
+    // Also feeds the always-on task-output ring below, so it is unconditional.
     uint64_t dma_idx_before = 0;
-    if (dir) recomp_rsp_dma_recent_copy(nullptr, 0, nullptr, &dma_idx_before);
+    recomp_rsp_dma_recent_copy(nullptr, 0, nullptr, &dma_idx_before);
 
     RspExitReason r = aspMain(rdram, ucode_addr);
+
+    // Always-on: record this task's output samples for seam analysis.
+    int32_t seam = taskpcm_record(rdram, dma_idx_before, r);
+
+    // Spike-triggered capture: when THIS task begins with a discontinuity
+    // against the previous task's output (the crackle signature), dump a
+    // full replay-grade capture of this task — the exact defective one —
+    // for the ground-truth RSP diff. Threshold via PSR_SPIKE_THRESHOLD
+    // (default 8000), session cap via PSR_SPIKE_MAX (default 8).
+    if (spike_base && before && seam >= 0) {
+        static int32_t s_threshold = -1;
+        static int s_max = -1;
+        static int s_written = 0;
+        if (s_threshold < 0) {
+            const char* e = getenv("PSR_SPIKE_THRESHOLD");
+            s_threshold = (e && *e) ? (int32_t)strtol(e, nullptr, 0) : 8000;
+            e = getenv("PSR_SPIKE_MAX");
+            s_max = (e && *e) ? (int)strtol(e, nullptr, 0) : 8;
+        }
+        if (seam >= s_threshold && s_written < s_max) {
+            char sdir[600];
+            snprintf(sdir, sizeof(sdir), "%s/spike_%02d", spike_base, s_written);
+#ifdef _WIN32
+            CreateDirectoryA(sdir, nullptr);
+#else
+            mkdir(sdir, 0777);
+#endif
+            if (psr_aspmain_spike_write_inputs(sdir)) {
+                char path[640];
+                snprintf(path, sizeof(path), "%s/rdram_before.bin", sdir);
+                if (FILE* f = fopen(path, "wb")) { fwrite(before, 1, 0x800000u, f); fclose(f); }
+                snprintf(path, sizeof(path), "%s/rdram_after.bin", sdir);
+                if (FILE* f = fopen(path, "wb")) { fwrite(rdram, 1, 0x800000u, f); fclose(f); }
+                snprintf(path, sizeof(path), "%s/seam.txt", sdir);
+                if (FILE* f = fopen(path, "w")) {
+                    fprintf(f, "seam=%d threshold=%d dma_seq0=%llu exit=%d\n",
+                            seam, s_threshold,
+                            (unsigned long long)dma_idx_before, (int)r);
+                    fclose(f);
+                }
+                // This task's DMA trace, same format as the armed capture.
+                {
+                    static std::vector<PsrRspDmaTraceEvent> dbuf2(4096);
+                    uint32_t got = 0; uint64_t widx = 0;
+                    recomp_rsp_dma_recent_copy(dbuf2.data(), (uint32_t)dbuf2.size(), &got, &widx);
+                    snprintf(path, sizeof(path), "%s/recomp_dma.txt", sdir);
+                    if (FILE* f = fopen(path, "w")) {
+                        fprintf(f, "# recomp aspMain DMA trace (this task: seq >= %llu)\n",
+                                (unsigned long long)dma_idx_before);
+                        uint32_t shown = 0;
+                        for (uint32_t i = 0; i < got; i++) {
+                            const PsrRspDmaTraceEvent& ev = dbuf2[i];
+                            if (ev.seq < dma_idx_before) continue;
+                            fprintf(f, "%3u %s dram=0x%06X dmem=0x%03X len=0x%X nz=%u first16=",
+                                    shown++, ev.write ? "WR" : "RD",
+                                    ev.dram_addr & 0xFFFFFF, ev.dmem_addr & 0xFFF,
+                                    ev.byte_count, ev.nonzero_bytes);
+                            for (int b = 0; b < 16; b++) fprintf(f, "%02X", ev.first16[b]);
+                            fprintf(f, "\n");
+                        }
+                        fclose(f);
+                    }
+                }
+                fprintf(stderr, "[spike-capture] seam=%d -> %s\n", seam, sdir);
+                fflush(stderr);
+                s_written++;
+            }
+        }
+    }
 
     if (dir && before) {
         // Skip SILENT/near-silent tasks: voice-state-only frames change only ~200
