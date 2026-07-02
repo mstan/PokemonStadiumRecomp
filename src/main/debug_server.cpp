@@ -332,6 +332,12 @@ extern "C" int64_t recomp_task_pcm_dump(const char* path);
 extern "C" size_t recomp_audio_cmdlist_event_size(void);
 extern "C" uint64_t recomp_audio_cmdlist_count(void);
 extern "C" int64_t recomp_audio_cmdlist_dump(const char* path);
+// Clock-domain bridge health (main.cpp) — fill level + underrun/overflow
+// counters accumulated inside rab_push/rab_pull since process start.
+extern "C" int recomp_audio_bridge_stats(
+    double* fill_ms, double* correction,
+    uint64_t* underruns, uint64_t* overflow_drops,
+    uint64_t* pushed, uint64_t* pulled);
 // Always-on AI-submission ring (ultramodern/src/audio.cpp) — guest addr +
 // byte count of every audio buffer the game submits for playback.
 struct AiSubmitEventMirror {
@@ -1548,6 +1554,23 @@ static std::string handle_command(const std::string& line) {
         return R"({"ok":true,"records":)" + std::to_string(n)
              + R"(,"record_size":)" + std::to_string(recomp_task_pcm_event_size())
              + "}";
+    }
+    if (cmd == "audio_bridge_stats") {
+        double fill = 0, corr = 0;
+        uint64_t under = 0, over = 0, pushed = 0, pulled = 0;
+        if (!recomp_audio_bridge_stats(&fill, &corr, &under, &over,
+                                       &pushed, &pulled)) {
+            return R"({"ok":false,"error":"bridge not ready"})";
+        }
+        char b[256];
+        std::snprintf(b, sizeof(b),
+            "{\"ok\":true,\"fill_ms\":%.2f,\"correction\":%.5f,"
+            "\"underruns\":%llu,\"overflow_drops\":%llu,"
+            "\"pushed\":%llu,\"pulled\":%llu}",
+            fill, corr,
+            (unsigned long long)under, (unsigned long long)over,
+            (unsigned long long)pushed, (unsigned long long)pulled);
+        return b;
     }
     if (cmd == "audio_cmdlist_count") {
         return R"({"ok":true,"count":)"

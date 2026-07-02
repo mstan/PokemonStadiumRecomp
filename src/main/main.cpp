@@ -692,6 +692,30 @@ extern "C" void psr_audio_fill_f32(float* out, int frames) {
                                 (double)output_sample_rate, output_channels);
 }
 
+// Live bridge health for the debug server (audio_bridge_stats): fill level,
+// underrun/overflow counters, applied rate correction. The counters
+// accumulate inside rab_pull/rab_push regardless of any debug gating, so a
+// session can be interrogated after the fact — this just exposes them.
+extern "C" int recomp_audio_bridge_stats(
+    double* fill_ms, double* correction,
+    uint64_t* underruns, uint64_t* overflow_drops,
+    uint64_t* pushed, uint64_t* pulled)
+{
+    if (!g_bridge_ready || !g_audio_mtx) return 0;
+    SDL_LockMutex(g_audio_mtx);
+    rab_stats st;
+    rab_get_stats(&g_bridge, &st);
+    double fill = rab_fill_ms(&g_bridge);
+    SDL_UnlockMutex(g_audio_mtx);
+    if (fill_ms) *fill_ms = fill;
+    if (correction) *correction = st.last_correction;
+    if (underruns) *underruns = st.underrun_events;
+    if (overflow_drops) *overflow_drops = st.overflow_drops;
+    if (pushed) *pushed = st.pushed_frames;
+    if (pulled) *pulled = st.pulled_frames;
+    return 1;
+}
+
 // Build (or rebuild on rate change) the bridge for the current sample_rate.
 static void bridge_reinit_locked() {
     if (g_bridge_ready) { rab_free(&g_bridge); g_bridge_ready = 0; }
