@@ -646,6 +646,23 @@ static bool audio_bridge_enabled() {
     return en;
 }
 
+// Timestamp (SDL performance counter, in ms) of the most recent bridge
+// pull. get_frames_remaining interpolates the DAC's continuous drain
+// from this anchor: the ring's read index only moves in whole callback
+// chunks (~10-21 ms), but the hardware AI_LEN register the game polls
+// drains sample-by-sample. Reporting the quantized ring fill made the
+// game's frame-size feedback loop (func_8003CADC samplesLeft >= 0x1A9)
+// jitter between 368/552-sample tasks where hardware runs a rigid
+// limit cycle — and the CPU-streamed speech/crowd rings (n_mainbus
+// side-chain, ~2 frames deep) lose their producer/consumer margin
+// under that jitter, splicing stale samples = the battle static.
+static std::atomic<double> g_last_pull_ms{0.0};
+
+static double psr_perf_now_ms() {
+    return (double)SDL_GetPerformanceCounter() * 1000.0 /
+           (double)SDL_GetPerformanceFrequency();
+}
+
 // Audio thread: pull stereo frames from the bridge (int16) and convert to the
 // device's F32 format. Never stalls on producer jitter.
 static void psr_audio_cb(void* /*ud*/, Uint8* stream, int len) {
@@ -669,6 +686,7 @@ static void psr_audio_cb(void* /*ud*/, Uint8* stream, int len) {
     SDL_LockMutex(g_audio_mtx);
     rab_pull(&g_bridge, tmp.data(), frames);
     SDL_UnlockMutex(g_audio_mtx);
+    g_last_pull_ms.store(psr_perf_now_ms(), std::memory_order_relaxed);
     float* out = reinterpret_cast<float*>(stream);
     for (int i = 0; i < frames * output_channels; ++i)
         out[i] = (float)tmp[i] * (1.0f / 32768.0f);
@@ -691,6 +709,7 @@ extern "C" void psr_audio_fill_f32(float* out, int frames) {
     SDL_LockMutex(g_audio_mtx);
     rab_pull(&g_bridge, tmp.data(), frames);
     SDL_UnlockMutex(g_audio_mtx);
+    g_last_pull_ms.store(psr_perf_now_ms(), std::memory_order_relaxed);
     for (int i = 0; i < frames * (int)output_channels; ++i)
         out[i] = (float)tmp[i] * (1.0f / 32768.0f);
     recomp_audio_debug_push_i16("t3_bridge_out", tmp.data(), frames,
@@ -1120,6 +1139,27 @@ static size_t get_frames_remaining() {
         SDL_UnlockMutex(g_audio_mtx);
         static const double lead_ms = psr_audio_env_ms("PSR_AUDIO_LEAD_MS", 50.0);
         double frames = fill_ms * 0.001 * (double)sample_rate;   // source frames buffered
+        // Hardware AI_LEN drains continuously at the DAC rate; the ring's
+        // read index only moves in whole callback chunks. Interpolate the
+        // drain since the last pull so the game's pacing loop sees the
+        // hardware-shaped sawtooth instead of ~20 ms stair-steps (which
+        // destabilized the 368/552 task cadence and, through it, the
+        // n_mainbus CPU-stream rings = announcer/crowd static).
+        // PSR_AI_SMOOTH=0 restores the stepped readback for A/B.
+        static const bool smooth = [] {
+            const char* v = std::getenv("PSR_AI_SMOOTH");
+            return !(v && v[0] == '0' && v[1] == '\0');   // default ON
+        }();
+        if (smooth) {
+            double anchor = g_last_pull_ms.load(std::memory_order_relaxed);
+            if (anchor > 0.0) {
+                double elapsed_ms = psr_perf_now_ms() - anchor;
+                if (elapsed_ms < 0.0) elapsed_ms = 0.0;
+                if (elapsed_ms > 50.0) elapsed_ms = 50.0;  // device stalled
+                frames -= elapsed_ms * 0.001 * (double)sample_rate;
+                if (frames < 0.0) frames = 0.0;
+            }
+        }
         double lag    = lead_ms * 0.001 * (double)sample_rate;
         double rem    = frames > lag ? frames - lag : 0.0;
         return (size_t)rem;
