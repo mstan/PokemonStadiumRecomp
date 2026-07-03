@@ -11,15 +11,88 @@ development.** As of 2026-06-05, #11 (the GB Tower launch crash) is
 FIXED together with #7 (register-quit softlock) on a single build —
 see the depth-bounded tailcall fix below.
 
-**OPEN as of 2026-06-05 (milestone snapshot):**
-- **#10 Occasional slight audio crackle (new).**
+**OPEN as of 2026-07-02:**
+- **#10 Audio crackle — MOSTLY FIXED; residual: static on announcer
+  lines.** Title/attract/music crackle fixed and user-ear-verified;
+  announcer speech (and the crowd bed under moves) still carries
+  static in battles. See the 2026-07-02 update entry below.
+- **#13 Free Battle → Rental roster → pokemon detail view crashes
+  (fragment eviction).** New, reproducible 3/3. See entry below.
 
 **Just fixed 2026-06-05 (user-verified):** #12 — anti-aliasing default +
 supersampling now ship without breaking the 2D menus; see the FIXED entry
 below.
 
-**ACTIVE priority among OPEN issues:** #10. The issue numbers are stable IDs
-(referenced across this doc, commits, and memory), not the work order.
+**ACTIVE priority among OPEN issues:** #10 residual. The issue numbers are
+stable IDs (referenced across this doc, commits, and memory), not the work
+order.
+
+- **#10 update (2026-07-02) — audio crackle root-caused in layers; the
+  last layer (announcer-line static) is localized but not yet fixed.**
+
+  *FIXED and user-ear-verified this date:*
+  - **Perpetual title/attract/music crackle** — two stacked delivery
+    bugs. (a) The instant AI snapshot-copy raced the still-running RSP
+    task; hardware latches (addr,len) and reads lazily over the next
+    ~17 ms, so consumption is now deferred to the next submission
+    (N64MR `60ba19c`; `N64MR_AI_INSTANT_COPY=1` reverts). (b) The
+    host bridge's rate-warp fought the game's closed osAiGetLength
+    feedback loop; warp is off and equilibrium set by a fill lead
+    (PSR `6e9c8ab`; knobs `PSR_AUDIO_MAX_CORR/LEAD_MS/TARGET_MS`).
+  - **Task-cadence jitter** — the game picks 368- vs 552-sample audio
+    tasks by polling the raw AI_LEN register; we published it stale
+    (once per osAi* call) from a ~20 ms-stepped host buffer level,
+    where hardware drains smoothly at the DAC rate. New virtual AI
+    DAC models the register directly and osRecvMesg republishes it
+    (N64MR `d2aed7e` + PSR `c03c3bc`; `N64MR_AI_VIRTUAL=0` /
+    `PSR_AI_SMOOTH=0` revert). Measured: the 368/552 task pattern now
+    matches the hardware limit cycle (runs 8-10 vs the Ares organic
+    reference's rigid 9-10; was noisy runs 1-27).
+
+  *STILL OPEN — static on announcer lines (user-verified persisting
+  after all of the above).* What is PROVEN from 2-minute full-ring
+  battle captures (`_crackle_data/live10`, `live12`):
+  - Every RSP synthesis input is byte-clean: 280,832 voice stream
+    chunk reads verified against ROM (0 mismatches — the announcer's
+    ADPCM stream included), 60.6M bytes of RSP state round-trips
+    (0 mismatches), envelope commands exact (±1), delivery
+    byte-identical (8191/8192), RSP bit-faithful (earlier
+    triple-engine phase). Attract content is sample-exact vs the
+    Ares organic capture on music.
+  - The static carrier is Stadium's CPU-side streamed-PCM side-chain:
+    `n_mainbus.c` (custom `n_alMainBusPull`) mixes small CPU-fed PCM
+    rings (`D_800FC6D8`, 0xB80 bytes; `D_800FCF28[2]`, 0x8A0 each ≈
+    2 audio frames deep) into the master bus every subframe; the
+    producer is `func_80044EA4` (45720.c), a margin-feedback
+    speech/crowd decoder — the announcer path. 662/663 click-tasks in
+    the static capture coincide with these rings being active
+    (caveat: speech is transient-rich, so numeric click metrics
+    cannot separate residual defect from loud content — ears are the
+    judge).
+  - Remaining suspects: the producer's call-site pacing vs the
+    build-time consumer index (`D_800FD6F0`/`D_800FCF30` advance
+    during cmd-list build), thread scheduling of the decoder, or the
+    decode itself (`func_800459E0`) under recomp. Instruments ready:
+    4M-event DMA ring with payloads (`PSR_RSP_DMA_TRACE=1` +
+    `PSR_RSP_DMA_TRACE_CAP`), PI ROM-fill ring, `audio_rings_dump`,
+    `tools/_stream_tear2.py`, `_boundary_attrib.py`,
+    `_organic_pcm_diff.py`, `_env_reconstruct.py`. Designed next
+    instrument: a dedicated full-payload ring on the n_mainbus aux
+    reads (the [0xd1800,0xd6060) region) so the bed content the RSP
+    actually mixed is fully reconstructable.
+
+- **#13 (new 2026-07-02) — Free Battle → Rental → viewing the 2nd/3rd
+  pokemon's detail view crashes; reproduced 3/3.** Fragment id=0xEF
+  (0xC5000000–0xC5200000 detail/cry fragments) EVICTS an in-use
+  section (idx 155/157) → `get_function` lookup misses at
+  `0x801E40B8`/`0x801E4414` → wild jump (`0x00AF0000` / `0x3F4CCCCD`)
+  → abort; one occurrence also zeroed the audio DMEM dispatch table.
+  Reproduces with default AND 4M DMA-ring caps (i.e., not the new
+  instrumentation). stderr logs preserved:
+  `_crackle_data/crash_rental_entry_err{,2}.txt`. Battle Now and
+  GB-cart/registered picks avoid the path (GB Tower regression-checked
+  OK 2026-07-02). Suspect: runtime overlay-tier eviction choosing a
+  section still on the active call path.
 
 **Original priority order (user-set 2026-05-28, superseded above for open work):**
 1. ~~Cursor / icon sprite corruption~~ — **FIXED 2026-05-28, user-confirmed.**
