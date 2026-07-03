@@ -294,6 +294,8 @@ struct RspDmaTraceEvent {
 extern "C" void recomp_rsp_dma_recent_copy(
     RspDmaTraceEvent* out, uint32_t out_cap,
     uint32_t* out_count, uint64_t* out_write_index);
+extern "C" int64_t recomp_rsp_dma_dump(const char* path);
+extern "C" int64_t recomp_pi_fill_dump(const char* path);
 extern "C" void recomp_voice_events_recent_copy(
     void* out_void, size_t cap, size_t* n_written, uint64_t* next_seq_out);
 extern "C" size_t recomp_voice_event_size(void);
@@ -1361,29 +1363,32 @@ static std::string handle_command(const std::string& line) {
         if (dir.empty()) return R"({"ok":false,"error":"missing dir"})";
         auto path = [&](const char* name) { return dir + "/" + name; };
 
-        // 1. DMA trace, raw records.
-        constexpr uint32_t kDmaCap = 65536;
-        std::vector<RspDmaTraceEvent> dbuf(kDmaCap);
-        uint32_t dgot = 0;
+        // 1. DMA trace, raw records — streamed whole-ring dump so the
+        // full PSR_RSP_DMA_TRACE_CAP window reaches disk (the old
+        // fixed-buffer copy capped this leg at 65536 events, ~1.6 s of
+        // battle, while the phenomenon needs 1-2 minutes of coverage).
         uint64_t dwidx = 0;
-        recomp_rsp_dma_recent_copy(dbuf.data(), kDmaCap, &dgot, &dwidx);
-        {
-            FILE* f = fopen(path("rspdma.bin").c_str(), "wb");
-            if (!f) return R"({"ok":false,"error":"open rspdma failed"})";
-            fwrite(dbuf.data(), sizeof(RspDmaTraceEvent), dgot, f);
-            fclose(f);
+        recomp_rsp_dma_recent_copy(nullptr, 0, nullptr, &dwidx);
+        int64_t dgot = recomp_rsp_dma_dump(path("rspdma.bin").c_str());
+        if (dgot < 0) {
+            return R"({"ok":false,"error":"rspdma dump failed"})";
         }
-        // 2-4. The existing ring dumps.
+        // 2-5. The existing ring dumps + PI ROM-fill ring (CPU-side
+        // half of the stream-buffer forensics; 32-byte records:
+        // seq,ms u64 + dram,rom,size,pad u32).
         int64_t n_cmd = recomp_audio_cmdlist_dump(path("cmdlists.bin").c_str());
         int64_t n_pcm = recomp_task_pcm_dump(path("taskpcm.bin").c_str());
         int64_t n_ai  = ultramodern_ai_submit_dump(path("ai_payload.bin").c_str());
-        char b[256];
+        int64_t n_pi  = recomp_pi_fill_dump(path("pifills.bin").c_str());
+        char b[320];
         std::snprintf(b, sizeof(b),
-            "{\"ok\":true,\"dma\":%u,\"dma_write_idx\":%llu,"
+            "{\"ok\":true,\"dma\":%lld,\"dma_write_idx\":%llu,"
             "\"dma_event_size\":%zu,\"cmdlists\":%lld,\"taskpcm\":%lld,"
-            "\"ai\":%lld}",
-            dgot, (unsigned long long)dwidx, sizeof(RspDmaTraceEvent),
-            (long long)n_cmd, (long long)n_pcm, (long long)n_ai);
+            "\"ai\":%lld,\"pifills\":%lld}",
+            (long long)dgot, (unsigned long long)dwidx,
+            sizeof(RspDmaTraceEvent),
+            (long long)n_cmd, (long long)n_pcm, (long long)n_ai,
+            (long long)n_pi);
         return b;
     }
     if (cmd == "voice_events_recent") {
