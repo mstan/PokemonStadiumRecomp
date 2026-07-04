@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <cctype>
+#include <string>
 
 #define HLSL_CPU
 #include "hle/rt64_application.h"
@@ -237,6 +239,48 @@ static void set_application_user_config(RT64::Application* application,
         } else {
             application->userConfig.threePointFiltering = true;
             std::fprintf(stderr, "[psr-rt64] forced threePointFiltering = true\n");
+        }
+    }
+
+    // WIDESCREEN EXPERIMENT (branch experiment/widescreen). Stadium is a 4:3
+    // game; RT64 can widen the WORLD (3D) projection when its aspect scissor
+    // spans the full framebuffer width (the same generic widening the Snap fix
+    // rides, scoped-pillarbox logic already in rt64 main). The base config path
+    // sets aspectRatio from config.ar_option but never sets the world
+    // aspectTarget (only the ext/HUD path does), so Manual mode had no target.
+    // PSR_ASPECT overrides both here, mirroring Snap's SNAP_ASPECT:
+    //   PSR_ASPECT=original|4:3   -> Original  (no widening)
+    //   PSR_ASPECT=expand|window  -> Expand    (widen to the output/window aspect)
+    //   PSR_ASPECT=16:9|21:9|<f>  -> Manual + aspectTarget (deterministic widen)
+    // NOTE: this widens the 3D scene only; the 2D/ortho HUD is governed by the
+    // ext (hr_option) path and is expected to need separate handling.
+    if (const char* asp = std::getenv("PSR_ASPECT")) {
+        using AR = RT64::UserConfiguration::AspectRatio;
+        std::string a = asp;
+        for (char& c : a) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (a == "original" || a == "4:3" || a == "4x3") {
+            application->userConfig.aspectRatio = AR::Original;
+            std::fprintf(stderr, "[psr-rt64] PSR_ASPECT: world aspect = Original (4:3)\n");
+        } else if (a == "expand" || a == "window" || a == "auto") {
+            application->userConfig.aspectRatio = AR::Expand;
+            std::fprintf(stderr, "[psr-rt64] PSR_ASPECT: world aspect = Expand (fit output)\n");
+        } else {
+            // Parse "W:H" or a bare float into a target ratio.
+            double target = 0.0;
+            if (const char* colon = std::strchr(asp, ':')) {
+                double w = std::atof(std::string(asp, colon).c_str());
+                double h = std::atof(colon + 1);
+                if (w > 0.0 && h > 0.0) target = w / h;
+            } else {
+                target = std::atof(asp);
+            }
+            if (target >= 0.1 && target <= 100.0) {
+                application->userConfig.aspectRatio = AR::Manual;
+                application->userConfig.aspectTarget = target;
+                std::fprintf(stderr, "[psr-rt64] PSR_ASPECT: world aspect = Manual, target = %.6f\n", target);
+            } else {
+                std::fprintf(stderr, "[psr-rt64] PSR_ASPECT='%s' rejected (want original|expand|W:H|<float>)\n", asp);
+            }
         }
     }
 }
