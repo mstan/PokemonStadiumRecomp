@@ -1688,20 +1688,15 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
     // soft-reset back to the boot sequence on any button press.
     //
     // 8000 raw matches the C-button deadzone; well above typical resting
-    // drift but well below intentional tilts. Re-scale OUTSIDE the deadzone
-    // so the player gets full N64 stick range from a partial Xbox tilt.
+    // drift but well below intentional tilts. The shared shim
+    // (ultramodern osContGetReadData) expects a normalized [-1, 1] stick and
+    // scales it to the N64 int8 range; apply_stick_deadzone is the single
+    // shared producer of that value (a local copy here used to multiply by
+    // 80.0f, which wrapped the shim's (int8_t)(127 * x) cast and inverted the
+    // axis — masked only because Stadium menus drive on the D-pad).
     constexpr int32_t LSTICK_DEADZONE = 8000;
-    auto apply_deadzone = [](int32_t v) -> float {
-        if (v >  LSTICK_DEADZONE) {
-            return float(v - LSTICK_DEADZONE) / float(32767 - LSTICK_DEADZONE) * 80.0f;
-        }
-        if (v < -LSTICK_DEADZONE) {
-            return float(v + LSTICK_DEADZONE) / float(32767 - LSTICK_DEADZONE) * 80.0f;
-        }
-        return 0.0f;
-    };
-    *x_out =  apply_deadzone(lx);
-    *y_out = -apply_deadzone(ly);
+    *x_out =  ultramodern::input::apply_stick_deadzone(lx, LSTICK_DEADZONE);
+    *y_out = -ultramodern::input::apply_stick_deadzone(ly, LSTICK_DEADZONE);
 
     // Apply TCP override: OR buttons in, replace stick if non-zero.
     // claim_input arms the override flag (so osContInit reports
