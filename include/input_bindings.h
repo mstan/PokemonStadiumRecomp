@@ -14,8 +14,9 @@
 // bindings (e.g. N64 Z defaults to BOTH shoulder triggers).
 //
 // main.cpp's get_n64_input() consults these tables every poll via accumulate();
-// the SS Anne launcher (ui_seam.cpp) edits them via get/set_binding + the scan
-// API and persists them to input.cfg.
+// they are persisted to input.cfg, which the pre-boot recomp-ui launcher's
+// rebind page also edits (via recomp-ui/src/consoles/n64/n64_binds.c, a
+// byte-for-byte replica of this file's on-disk format).
 //
 // See src/main/input_bindings.cpp.
 

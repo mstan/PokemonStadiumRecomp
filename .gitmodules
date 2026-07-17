@@ -1,3 +1,7 @@
 [submodule "disasm"]
 	path = disasm
 	url = https://github.com/pret/pokestadium
+[submodule "recomp-ui"]
+	path = recomp-ui
+	url = https://github.com/mstan/recomp-ui.git
+	branch = work/n64-console

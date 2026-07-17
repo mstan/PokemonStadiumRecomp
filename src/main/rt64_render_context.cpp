@@ -6,11 +6,9 @@
  * removed (depends on mod loader we don't ship), overloaded.h
  * dependency dropped.
  *
- * The recompui render hook was restored 2026-06 for the SS Anne UI:
- * pkmnstadium::ui_seam::install() (src/main/ui_seam.cpp) registers an
- * RmlUi overlay via RT64::SetRenderHooks before app->setup(). Phase 0
- * draws a trivial document to prove the RmlUi<->RT64 seam; Phase 1
- * replaces it with the launcher.
+ * The launcher no longer draws through RT64: it runs pre-boot in its own
+ * SDL/GL window (src/main/recompui_launcher.cpp) before this render context is
+ * created, so there is no RT64 render hook / RmlUi overlay here anymore.
  *
  * Modified 2026 by Matthew Stanley:
  *   - Diagnostic env-var overrides for menu-sprite-corruption
@@ -42,7 +40,6 @@
 
 #include "pokestadium_render.h"
 #include "debug_server.h"
-#include "ui_seam.h"
 
 static RT64::UserConfiguration::Antialiasing device_max_msaa = RT64::UserConfiguration::Antialiasing::None;
 static bool sample_positions_supported = false;
@@ -339,12 +336,6 @@ pokestadium::renderer::RT64Context::RT64Context(uint8_t* rdram,
         case ultramodern::renderer::GraphicsApi::Auto:
             app->userConfig.graphicsAPI = RT64::UserConfiguration::GraphicsAPI::Automatic; break;
     }
-
-    // Register the SS Anne RmlUi overlay with RT64 before the application sets
-    // up its render device — RT64 invokes the init hook (which needs the live
-    // RenderInterface + RenderDevice) during setup, and the draw hook every
-    // presented frame thereafter. (Phase 0 seam proof; see src/main/ui_seam.cpp.)
-    pkmnstadium::ui_seam::install();
 
     uint32_t thread_id = 0;
 #ifdef _WIN32

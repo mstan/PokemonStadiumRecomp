@@ -49,13 +49,6 @@ endif()
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-# On Windows the bundled FreeType (lib/freetype-windows-binaries) is located via
-# our own lib/FindFreetype.cmake; put lib/ on the module path so both RmlUi's
-# build and our find_package(Freetype) below resolve to it.
-if (WIN32)
-    set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/lib/")
-endif()
-
 # Release/windowed build: no console window. Off by default (the console is handy
 # for dev — stderr logs). Configure with -DPSR_NO_CONSOLE=ON for the release exe.
 option(PSR_NO_CONSOLE "Build a windowed release with no console window" OFF)
@@ -77,17 +70,11 @@ set(RT64_SDL_WINDOW_VULKAN TRUE)
 add_compile_definitions(HLSL_CPU)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
 
-# ---- RmlUi + lunasvg (UI framework for the SS Anne launcher) ----------------
-# Vendored forks under lib/ (version-matched to the rt64/N64MR fork lineage,
-# Zelda64Recomp@ab677e7). lunasvg must come first so RmlUi's SVG plugin links
-# it statically.
+# ---- UI framework: shared recomp-ui pre-boot ImGui launcher -----------------
+# The launcher is wired into the runner target below via
+# recomp_target_launcher_ui() (see recomp-ui/recomp_ui.cmake), replacing the old
+# vendored RmlUi + lunasvg overlay. Keep static linkage for the engine subdirs.
 set(BUILD_SHARED_LIBS OFF)
-set(LUNASVG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-add_subdirectory(${CMAKE_SOURCE_DIR}/lib/lunasvg)
-set(RMLUI_SVG_PLUGIN ON CACHE BOOL "" FORCE)
-set(RMLUI_TESTS_ENABLED OFF CACHE BOOL "" FORCE)
-add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RmlUi)
-target_compile_definitions(rmlui_core PRIVATE LUNASVG_BUILD_STATIC)
 
 # ---- N64ModernRuntime (junctioned at lib/N64ModernRuntime) -----------------
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
@@ -175,13 +162,10 @@ add_executable(PokemonStadiumRecomp
     # njpgdspMain is the standard libultra JPEG ucode (vendored from Zelda64Recomp's recompiled output).
     ${CMAKE_SOURCE_DIR}/rsp/njpgdspMain.cpp
 
-    # ---- SS Anne UI overlay (Phase 0 seam proof) ---------------------------
-    # Minimal RmlUi<->RT64 overlay + the game-agnostic recompui renderer +
-    # RmlUi's SDL platform backend. The full launcher (Phase 1) adds the rest
-    # of src/ui/ as it gets adapted from Zelda64 to SS Anne.
-    src/main/ui_seam.cpp
-    ${CMAKE_SOURCE_DIR}/src/ui/ui_renderer.cpp
-    ${CMAKE_SOURCE_DIR}/lib/RmlUi/Backends/RmlUi_Platform_SDL.cpp
+    # ---- Pre-boot launcher host glue ---------------------------------------
+    # Wraps the shared recomp-ui C ABI (recomp_launcher_run_window); the launcher
+    # itself is added to this target by recomp_target_launcher_ui() below.
+    src/main/recompui_launcher.cpp
 )
 
 target_include_directories(PokemonStadiumRecomp PRIVATE
@@ -198,17 +182,6 @@ target_include_directories(PokemonStadiumRecomp PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/inc
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/rhi
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/render
-    # ---- SS Anne UI (RmlUi) include paths ----------------------------------
-    ${CMAKE_SOURCE_DIR}/src/ui
-    ${CMAKE_SOURCE_DIR}/src/ui/core
-    ${CMAKE_SOURCE_DIR}/src/ui/util
-    ${CMAKE_SOURCE_DIR}/lib/RmlUi/Include
-    ${CMAKE_SOURCE_DIR}/lib/RmlUi/Backends
-    ${CMAKE_SOURCE_DIR}/lib/GamepadMotionHelpers
-    ${CMAKE_SOURCE_DIR}/lib/freetype-windows-binaries/include
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/nativefiledialog-extended/src/include
-    # Generated Interface{VS,PS} shader headers land here.
-    ${CMAKE_BINARY_DIR}/shaders
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
@@ -218,10 +191,9 @@ target_compile_options(PokemonStadiumRecomp PRIVATE
     -march=nehalem  # Required by RT64's RSP simulator (SSSE3, SSE4.1, SSE4.2)
 )
 
-# The UI sources (ui_renderer.cpp, RmlUi backend) include RT64's hlslpp via
-# Windows headers; without NOMINMAX the min/max macros break hlslpp's min()/
-# max() declarations. Zelda64Recomp sets this globally; we scope it to the
-# runner target's sources so the rt64/RmlUi sub-builds are untouched.
+# The runner sources (main.cpp, rt64_render_context.cpp) include RT64's hlslpp
+# via Windows headers; without NOMINMAX the min/max macros break hlslpp's min()/
+# max() declarations. Scoped to the runner target so the sub-builds are untouched.
 target_compile_definitions(PokemonStadiumRecomp PRIVATE NOMINMAX)
 
 # Emit PDBs in Release for the runner + librecomp/ultramodern so the SEH
@@ -273,7 +245,11 @@ if (WIN32)
             $<TARGET_FILE_DIR:PokemonStadiumRecomp>
     )
 
-    target_link_libraries(PokemonStadiumRecomp PRIVATE SDL2 SDL2main Winmm.lib dbghelp.lib comdlg32.lib ole32.lib avrt.lib)
+    # No SDL2main: recomp-ui builds with SDL_MAIN_HANDLED, so our real main() is
+    # the entry point (SDL.h does not redirect it to SDL_main). opengl32 backs the
+    # launcher's GL window (imgui_impl_opengl3 + launcher_gl.c). comdlg32/ole32
+    # also back tinyfiledialogs' native file pickers.
+    target_link_libraries(PokemonStadiumRecomp PRIVATE SDL2 opengl32 Winmm.lib dbghelp.lib comdlg32.lib ole32.lib avrt.lib)
 endif()
 
 target_link_libraries(PokemonStadiumRecomp PRIVATE
@@ -282,11 +258,6 @@ target_link_libraries(PokemonStadiumRecomp PRIVATE
     ultramodern
     rt64
     ares_bridge
-    # ---- SS Anne UI (RmlUi) ------------------------------------------------
-    RmlUi::Core
-    RmlUi::Debugger
-    lunasvg
-    nfd
 )
 
 # Force-include all of ares_bridge.lib so the static initializer that
@@ -308,44 +279,42 @@ if (WITH_ARES_BRIDGE)
     target_compile_definitions(PokemonStadiumRecomp PRIVATE PSR_WITH_ARES=1)
 endif()
 
-# Windowed (no-console) release. SDL2main supplies WinMain for the WINDOWS
-# subsystem, which calls our SDL_main (main() is renamed by SDL.h), so no /ENTRY
-# override is needed. stderr still routes to a redirected handle if one is set,
-# so logging/diagnostics aren't lost when launched from a terminal.
+# Windowed (no-console) release. With SDL_MAIN_HANDLED there is no SDL2main
+# WinMain, so force the CRT's console startup (which calls our main()) as the
+# entry for the WINDOWS subsystem — this gives a no-console window while keeping
+# main() the entry point. stderr still routes to a redirected handle if one is
+# set, so logging/diagnostics aren't lost when launched from a terminal.
 if (WIN32 AND PSR_NO_CONSOLE)
-    target_link_options(PokemonStadiumRecomp PRIVATE /SUBSYSTEM:WINDOWS)
+    target_link_options(PokemonStadiumRecomp PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
 endif()
 
 target_include_directories(PokemonStadiumRecomp PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/ares-bridge/include
 )
 
-# ---- FreeType (RmlUi font engine) ------------------------------------------
-# Resolved via lib/FindFreetype.cmake (static, bundled). RmlUi's own build also
-# finds it through the module path set near the top of this file.
-find_package(Freetype REQUIRED)
-target_include_directories(PokemonStadiumRecomp PRIVATE ${FREETYPE_INCLUDE_DIRS})
-target_link_libraries(PokemonStadiumRecomp PRIVATE ${FREETYPE_LIBRARIES})
-
-# ---- Interface shader compilation (RmlUi overlay) --------------------------
-# build_vertex_shader / build_pixel_shader come from lib/rt64's CMakeLists and
-# need the DXC option vars + DXC path set in this scope (rt64's own CMake does
-# not export them). Mirrors Zelda64Recomp@ab677e7's top-level shader setup.
-set(DXC_COMMON_OPTS "-I${PROJECT_SOURCE_DIR}/src")
-set(DXC_DXIL_OPTS "-Wno-ignored-attributes")
-set(DXC_SPV_OPTS "-spirv" "-fspv-target-env=vulkan1.0" "-fvk-use-dx-layout")
-set(DXC_PS_OPTS "${DXC_COMMON_OPTS}" "-E" "PSMain" "-T ps_6_0" "-D DYNAMIC_RENDER_PARAMS")
-set(DXC_VS_OPTS "${DXC_COMMON_OPTS}" "-E" "VSMain" "-T vs_6_0" "-D DYNAMIC_RENDER_PARAMS" "-fvk-invert-y")
-if (WIN32)
-    set(DXC "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc.exe")
-elseif (APPLE)
-    set(DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos")
-else()
-    set(DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-linux")
-endif()
-
-build_vertex_shader(PokemonStadiumRecomp "shaders/InterfaceVS.hlsl" "shaders/InterfaceVS.hlsl")
-build_pixel_shader(PokemonStadiumRecomp "shaders/InterfacePS.hlsl" "shaders/InterfacePS.hlsl")
+# ---- Shared recomp-ui pre-boot launcher (Dear ImGui) -----------------------
+# Adds the launcher sources (ImGui + tinyfiledialogs + launcher core), include
+# dirs, and the RECOMP_LAUNCHER / SDL_MAIN_HANDLED defines to the runner, and
+# stages the launcher's assets (fonts/img) next to the exe. See
+# recomp-ui/recomp_ui.cmake.
+# PSR links rt64 statically, and rt64 already compiles Dear ImGui (its debug
+# inspector). Two ImGui copies in one binary collide at link, so tell recomp-ui
+# to use rt64's ImGui instead of bundling its own: it compiles only its launcher
+# UI against rt64's ImGui headers and links rt64's already-built ImGui core +
+# SDL2 backend. rt64 ships but does NOT compile the OpenGL3 backend (it renders
+# via Vulkan/D3D12), and recomp-ui's pre-boot window is OpenGL — so we compile
+# that one backend here, against rt64's (1.90.x) ImGui, matching its core.
+set(RECOMP_UI_HOST_IMGUI ON)
+set(RECOMP_UI_HOST_IMGUI_INCLUDE
+    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/imgui
+    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/imgui/backends)
+include(${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
+recomp_target_launcher_ui(PokemonStadiumRecomp)
+target_sources(PokemonStadiumRecomp PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/imgui/backends/imgui_impl_opengl3.cpp)
+# recomp_target_launcher_ui() pins the target to C++17 (for ImGui); PSR's runner
+# needs C++20 (main.cpp), and ImGui compiles cleanly under 20, so restore it.
+set_target_properties(PokemonStadiumRecomp PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 
 # ---- UI assets (fonts, etc.) next to the executable ------------------------
 add_custom_command(TARGET PokemonStadiumRecomp POST_BUILD

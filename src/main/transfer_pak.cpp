@@ -109,9 +109,9 @@ namespace {
     }
 
     void load_config() {
-        // Next to the exe, matching the launcher's writer (ui_seam.cpp) so the
-        // emulated Transfer Pak reads the same launcher.cfg the GUI writes,
-        // regardless of the process's working directory.
+        // Next to the exe, matching the launcher's writer
+        // (recompui_launcher.cpp) so the emulated Transfer Pak reads the same
+        // launcher.cfg the GUI writes, regardless of the process's working dir.
         const std::filesystem::path config_path =
             pkmnstadium::exe_dir() / "launcher.cfg";
         const auto config = read_config_file(config_path);

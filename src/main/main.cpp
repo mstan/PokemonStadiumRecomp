@@ -100,7 +100,7 @@ extern "C" const char* psr_app_file_c(const char* name, char* out, unsigned long
 #include <librecomp/audio_uaf_protect.hpp>
 #include "ares_worker.h"
 #include "transfer_pak.h"
-#include "ui_seam.h"
+#include "recompui_launcher.h"
 #include "input_bindings.h"
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
@@ -1231,7 +1231,7 @@ static const char* select_audio_device() {
 
     // (1) Explicit pin always wins. Resolved as PSR_AUDIO_DEVICE > launcher.cfg
     // `audio_device` (Settings > Audio output) > empty (follow system default).
-    const std::string want_s = pkmnstadium::ui_seam::startup_audio_device();
+    const std::string want_s = pkmnstadium::recompui::startup_audio_device();
     const char* want = want_s.empty() ? nullptr : want_s.c_str();
     if (want && want[0]) {
         for (int i = 0; i < count; i++) {
@@ -1382,9 +1382,9 @@ static void reset_audio(uint32_t output_freq) {
 
 static SDL_Window* g_window = nullptr;
 
-// Non-static alias to the SDL window, consumed by the SS Anne UI overlay
-// (src/main/ui_seam.cpp) and by recompui's ui_state.cpp in Phase 1, both of
-// which reference a global `SDL_Window* window`. Assigned in create_window().
+// Non-static alias to the SDL window (assigned in create_window()). The old
+// RmlUi overlay referenced this global; the pre-boot recomp-ui launcher owns its
+// own window, so nothing external consumes it now — kept as a harmless alias.
 SDL_Window* window = nullptr;
 
 static ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
@@ -1434,20 +1434,9 @@ static ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callba
 static std::atomic<bool> s_turbo_persistent{false};
 
 static void update_gfx(void*) {
-    // Open all game controllers once while the launcher is up, so SDL delivers
-    // their button/axis events for menu navigation (the game otherwise only
-    // opens controllers after boot).
-    if (pkmnstadium::ui_seam::launcher_visible()) {
-        static bool s_launcher_pads_opened = false;
-        if (!s_launcher_pads_opened) {
-            s_launcher_pads_opened = true;
-            SDL_GameControllerUpdate();
-            const int njoy = SDL_NumJoysticks();
-            for (int i = 0; i < njoy; ++i) {
-                if (SDL_IsGameController(i)) SDL_GameControllerOpen(i);
-            }
-        }
-    }
+    // The launcher now runs pre-boot in its own window (recompui_launcher.cpp);
+    // by the time update_gfx runs the game owns the window, so every event is a
+    // game event.
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_QUIT) {
@@ -1467,12 +1456,6 @@ static void update_gfx(void*) {
             std::fflush(stdout);
             std::fflush(stderr);
             std::_Exit(0);
-        }
-        // While the SS Anne launcher is the active screen, route input to it
-        // (mouse/keyboard for clicking PLAY, toggles, etc.).
-        if (pkmnstadium::ui_seam::launcher_visible()) {
-            pkmnstadium::ui_seam::queue_event(ev);
-            continue;
         }
         if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_TAB &&
             ev.key.repeat == 0) {
@@ -1506,7 +1489,7 @@ static SDL_GameController* g_pad = nullptr;
 // a specific device. Until then (or under PSR_AUTOBOOT) the legacy single-human
 // model applies: port 0 = keyboard + first pad, ports 1-3 = Transfer-Pak idle.
 static std::atomic<bool> g_launcher_input_active{false};
-static pkmnstadium::ui_seam::DeviceKind g_port_kind[4] = {};
+static pkmnstadium::recompui::DeviceKind g_port_kind[4] = {};
 static int g_port_instance[4] = {-1, -1, -1, -1};
 static bool g_port_enabled[4] = {false, false, false, false};
 static SDL_GameController* g_port_pad[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -1516,9 +1499,9 @@ static SDL_GameController* g_port_pad[4] = {nullptr, nullptr, nullptr, nullptr};
 // in poll_inputs (on the gfx thread that owns the subsystem).
 static void apply_launcher_input_config() {
     for (int port = 0; port < 4; ++port) {
-        const auto pa = pkmnstadium::ui_seam::port_assignment(port);
+        const auto pa = pkmnstadium::recompui::port_assignment(port);
         g_port_enabled[port] = pa.enabled;
-        g_port_kind[port] = pa.enabled ? pa.kind : pkmnstadium::ui_seam::DeviceKind::None;
+        g_port_kind[port] = pa.enabled ? pa.kind : pkmnstadium::recompui::DeviceKind::None;
         g_port_instance[port] = pa.gamepad_instance;
     }
     g_launcher_input_active.store(true);
@@ -1580,7 +1563,7 @@ static void poll_inputs() {
     if (g_launcher_input_active.load()) {
         // Lazily open each port's assigned gamepad (on this gfx thread).
         for (int port = 0; port < 4; ++port) {
-            if (g_port_kind[port] == pkmnstadium::ui_seam::DeviceKind::Gamepad &&
+            if (g_port_kind[port] == pkmnstadium::recompui::DeviceKind::Gamepad &&
                 g_port_pad[port] == nullptr && g_port_instance[port] >= 0) {
                 g_port_pad[port] = open_pad_by_instance(g_port_instance[port]);
             }
@@ -1611,10 +1594,10 @@ static bool get_n64_input(int controller_num, uint16_t* buttons_out, float* x_ou
             return false; // disabled slot: absent
         }
         switch (g_port_kind[controller_num]) {
-            case pkmnstadium::ui_seam::DeviceKind::Gamepad:
+            case pkmnstadium::recompui::DeviceKind::Gamepad:
                 pad = g_port_pad[controller_num];
                 break;
-            case pkmnstadium::ui_seam::DeviceKind::Keyboard:
+            case pkmnstadium::recompui::DeviceKind::Keyboard:
                 use_kb = true;
                 break;
             default:
@@ -1758,7 +1741,7 @@ static ultramodern::input::connected_device_info_t get_connected_device_info(int
     if (g_launcher_input_active.load()) {
         const bool enabled = (controller_num >= 0 && controller_num < 4) && g_port_enabled[controller_num];
         const bool has_dev = enabled &&
-            (g_port_kind[controller_num] != pkmnstadium::ui_seam::DeviceKind::None || has_transfer_pak);
+            (g_port_kind[controller_num] != pkmnstadium::recompui::DeviceKind::None || has_transfer_pak);
         info.connected_device = has_dev
             ? ultramodern::input::Device::Controller
             : ultramodern::input::Device::None;
@@ -1932,10 +1915,41 @@ static std::string get_game_thread_name(const OSThread* t) {
 // lookup.cpp defines this with C++ linkage (it's a .cpp file with no extern "C").
 gpr get_entrypoint_address();
 
+// Load the community controller-mapping DB + the hardcoded 8BitDo 64 fallback
+// so unmapped pads (issue #15) are recognized by both the launcher and the game.
+// Must run after SDL_INIT_GAMECONTROLLER and before any SDL_IsGameController.
+// Also re-run after the pre-boot launcher, whose SDL_Quit clears the mappings.
+static void load_controller_mapping_db() {
+    const std::string db = pkmnstadium::app_file("assets/gamecontrollerdb.txt").string();
+    int added = SDL_GameControllerAddMappingsFromFile(db.c_str());
+    if (added < 0) {
+        std::fprintf(stderr, "[PSR] controller DB NOT loaded (%s): %s\n", db.c_str(), SDL_GetError());
+    } else {
+        std::fprintf(stderr, "[PSR] controller DB: %d mappings loaded from %s\n", added, db.c_str());
+    }
+    // Hardcoded 8BitDo 64 fallback (all platforms/transports). SDL silently
+    // ignores mapping lines whose platform field doesn't match the host, so
+    // listing every variant is safe and future-proofs the Linux/Mac builds.
+    static const char* const k_8bitdo64_maps[] = {
+        "03000000c82d00001930000000000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a3,righty:a4,start:b11,platform:Windows,",
+        "03000000c82d00001930000000000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
+        "03000000c82d00001930000000020000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
+        "03000000c82d00001930000001000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
+        "03000000c82d00001930000011010000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Linux,",
+        "05000000c82d00001930000001000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Linux,",
+    };
+    for (const char* m : k_8bitdo64_maps) SDL_GameControllerAddMapping(m);
+}
+
 int main(int argc, char** argv) {
     // Crash-localization breadcrumbs â€” flushed immediately so a silent
     // exit reveals exactly how far we got.
     std::fprintf(stderr, "[PSR] main() entered\n"); std::fflush(stderr);
+
+    // We build with SDL_MAIN_HANDLED (recomp-ui's launcher contract), so this
+    // real main() is the entry point and SDL.h does NOT redirect it to SDL_main.
+    // SDL requires SDL_SetMainReady() before the first SDL_Init on that path.
+    SDL_SetMainReady();
 
 #ifdef _WIN32
     // Catch unhandled SEH exceptions from any thread (incl. game thread)
@@ -2025,34 +2039,11 @@ int main(int argc, char** argv) {
 
     // â”€â”€ Controller mapping database (issue #15: 8BitDo 64 & others) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // SDL only surfaces a device through the SDL_GameController API if it has a
-    // mapping; an unmapped joystick (e.g. the 8BitDo 64 in D-Input / Bluetooth
-    // mode) is invisible to both the launcher and the game (SDL_IsGameController
-    // returns false). Load the bundled community DB so thousands of controllers
-    // â€” including the 8BitDo 64's per-platform/transport GUIDs â€” are recognized,
-    // then add a hardcoded 8BitDo 64 fallback so it works even if the file is
-    // missing. Users can also drop an updated gamecontrollerdb.txt next to the
-    // exe (assets/) without a rebuild. Must run before any SDL_IsGameController.
-    {
-        const std::string db = pkmnstadium::app_file("assets/gamecontrollerdb.txt").string();
-        int added = SDL_GameControllerAddMappingsFromFile(db.c_str());
-        if (added < 0) {
-            std::fprintf(stderr, "[PSR] controller DB NOT loaded (%s): %s\n", db.c_str(), SDL_GetError());
-        } else {
-            std::fprintf(stderr, "[PSR] controller DB: %d mappings loaded from %s\n", added, db.c_str());
-        }
-        // Hardcoded 8BitDo 64 fallback (all platforms/transports). SDL silently
-        // ignores mapping lines whose platform field doesn't match the host, so
-        // listing every variant is safe and future-proofs the Linux/Mac builds.
-        static const char* const k_8bitdo64_maps[] = {
-            "03000000c82d00001930000000000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a3,righty:a4,start:b11,platform:Windows,",
-            "03000000c82d00001930000000000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
-            "03000000c82d00001930000000020000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
-            "03000000c82d00001930000001000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Mac OS X,",
-            "03000000c82d00001930000011010000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Linux,",
-            "05000000c82d00001930000001000000,8BitDo 64,a:b0,b:b1,back:b10,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b12,leftshoulder:b6,leftstick:b13,lefttrigger:b8,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:b9,rightx:a2,righty:a3,start:b11,platform:Linux,",
-        };
-        for (const char* m : k_8bitdo64_maps) SDL_GameControllerAddMapping(m);
-    }
+    // mapping; an unmapped joystick is invisible to both launcher and game.
+    // Load the bundled community DB (users can drop an updated
+    // assets/gamecontrollerdb.txt next to the exe without a rebuild) + the
+    // hardcoded 8BitDo 64 fallback. Must run before any SDL_IsGameController.
+    load_controller_mapping_db();
 
     // Load the user's input bindings (per-device-type keyboard/controller maps,
     // edited via the launcher's per-port rebind menu). Falls back to the
@@ -2060,63 +2051,46 @@ int main(int argc, char** argv) {
     // immediately playable. Must run before get_n64_input is first polled.
     pkmnstadium::input::load();
 
-    // Enumerate connected gamepads for the SS Anne launcher's controller
-    // dropdowns. Done here (before the render hooks initialize) so the list is
-    // ready when the launcher document loads.
-    {
-        SDL_GameControllerUpdate();
-        std::vector<std::pair<int, std::string>> pads;
-        const int njoy = SDL_NumJoysticks();
-        // Issue #15 diagnostics: log EVERY joystick (not just recognized game
-        // controllers) with its SDL GUID, so an unmapped device in a user's log
-        // can be identified and given a precise mapping.
-        for (int i = 0; i < njoy; ++i) {
-            char guid[33] = {0};
-            SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), guid, sizeof(guid));
-            const char* jn = SDL_JoystickNameForIndex(i);
-            std::fprintf(stderr, "[PSR] joystick %d: '%s' guid=%s game_controller=%s\n",
-                i, jn ? jn : "?", guid,
-                SDL_IsGameController(i) ? "yes" : "NO (no SDL mapping)");
-        }
-        std::fflush(stderr);
-        for (int i = 0; i < njoy; ++i) {
-            if (!SDL_IsGameController(i)) continue;
-            const char* nm = SDL_GameControllerNameForIndex(i);
-            pads.emplace_back(SDL_JoystickGetDeviceInstanceID(i),
-                              nm ? std::string(nm) : std::string("Controller"));
-        }
-        // Disambiguate identical controller names (e.g. two "DualSense Wireless
-        // Controller") so the dropdown can tell them apart. Assignment is still
-        // by unique instance id; this only clarifies the label.
+    // â”€â”€ Pre-boot launcher (recomp-ui shared Dear ImGui) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Runs in its OWN SDL/GL window BEFORE the game's RT64 context is created,
+    // then tears that window (and, via SDL_Quit inside recomp-ui, the whole SDL
+    // instance) down. Unless PSR_AUTOBOOT bypasses it, we show the launcher,
+    // persist launcher.cfg, and pick up the chosen ROM + per-port input config.
+    const bool autoboot = std::getenv("PSR_AUTOBOOT") != nullptr;
+    if (!autoboot) {
+        // The ROM the launcher should display (rom.cfg -> legacy baserom.z64).
+        std::filesystem::path initial_rom;
         {
-            std::vector<std::string> orig;
-            orig.reserve(pads.size());
-            for (auto& p : pads) orig.push_back(p.second);
-            for (size_t i = 0; i < pads.size(); ++i) {
-                int total = 0, idx = 0;
-                for (size_t j = 0; j < pads.size(); ++j) {
-                    if (orig[j] == orig[i]) { ++total; if (j <= i) idx = total; }
-                }
-                if (total > 1) pads[i].second = orig[i] + " #" + std::to_string(idx);
+            std::ifstream rc(pkmnstadium::exe_dir() / "rom.cfg");
+            std::string line;
+            if (rc && std::getline(rc, line) && !line.empty() &&
+                std::filesystem::exists(line)) {
+                initial_rom = line;
+            } else {
+                const auto legacy = pkmnstadium::exe_dir() / "baserom.z64";
+                if (std::filesystem::exists(legacy)) initial_rom = legacy;
             }
         }
-        std::fprintf(stderr, "[PSR] %zu gamepad(s) detected for launcher\n", pads.size());
-        std::fflush(stderr);
-        pkmnstadium::ui_seam::set_gamepads(pads);
-    }
-
-    // Enumerate audio output devices for the launcher's Settings > Audio output
-    // dropdown. The actual device selection (select_audio_device) happens at
-    // reset_audio time and honors the saved name; this is just the picker list.
-    {
-        std::vector<std::string> audio_devs;
-        const int acount = SDL_GetNumAudioDevices(0 /* output */);
-        for (int i = 0; i < acount; ++i) {
-            const char* nm = SDL_GetAudioDeviceName(i, 0);
-            if (nm != nullptr && nm[0] != '\0') audio_devs.emplace_back(nm);
+        char chosen[1024] = {0};
+        if (!pkmnstadium::recompui::run(initial_rom.string().c_str(), chosen, sizeof(chosen))) {
+            std::fprintf(stderr, "[PSR] launcher: QUIT -> exiting\n"); std::fflush(stderr);
+            return 0;
         }
-        std::fprintf(stderr, "[PSR] %zu audio output device(s) for launcher\n", audio_devs.size());
-        pkmnstadium::ui_seam::set_audio_devices(audio_devs);
+        // recomp-ui owned an SDL session and called SDL_Quit() on close, tearing
+        // down the AUDIO/GAMECONTROLLER subsystems + controller mappings set up
+        // above. Re-establish them for the game.
+        SDL_InitSubSystem(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
+        SDL_JoystickEventState(SDL_ENABLE);
+        load_controller_mapping_db();
+        // The rebind page may have edited input.cfg; reload PSR's bindings.
+        pkmnstadium::input::load();
+        // Persist the chosen ROM so the ROM-selection block below picks it up.
+        if (chosen[0] != '\0') {
+            std::ofstream rc(pkmnstadium::exe_dir() / "rom.cfg", std::ios::trunc);
+            if (rc) rc << chosen << "\n";
+        }
+        // Lock in the launcher's per-port device config for input routing.
+        apply_launcher_input_config();
     }
 
     reset_audio(48000);
@@ -2156,19 +2130,19 @@ int main(int argc, char** argv) {
     {
         ultramodern::renderer::GraphicsConfig gconf = ultramodern::renderer::get_graphics_config();
 
-        gconf.wm_option = pkmnstadium::ui_seam::startup_fullscreen()
+        gconf.wm_option = pkmnstadium::recompui::startup_fullscreen()
             ? ultramodern::renderer::WindowMode::Fullscreen
             : ultramodern::renderer::WindowMode::Windowed;
 
-        const std::string api = pkmnstadium::ui_seam::startup_graphics_api();
+        const std::string api = pkmnstadium::recompui::startup_graphics_api();
         if (api == "vulkan")     gconf.api_option = ultramodern::renderer::GraphicsApi::Vulkan;
         else if (api == "d3d12") gconf.api_option = ultramodern::renderer::GraphicsApi::D3D12;
         else                     gconf.api_option = ultramodern::renderer::GraphicsApi::Auto;
 
-        gconf.ds_option = pkmnstadium::ui_seam::startup_ds_option();
+        gconf.ds_option = pkmnstadium::recompui::startup_ds_option();
 
         using AA = ultramodern::renderer::Antialiasing;
-        switch (pkmnstadium::ui_seam::startup_msaa()) {
+        switch (pkmnstadium::recompui::startup_msaa()) {
             case 0:  gconf.msaa_option = AA::None;   break;
             case 2:  gconf.msaa_option = AA::MSAA2X; break;
             case 8:  gconf.msaa_option = AA::MSAA8X; break;
@@ -2178,7 +2152,7 @@ int main(int argc, char** argv) {
         ultramodern::renderer::set_graphics_config(gconf);
         std::fprintf(stderr, "[PSR] graphics: wm=%s api=%s ds=%d msaa=%d\n",
             gconf.wm_option == ultramodern::renderer::WindowMode::Fullscreen ? "fullscreen" : "windowed",
-            api.c_str(), gconf.ds_option, pkmnstadium::ui_seam::startup_msaa());
+            api.c_str(), gconf.ds_option, pkmnstadium::recompui::startup_msaa());
     }
 
     recomp::GameEntry game{};
@@ -2443,35 +2417,18 @@ int main(int argc, char** argv) {
     // NULL mode pointer. The game itself races to call osViSetMode in its
     // very first frames, so we need a small grace window where the dummy
     // VI mode gets installed first.
-    // The SS Anne launcher is the first screen: the game stays unstarted while
-    // the launcher renders, and boots only when the user clicks PLAY. A
-    // dedicated thread waits for that signal and then calls start_game (kept off
-    // the render thread, like the original deferred start). The natural delay
-    // before a click also satisfies the VI-thread grace window above (the dummy
-    // VI mode must be installed before game_status flips to Running).
-    // PSR_AUTOBOOT=1 bypasses the launcher and boots immediately (dev/regression).
-    const bool autoboot = std::getenv("PSR_AUTOBOOT") != nullptr;
-    std::thread([game_id = game.game_id, autoboot]() {
-        if (autoboot) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            std::fprintf(stderr, "[PSR] PSR_AUTOBOOT=1 -> skipping launcher\n");
-        } else {
-            while (!pkmnstadium::ui_seam::play_requested()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            }
-            // Lock in the launcher's controller/enabled config for input routing.
-            apply_launcher_input_config();
-            // Apply the audio output device chosen in the launcher's Settings
-            // (re-selects from launcher.cfg). The launcher is shown only at boot,
-            // so this is where the choice takes effect for the game â€” no app
-            // relaunch needed. Re-selecting the same device is harmless (no audio
-            // is playing yet).
-            reset_audio(output_sample_rate);
-        }
+    // The pre-boot launcher (recompui_launcher.cpp) already ran and committed its
+    // config before this point, so the game boots directly. A dedicated thread
+    // (kept off the render thread, like the original deferred start) calls
+    // start_game after a short grace delay so recomp::start can spin up the VI
+    // thread and install the dummy VI mode before game_status flips to Running
+    // (update_vi would otherwise deref a null mode pointer on the first tick).
+    std::thread([game_id = game.game_id]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         recomp::start_game(game_id);
         std::fprintf(stderr, "[PSR] start_game fired\n"); std::fflush(stderr);
     }).detach();
-    std::fprintf(stderr, "[PSR] launcher-first: waiting for PLAY (set PSR_AUTOBOOT=1 to skip)\n");
+    std::fprintf(stderr, "[PSR] booting game (launcher committed its config pre-boot)\n");
     std::fflush(stderr);
 
     recomp::rsp::callbacks_t rsp_callbacks{
