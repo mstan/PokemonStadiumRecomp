@@ -437,3 +437,13 @@ and copyright notices are retained in their respective repositories:
 
 The original game's assets are **not** included; a legal copy of the
 Pokémon Stadium (US v1.0) ROM is required to build or run this project.
+
+---
+
+<p align="center">
+  <sub><b>R.A.I.D. — Retro AI Development</b> · a Discord for AI-assisted retro reverse-engineering, decomp &amp; recomp</sub>
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/Ad9BwSzctP"><img src=".github/raid-discord.png" alt="Join the Retro AI Development (R.A.I.D.) Discord" width="200"></a>
+</p>
