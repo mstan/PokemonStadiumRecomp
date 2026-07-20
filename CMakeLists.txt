@@ -77,7 +77,9 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
 set(BUILD_SHARED_LIBS OFF)
 
 # ---- N64ModernRuntime (junctioned at lib/N64ModernRuntime) -----------------
-add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
+set(N64MODERN_RUNTIME_ROOT "${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime" CACHE PATH
+    "Path to the N64ModernRuntime checkout used by this game")
+add_subdirectory(${N64MODERN_RUNTIME_ROOT} ${CMAKE_BINARY_DIR}/lib/N64ModernRuntime)
 
 target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/rt64/src)
 
@@ -97,9 +99,9 @@ target_compile_options(RecompiledFuncs PRIVATE
 )
 target_include_directories(RecompiledFuncs PRIVATE
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/ultramodern/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/librecomp/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
+    ${N64MODERN_RUNTIME_ROOT}/ultramodern/include
+    ${N64MODERN_RUNTIME_ROOT}/librecomp/include
+    ${N64MODERN_RUNTIME_ROOT}/N64Recomp/include
 )
 file(GLOB FUNC_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/generated/*.c)
 target_sources(RecompiledFuncs PRIVATE ${FUNC_C_SOURCES})
@@ -171,9 +173,9 @@ add_executable(PokemonStadiumRecomp
 target_include_directories(PokemonStadiumRecomp PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src/main
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/ultramodern/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/librecomp/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
+    ${N64MODERN_RUNTIME_ROOT}/ultramodern/include
+    ${N64MODERN_RUNTIME_ROOT}/librecomp/include
+    ${N64MODERN_RUNTIME_ROOT}/N64Recomp/include
     ${CMAKE_SOURCE_DIR}/lib/concurrentqueue
     ${CMAKE_SOURCE_DIR}/lib/SlotMap
     ${CMAKE_SOURCE_DIR}/lib/rt64/src
@@ -289,7 +291,7 @@ if (WIN32 AND PSR_NO_CONSOLE)
 endif()
 
 target_include_directories(PokemonStadiumRecomp PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/ares-bridge/include
+    ${N64MODERN_RUNTIME_ROOT}/N64Recomp/ares-bridge/include
 )
 
 # ---- Shared recomp-ui pre-boot launcher (Dear ImGui) -----------------------
